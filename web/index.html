@@ -1,0 +1,1039 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Couchbase capture</title>
+  <script src="vendor/echarts.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #1c2430;
+      --muted: #5c6670;
+      --paper: #f6f3ee;
+      --card: #fff;
+      --line: #e4ddd2;
+      --accent: #c45c26;
+      --teal: #24576e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 15px/1.45 ui-sans-serif, Helvetica, sans-serif;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 24px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 22px;
+      background: #1c2430;
+      color: #f6f3ee;
+    }
+    header h1 {
+      margin: 0;
+      font: 22px/1.2 Georgia, "Iowan Old Style", serif;
+      font-weight: normal;
+    }
+    header p { margin: 2px 0 0; color: #c5d0d6; font-size: 13px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 14px 18px; align-items: center; }
+    label { font-size: 13px; color: #e4b089; }
+    select {
+      margin-left: 8px;
+      padding: 6px 8px;
+      border: 0;
+      border-radius: 6px;
+      background: #f6f3ee;
+      color: var(--ink);
+      font: inherit;
+    }
+    main { max-width: none; margin: 0 180px 0 0; padding: 18px 8px 40px 16px; }
+    .grid { display: grid; gap: 14px; }
+    .grid.two { grid-template-columns: 1fr 1fr; }
+    @media (max-width: 800px) { .grid.two { grid-template-columns: 1fr; } }
+    .card {
+      position: relative;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 8px 8px 4px;
+    }
+    .card h2 {
+      margin: 8px 12px 0;
+      font: 16px/1.3 Georgia, "Iowan Old Style", serif;
+      font-weight: normal;
+    }
+    .card .note { margin: 2px 12px 0; color: var(--muted); font-size: 12px; }
+    .tabs { display: flex; gap: 6px; margin: 8px 12px 0; }
+    .tab {
+      border: 1px solid var(--line);
+      background: transparent;
+      border-radius: 999px;
+      padding: 4px 10px;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .tab.on { background: #1c2430; border-color: #1c2430; color: #f6f3ee; }
+    .chart { height: 340px; }
+    .expand {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 0;
+      border-left: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      border-radius: 0 12px 0 8px;
+      background: #fff;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .expand svg { display: block; margin: 6px auto; }
+    #lightbox {
+      position: fixed;
+      z-index: 3;
+      inset: 0;
+      padding: 48px 180px 20px 20px;
+      background: rgba(0, 0, 0, 0.72);
+    }
+    #lightbox[hidden] { display: none; }
+    #lightbox-stage {
+      position: relative;
+      height: 100%;
+      padding: 40px 12px 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+    #lightbox-stage h2 {
+      position: absolute;
+      top: 10px;
+      left: 16px;
+      margin: 0;
+      font: 18px/1.2 Georgia, "Iowan Old Style", serif;
+      font-weight: normal;
+    }
+    #lightbox .chart-wrap,
+    #lightbox .chart { height: 100%; }
+    #lightbox-close {
+      position: absolute;
+      z-index: 5;
+      top: 6px;
+      right: 14px;
+      width: 40px;
+      height: 40px;
+      border: 0;
+      background: transparent;
+      color: #fff;
+      font: 36px/1 ui-sans-serif, Helvetica, sans-serif;
+      cursor: pointer;
+    }
+    #lightbox .expand { display: block; }
+    .tables { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+    @media (max-width: 800px) { .tables { grid-template-columns: 1fr; } }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; }
+    td.key { word-break: break-all; }
+    .set-stake {
+      padding: 4px 10px;
+      border: 0;
+      border-radius: 8px;
+      background: #1c2430;
+      color: #f6f3ee;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .set-stake:disabled {
+      background: #f6f3ee;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      cursor: default;
+    }
+    #status { margin: 12px 4px; color: var(--accent); }
+    .tiles {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .tile {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px 12px 12px;
+    }
+    .tile .k { color: var(--muted); font-size: 12px; }
+    .tile .v { margin-top: 2px; font: 22px/1.2 Georgia, "Iowan Old Style", serif; }
+    .tile .h { margin-top: 2px; color: var(--muted); font-size: 12px; }
+    .tile.slow .v { color: var(--accent); }
+    .term {
+      position: relative;
+      display: inline;
+      padding: 0;
+      border: 0;
+      border-bottom: 1px dotted currentColor;
+      background: none;
+      color: inherit;
+      font: inherit;
+      cursor: help;
+      text-align: inherit;
+    }
+    .term:hover::after,
+    .term:focus::after,
+    .term:focus-visible::after {
+      content: attr(data-tip);
+      position: absolute;
+      z-index: 6;
+      left: 0;
+      top: calc(100% + 6px);
+      width: max-content;
+      max-width: 280px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      background: #1c2430;
+      color: #f6f3ee;
+      font: 12px/1.4 ui-sans-serif, Helvetica, sans-serif;
+      text-align: left;
+      white-space: normal;
+      pointer-events: none;
+      box-shadow: 0 8px 20px rgba(28, 36, 48, 0.18);
+    }
+    .dock .term:hover::after,
+    .dock .term:focus::after,
+    .dock .term:focus-visible::after {
+      left: auto;
+      right: calc(100% + 10px);
+      top: 0;
+    }
+    .glossary {
+      margin-top: 18px;
+      padding: 8px 16px 16px;
+    }
+    .glossary h2 { margin-bottom: 8px; }
+    .glossary dl { margin: 0; }
+    .glossary dt { margin-top: 10px; font-weight: 600; }
+    .glossary dd { margin: 2px 0 0; color: var(--muted); }
+    .glossary ol { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
+    .glossary li { margin: 6px 0; }
+    .dock {
+      position: fixed;
+      z-index: 4;
+      top: 50%;
+      right: 12px;
+      transform: translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 164px;
+      padding: 14px 12px;
+      border-radius: 14px;
+      background: #1c2430;
+      color: #f6f3ee;
+      box-shadow: 0 10px 28px rgba(28, 36, 48, 0.22);
+    }
+    .dock label { display: block; }
+    .dock select { display: block; width: 100%; margin: 6px 0 0; }
+    .dock .action {
+      width: 100%;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 8px;
+      background: #f6f3ee;
+      color: #1c2430;
+      font: inherit;
+      cursor: pointer;
+    }
+    .dock .action.quiet {
+      background: transparent;
+      color: #f6f3ee;
+      border: 1px solid #8ea0aa;
+    }
+    .dock .hint { margin: 0; color: #c5d0d6; font-size: 12px; }
+    @media (max-width: 760px) {
+      main { margin: 0; padding: 18px 16px 40px; }
+      #lightbox { padding: 52px 12px 12px; }
+      #lightbox-close { top: 6px; right: 8px; }
+      .dock {
+        position: sticky;
+        top: 8px;
+        right: auto;
+        transform: none;
+        width: auto;
+        margin: 8px 16px 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Couchbase capture</h1>
+      <p id="subtitle">Loading charts.json</p>
+    </div>
+  </header>
+  <aside class="dock">
+    <label><button type="button" class="term" data-tip="How wide each point on the time charts is. One second shows more detail. Five and ten seconds smooth a long capture.">Time bucket</button>
+      <select id="bucket">
+        <option value="1">1 second</option>
+        <option value="5">5 seconds</option>
+        <option value="10">10 seconds</option>
+      </select>
+    </label>
+    <label><button type="button" class="term" data-tip="Switches the numeric axis on every chart that has one, including the horizontal p99 bars. Linear makes a slow spike look tall. Log fits ordinary calls and slow calls on one axis. Zero counts are left blank on a log axis. The client IP pie has no numeric axis.">Y axis</button>
+      <select id="scale">
+        <option value="value">Linear</option>
+        <option value="log">Log</option>
+      </select>
+    </label>
+    <button type="button" class="action" id="reset-zoom">Reset chart zoom</button>
+    <button type="button" class="action quiet" id="remove-stake">Remove stake</button>
+    <p class="hint">Double-click a time chart to drop a stake. Each new stake keeps the next color.</p>
+  </aside>
+  <div id="lightbox" hidden>
+    <button type="button" id="lightbox-close" aria-label="Close">×</button>
+    <div id="lightbox-stage"></div>
+  </div>
+  <main>
+    <p id="status"></p>
+    <section class="tiles" id="tiles"></section>
+    <div class="grid">
+      <section class="card">
+        <h2>How long calls took</h2>
+        <p class="note">The horizontal axis is <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">response time</button>, split into <button type="button" class="term" data-tip="A slice of response time, such as 30–40 ms. A call that took 33 ms is counted in 30–40. The last band is 1000 ms or slower.">latency bands</button> in milliseconds. Left is fast. Right is slow. The vertical axis is how many <button type="button" class="term" data-tip="A request whose reply is also in this capture. They are paired by TCP connection and the Couchbase opaque id.">matched calls</button> finished in that band. A taller bar means more calls landed there.</p>
+        <div id="spread" class="chart"></div>
+      </section>
+      <section class="card">
+        <h2>Calls by opcode and response time</h2>
+        <p class="note">Each color is one <button type="button" class="term" data-tip="The kind of Couchbase operation, such as Get or Set.">opcode</button>. Bar height is how many of that kind ran in the <button type="button" class="term" data-tip="How wide each point on the time charts is. One second shows more detail. Five and ten seconds smooth a long capture.">time bucket</button>. The lines are <button type="button" class="term" data-tip="The middle matched call. Half of the calls in that bucket were faster, and half were slower.">median</button> and <button type="button" class="term" data-tip="99 percent of matched calls in that bucket were this fast or faster. This is the slow end.">p99</button> response time.</p>
+        <div id="mix" class="chart"></div>
+      </section>
+      <section class="card">
+        <h2>Round trip</h2>
+        <p class="note"><button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">Response time</button> of <button type="button" class="term" data-tip="A request whose reply is also in this capture. They are paired by TCP connection and the Couchbase opaque id.">matched calls</button>. <button type="button" class="term" data-tip="The middle call. Half were faster, half were slower.">Median</button> is typical. <button type="button" class="term" data-tip="90 percent of matched calls were this fast or faster.">p90</button>, <button type="button" class="term" data-tip="95 percent of matched calls were this fast or faster.">p95</button>, and <button type="button" class="term" data-tip="99 percent of matched calls were this fast or faster. This is the slow end.">p99</button> show the slow tail.</p>
+        <div id="rtt" class="chart"></div>
+      </section>
+      <section class="card">
+        <h2>Median, p99, TCP loss, and retries</h2>
+        <p class="note">The left axis is milliseconds. <button type="button" class="term" data-tip="The middle call. Half were faster, half were slower.">Median</button> and <button type="button" class="term" data-tip="99 percent of matched calls in that bucket were this fast or faster. This is the slow end.">p99</button> are solid. The right axis counts packets. <button type="button" class="term" data-tip="The capture shows a hole in the TCP byte stream. A later packet arrived, and the bytes before it are not in the file.">TCP loss</button> and <button type="button" class="term" data-tip="The sender transmitted the same TCP data again.">retries</button> are dashed.</p>
+        <div id="tail" class="chart"></div>
+      </section>
+      <section class="card">
+        <h2>Latency range</h2>
+        <p class="note">The thick part of each candle runs from the <button type="button" class="term" data-tip="The middle call in that bucket. Half were faster, half were slower.">median</button> to <button type="button" class="term" data-tip="90 percent of matched calls in that bucket were this fast or faster.">p90</button>. The thin line runs from the fastest call to the slowest.</p>
+        <div id="range" class="chart"></div>
+      </section>
+      <section class="card">
+        <h2><button type="button" class="term" data-tip="A request is in the file and its reply is not. The recording may have stopped first, or the reply packet was never captured.">Lost responses</button>, retries, and TCP loss</h2>
+        <p class="note">Bars on the left are Couchbase operations. <button type="button" class="term" data-tip="The capture shows a hole in the TCP byte stream. A later packet arrived, and the bytes before it are not in the file.">TCP loss</button> and <button type="button" class="term" data-tip="The sender transmitted the same TCP data again.">retries</button> use the right axis.</p>
+        <div id="issues" class="chart"></div>
+      </section>
+      <section class="card">
+        <h2>Total body length</h2>
+        <p class="note">The horizontal axis is the same seconds as the other time charts. The vertical axis is bytes. Each bar is the largest <button type="button" class="term" data-tip="Bytes of extras, key, and value in one Couchbase packet. Wireshark labels this Total Body Length.">total body length</button> in that second. Into Couchbase is the request. Out of Couchbase is the reply. A high bar means a lot of document data moved in or out during that second. A 1 Gbit NIC can carry about 125 MB/s. A 10 Gbit NIC can carry about 1,250 MB/s. The crosshair and stakes match the other time charts.</p>
+        <div id="body" class="chart"></div>
+      </section>
+    </div>
+    <div class="grid two" style="margin-top: 14px;">
+      <section class="card">
+        <div class="tabs" id="ip-tabs">
+          <button type="button" class="tab on" data-ip-tab="ip">Client IP</button>
+          <button type="button" class="tab" data-ip-tab="port">IP : port</button>
+        </div>
+        <h2 id="ip-title">Requests by client IP</h2>
+        <p class="note" id="ip-note"></p>
+        <div id="ips" class="chart"></div>
+      </section>
+      <section class="card">
+        <h2>p99 by opcode</h2>
+        <p class="note">99th percentile of calls that got a response. Request count is in the tooltip.</p>
+        <div id="opcodes" class="chart"></div>
+      </section>
+    </div>
+    <div class="tables">
+      <section class="card">
+        <h2>Ten most requested document ids</h2>
+        <div id="top-asked"></div>
+      </section>
+      <section class="card">
+        <h2>Ten slowest document ids</h2>
+        <p class="note">Each row is one matched call. <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">Time ms</button> is how long that call took. <button type="button" class="term" data-tip="Seconds from the start of the capture, when the request was sent. Set Stake marks this moment on the time charts.">Seconds</button> is when it was sent. <button type="button" class="term" data-tip="The larger of the request and reply total body lengths for this call, in bytes. Extras, key, and value.">Body bytes</button> is how big that call was. Set Stake draws that moment. Clicking it again does not add another line.</p>
+        <div id="top-slow"></div>
+      </section>
+    </div>
+    <section class="card glossary">
+      <h2>What the words mean</h2>
+      <dl>
+        <dt>Matched call</dt>
+        <dd>A request and its reply are both in this capture. They are paired by TCP connection and the Couchbase opaque id, which is the client’s number for that operation.</dd>
+        <dt>Lost response</dt>
+        <dd>The request is in the file and the reply is not. That happens when the recording stops while the call is still open, or when the reply packet was never captured.</dd>
+        <dt>Response without request</dt>
+        <dd>The reply is in the file and the request is not. The request was usually sent before the recording started.</dd>
+        <dt>Response time</dt>
+        <dd>Milliseconds from the request packet to the matching reply. Only matched calls have one.</dd>
+        <dt>Latency band</dt>
+        <dd>A slice of response time, such as 30–40 ms. The histogram counts how many matched calls finished in each slice.</dd>
+        <dt>Median, p90, p95, p99</dt>
+        <dd>The median is the middle call. p90 means 90 percent of matched calls were that fast or faster. p99 is the slow end: only 1 percent were slower.</dd>
+        <dt>Opcode</dt>
+        <dd>The kind of Couchbase operation, such as Get or Set. The opcode table at the bottom lists the hex code and what each command in this capture does.</dd>
+        <dt>Document id</dt>
+        <dd>The Couchbase key the operation named.</dd>
+        <dt>Total body length</dt>
+        <dd>Bytes of extras, key, and value in one Couchbase packet. Into Couchbase is the request. Out of Couchbase is the reply. 1 MB is 1,048,576 bytes.</dd>
+        <dt>TCP loss</dt>
+        <dd>A hole in the recorded TCP byte stream. A later packet arrived, and the bytes before it are missing from the file.</dd>
+        <dt>Retry</dt>
+        <dd>The sender transmitted the same TCP data again.</dd>
+      </dl>
+      <h2>What each chart is for</h2>
+      <ol>
+        <li>How long calls took shows whether slowness is a few calls or the usual case. A tall bar on the right is a slow tail.</li>
+        <li>Calls by opcode and response time lines up a burst of one operation, such as Get, with the median and p99 in that same moment.</li>
+        <li>Round trip follows the typical call and the slow tail across the capture. The crosshair is the same moment on every time chart.</li>
+        <li>Latency range shows the spread in each bucket. The thick part is median to p90. The thin line is the fastest call to the slowest.</li>
+        <li>Lost responses, retries, and TCP loss shows missing Couchbase replies next to holes and resent TCP data. A lost response beside a TCP hole often means the packet was not recorded.</li>
+        <li>Requests by client IP is which machine sent the operations. p99 by opcode is which kind of operation has the slow tail.</li>
+        <li>Total body length shows the largest request and the largest reply in each second. A high bar is a lot of document data moving in or out. A 1 Gbit NIC carries about 125 MB/s, and a 10 Gbit NIC about 1,250 MB/s.</li>
+        <li>The tables are the busiest document ids, and the ten slowest matched calls. Set Stake on a slow call marks that second on the time charts, including the body-length chart.</li>
+      </ol>
+      <h2>Opcodes in this capture</h2>
+      <p class="note">The hex code and what each command does. The chart popup shows the command name and the count.</p>
+      <div id="opcodes-seen"></div>
+    </section>
+    <section class="card glossary" id="next-steps">
+      <h2>Next questions / steps</h2>
+      <ol id="next-list"></ol>
+    </section>
+  </main>
+  <script>
+    const palette = ["#c45c26", "#24576e", "#1c2430", "#6e8b74", "#d4a017", "#8c4a6f", "#3d6b8c", "#a35b3a"];
+    const stakeColors = ["#1a8cff", "#ff8a00", "#22a06b", "#c45c26", "#7a5cff", "#d4a017", "#e23b6a", "#14919b"];
+    const charts = {};
+    const timeChartIds = ["mix", "rtt", "tail", "range", "issues", "body"];
+    const STAKE_SERIES = "__stake";
+    let ipTab = "ip";
+    let data = null;
+    let stakes = [];
+    let lightboxHome = null;
+
+    function scale() {
+      return document.getElementById("scale").value;
+    }
+
+    function yValue(value) {
+      if (value == null) return null;
+      if (scale() === "log" && value <= 0) return null;
+      return value;
+    }
+
+    function yType() {
+      return scale() === "log" ? "log" : "value";
+    }
+
+    function labels(rows) {
+      return rows.map((row) => row.t + "s");
+    }
+
+    function currentRows() {
+      return (data && data.buckets && data.buckets[document.getElementById("bucket").value]) || [];
+    }
+
+    function stakeMark(rows) {
+      const marks = stakes.map((second, index) => {
+        let chosen = null;
+        rows.forEach((row) => {
+          if (!chosen || Math.abs(row.t - second) < Math.abs(chosen.t - second)) chosen = row;
+        });
+        if (!chosen) return null;
+        const color = stakeColors[index % stakeColors.length];
+        return {
+          xAxis: chosen.t + "s",
+          lineStyle: { color: color, type: "dashed", width: 1.75 },
+          label: {
+            show: true,
+            formatter: "Stake " + (index + 1),
+            position: "insideEndTop",
+            color: "#ffffff",
+            backgroundColor: color,
+            borderRadius: 3,
+            padding: [3, 6],
+            fontSize: 11,
+            fontWeight: 600
+          }
+        };
+      }).filter(Boolean);
+      if (!marks.length) return undefined;
+      return {
+        symbol: ["none", "none"],
+        silent: true,
+        animation: false,
+        data: marks
+      };
+    }
+
+    function snappedStake(second) {
+      const rows = currentRows();
+      let chosen = null;
+      rows.forEach((row) => {
+        if (!chosen || Math.abs(row.t - second) < Math.abs(chosen.t - second)) chosen = row;
+      });
+      return chosen ? chosen.t : second;
+    }
+
+    function markStakeButtons() {
+      document.querySelectorAll(".set-stake").forEach((button) => {
+        const on = stakes.some((item) => snappedStake(Number(item)) === snappedStake(Number(button.dataset.seconds)));
+        button.textContent = on ? "Staked" : "Set Stake";
+        button.disabled = on;
+      });
+    }
+
+    function addStake(second) {
+      const value = Number(second);
+      if (!Number.isFinite(value)) return false;
+      const mark = snappedStake(value);
+      if (stakes.some((item) => snappedStake(Number(item)) === mark)) {
+        markStakeButtons();
+        return false;
+      }
+      stakes.push(value);
+      applyStakes();
+      markStakeButtons();
+      return true;
+    }
+
+    function stakeCarrier(rows) {
+      return {
+        name: STAKE_SERIES,
+        type: "line",
+        data: rows.map(() => null),
+        showSymbol: false,
+        silent: true,
+        legendHoverLink: false,
+        tooltip: { show: false },
+        lineStyle: { width: 0, opacity: 0 },
+        emphasis: { disabled: true },
+        markLine: stakeMark(rows) || { data: [], silent: true },
+        z: 5
+      };
+    }
+
+    function applyStakes() {
+      const rows = currentRows();
+      const markLine = stakeMark(rows) || { data: [], silent: true };
+      timeChartIds.forEach((id) => {
+        const chart = charts[id];
+        if (!chart) return;
+        const series = chart.getOption().series || [];
+        const index = series.findIndex((item) => item.name === STAKE_SERIES);
+        if (index === -1) return;
+        chart.setOption({
+          series: series.map((item, itemIndex) => ({
+            markLine: itemIndex === index ? markLine : { data: [] }
+          }))
+        });
+      });
+    }
+
+    function pin(series, rows) {
+      const kept = series.filter((item) => item.name !== STAKE_SERIES);
+      return kept.concat([stakeCarrier(rows)]);
+    }
+
+    function axisZoom() {
+      let start = 0;
+      let end = 100;
+      const chart = charts.rtt;
+      if (chart && typeof chart.getOption === "function") {
+        const option = chart.getOption();
+        const current = option && option.dataZoom && option.dataZoom[0];
+        if (current && current.start != null) start = current.start;
+        if (current && current.end != null) end = current.end;
+      }
+      return [
+        { type: "inside", start: start, end: end },
+        { type: "slider", height: 18, bottom: 8, start: start, end: end }
+      ];
+    }
+
+    function baseGrid() {
+      return { left: 56, right: 64, top: 36, bottom: 58 };
+    }
+
+    function cross() {
+      return {
+        tooltip: {
+          trigger: "axis",
+          axisPointer: { type: "cross", label: { backgroundColor: "#1c2430" } }
+        },
+        axisPointer: { type: "cross", link: [{ xAxisIndex: "all" }] }
+      };
+    }
+
+    function drawTime() {
+      const rows = data.buckets[document.getElementById("bucket").value] || [];
+      const names = labels(rows);
+      const kind = yType();
+      charts.rtt.setOption({
+        color: palette,
+        ...cross(),
+        legend: { data: ["Median", "p90", "p95", "p99"] },
+        grid: baseGrid(),
+        dataZoom: axisZoom(),
+        xAxis: { type: "category", data: names },
+        yAxis: { type: kind, name: "ms" },
+        series: pin([
+          { name: "Median", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
+          { name: "p90", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p90)) },
+          { name: "p95", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p95)) },
+          { name: "p99", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p99)) }
+        ], rows)
+      }, true);
+      charts.tail.setOption({
+        color: ["#c45c26", "#24576e", "#1c2430", "#d4a017"],
+        ...cross(),
+        legend: { data: ["Median", "p99", "TCP loss", "Retries"] },
+        grid: baseGrid(),
+        dataZoom: axisZoom(),
+        xAxis: { type: "category", data: names },
+        yAxis: [
+          { type: kind, name: "ms" },
+          { type: kind, name: "packets", splitLine: { show: false } }
+        ],
+        series: pin([
+          { name: "Median", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
+          { name: "p99", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p99)) },
+          { name: "TCP loss", type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost)) },
+          { name: "Retries", type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.retrans)) }
+        ], rows)
+      }, true);
+      charts.range.setOption({
+        color: palette,
+        ...cross(),
+        legend: { data: ["Median to p90"] },
+        grid: baseGrid(),
+        dataZoom: axisZoom(),
+        xAxis: { type: "category", data: names },
+        yAxis: { type: kind, name: "ms" },
+        series: pin([{
+          name: "Median to p90",
+          type: "candlestick",
+          itemStyle: {
+            color: "#c45c26",
+            color0: "#24576e",
+            borderColor: "#c45c26",
+            borderColor0: "#24576e"
+          },
+          data: rows.map((row) => {
+            if (!row.rtt_n || row.rtt_min == null || row.rtt_min <= 0 && kind === "log") return "-";
+            const med = row.rtt_median;
+            const p90 = row.rtt_p90 == null ? med : row.rtt_p90;
+            return [med, p90, row.rtt_min, row.rtt_max];
+          })
+        }], rows)
+      }, true);
+      const opcodeNames = (data.by_opcode || []).map((row) => row.name || row.opcode);
+      charts.mix.setOption({
+        color: palette,
+        ...cross(),
+        legend: { type: "scroll", data: opcodeNames.concat(["Median", "p99"]) },
+        tooltip: {
+          trigger: "axis",
+          axisPointer: { type: "cross", label: { backgroundColor: "#1c2430" } },
+          formatter: (items) => {
+            const lines = [items[0].axisValueLabel || items[0].axisValue];
+            items.forEach((item) => {
+              if (item.seriesName === STAKE_SERIES) return;
+              if (item.value == null || item.value === "-" || item.value === 0) return;
+              lines.push(item.marker + item.seriesName + ": " + item.value);
+            });
+            return lines.join("<br/>");
+          }
+        },
+        grid: baseGrid(),
+        dataZoom: axisZoom(),
+        xAxis: { type: "category", data: names },
+        yAxis: [
+          { type: kind, name: "calls" },
+          { type: kind, name: "ms", splitLine: { show: false } }
+        ],
+        series: pin(opcodeNames.map((name) => ({
+          name: name,
+          type: "bar",
+          stack: "opcode",
+          emphasis: { focus: "series" },
+          data: rows.map((row) => yValue((row.opcodes && row.opcodes[name]) || 0))
+        })).concat([
+          { name: "Median", type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
+          { name: "p99", type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { width: 2 }, data: rows.map((row) => yValue(row.rtt_p99)) }
+        ]), rows)
+      }, true);
+      charts.issues.setOption({
+        color: palette,
+        ...cross(),
+        legend: { data: ["Matched", "Lost response", "Response without request", "TCP loss", "Retries"] },
+        grid: baseGrid(),
+        dataZoom: axisZoom(),
+        xAxis: { type: "category", data: names },
+        yAxis: [
+          { type: kind, name: "ops" },
+          { type: kind, name: "packets", splitLine: { show: false } }
+        ],
+        series: pin([
+          { name: "Matched", type: "bar", stack: "ops", data: rows.map((row) => yValue(row.matched)) },
+          { name: "Lost response", type: "bar", stack: "ops", data: rows.map((row) => yValue(row.unanswered)) },
+          { name: "Response without request", type: "bar", stack: "ops", data: rows.map((row) => yValue(row.resp_only)) },
+          { name: "TCP loss", type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.lost)) },
+          { name: "Retries", type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.retrans)) }
+        ], rows)
+      }, true);
+      charts.body.setOption({
+        color: palette,
+        ...cross(),
+        legend: { data: ["Into Couchbase", "Out of Couchbase"] },
+        tooltip: {
+          trigger: "axis",
+          axisPointer: { type: "cross", label: { backgroundColor: "#1c2430" } },
+          formatter: (items) => {
+            const row = rows[items[0].dataIndex] || {};
+            const lines = [items[0].axisValueLabel || items[0].axisValue];
+            lines.push("Into Couchbase: " + formatBytes(row.body_in_max) + " largest request");
+            lines.push("Out of Couchbase: " + formatBytes(row.body_out_max) + " largest reply");
+            if (row.body_large) lines.push(row.body_large + " messages at 1 MB or more");
+            return lines.join("<br/>");
+          }
+        },
+        grid: baseGrid(),
+        dataZoom: axisZoom(),
+        xAxis: { type: "category", data: names },
+        yAxis: { type: kind, name: "bytes" },
+        series: pin([
+          { name: "Into Couchbase", type: "bar", data: rows.map((row) => yValue(row.body_in_max)) },
+          { name: "Out of Couchbase", type: "bar", data: rows.map((row) => yValue(row.body_out_max)) }
+        ], rows)
+      }, true);
+      if (lightboxHome) requestAnimationFrame(() => Object.values(charts).forEach((chart) => chart.resize()));
+    }
+
+    function formatBytes(value) {
+      const bytes = Number(value);
+      if (!Number.isFinite(bytes)) return "—";
+      const text = bytes.toLocaleString() + " bytes";
+      if (bytes >= 1048576) return text + " (" + (bytes / 1048576).toFixed(2) + " MB)";
+      if (bytes >= 1024) return text + " (" + (bytes / 1024).toFixed(1) + " KB)";
+      return text;
+    }
+
+    function drawClients() {
+      const ips = data.by_requester_ip || [];
+      const connections = data.by_connection || [];
+      const title = document.getElementById("ip-title");
+      const note = document.getElementById("ip-note");
+      let rows;
+      if (ipTab === "port") {
+        title.textContent = "Requests by IP and port";
+        note.textContent = "Each slice is one client connection, shown as IP and source port.";
+        rows = connections.map((row) => ({
+          name: row.ip + ":" + row.port,
+          value: row.requests,
+          unanswered: row.unanswered,
+          detail: row.ip + ":" + row.port + ", stream " + row.stream
+        }));
+      } else {
+        title.textContent = "Requests by client IP";
+        const only = ips.length === 1 ? ips[0] : null;
+        note.textContent = only
+          ? "Every request came from " + only.ip + " (" + only.requests + " requests, " + only.unanswered + " lost responses). IP : port splits that client by source port."
+          : "Each slice is a client IP that sent Couchbase requests.";
+        rows = ips.map((row) => ({
+          name: row.ip,
+          value: row.requests,
+          unanswered: row.unanswered,
+          detail: row.ip
+        }));
+      }
+      const top = rows.slice(0, 12);
+      const rest = rows.slice(12);
+      if (rest.length) {
+        top.push({
+          name: "other",
+          value: rest.reduce((sum, row) => sum + row.value, 0),
+          unanswered: rest.reduce((sum, row) => sum + (row.unanswered || 0), 0),
+          detail: rest.length + " more"
+        });
+      }
+      charts.ips.setOption({
+        color: palette,
+        tooltip: {
+          trigger: "item",
+          formatter: (item) => {
+            const row = item.data || {};
+            return (row.detail || item.name) + "<br/>" + item.value + " requests (" + item.percent + "%)<br/>" + (row.unanswered || 0) + " lost responses";
+          }
+        },
+        series: [{
+          type: "pie",
+          radius: ["38%", "68%"],
+          data: top,
+          label: { formatter: "{b}\n{c}", fontSize: 11 },
+          labelLayout: { hideOverlap: true }
+        }]
+      }, true);
+    }
+
+    function drawNext() {
+      const items = data.next_steps || [];
+      const list = document.getElementById("next-list");
+      if (!list) return;
+      if (!items.length) {
+        list.innerHTML = "<li>No further question stood out from these counts.</li>";
+        return;
+      }
+      list.innerHTML = items.map((item) => "<li><strong>" + escapeHtml(item.title) + ".</strong> " + escapeHtml(item.text) + "</li>").join("");
+    }
+
+    function escapeHtml(value) {
+      return String(value == null ? "" : value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    function cellText(value) {
+      return value == null || value === "" ? "—" : value;
+    }
+
+    function table(id, headers, rows) {
+      const head = "<tr>" + headers.map((cell) => "<th>" + cell + "</th>").join("") + "</tr>";
+      const body = rows.map((row) => "<tr>" + row.map((cell) => "<td class=\"key\">" + cell + "</td>").join("") + "</tr>").join("");
+      document.getElementById(id).innerHTML = rows.length ? "<table>" + head + body + "</table>" : "<p class=\"note\">None.</p>";
+    }
+
+    function term(text, tip) {
+      return '<button type="button" class="term" data-tip="' + tip.replaceAll('"', "&quot;") + '">' + text + "</button>";
+    }
+
+    function tile(label, value, hint, slow) {
+      return '<div class="tile' + (slow ? " slow" : "") + '"><div class="k">' + label + '</div><div class="v">' + value + '</div><div class="h">' + (hint || "") + "</div></div>";
+    }
+
+    function drawTiles() {
+      const overall = data.rtt_overall_ms || {};
+      const slow = data.slow_ms || {};
+      const matched = slow.matched || overall.rtt_n || 0;
+      const requests = (data.by_requester_ip || []).reduce((sum, row) => sum + row.requests, 0);
+      const lost = (data.by_requester_ip || []).reduce((sum, row) => sum + row.unanswered, 0);
+      const share = (count) => matched ? Math.round(1000 * count / matched) / 10 + "% of matched" : "";
+      const msText = (value) => value == null ? "—" : value + " ms";
+      document.getElementById("tiles").innerHTML = [
+        tile(term("Median", "The middle matched call. Half were faster, half were slower."), msText(overall.rtt_median), matched + " " + term("matched calls", "Requests whose replies are also in this capture.")),
+        tile(term("p90", "90 percent of matched calls were this fast or faster."), msText(overall.rtt_p90), "90th percentile"),
+        tile(term("p95", "95 percent of matched calls were this fast or faster."), msText(overall.rtt_p95), "95th percentile"),
+        tile(term("p99", "99 percent of matched calls were this fast or faster. This is the slow end."), msText(overall.rtt_p99), "99th percentile", true),
+        tile(term("Max", "The slowest matched call in the capture."), msText(overall.rtt_max), "slowest matched call", true),
+        tile(term("≥ 100 ms", "Matched calls whose response time was 100 milliseconds or more."), slow.over_100 == null ? "—" : slow.over_100, share(slow.over_100 || 0), true),
+        tile(term("≥ 250 ms", "Matched calls whose response time was 250 milliseconds or more."), slow.over_250 == null ? "—" : slow.over_250, share(slow.over_250 || 0)),
+        tile("Requests", requests, lost + " " + term("lost responses", "Requests whose replies are not in this file."))
+      ].join("");
+    }
+
+    function drawFixed() {
+      drawClients();
+      const ops = (data.by_opcode || []).filter((row) => row.p99_ms != null);
+      charts.opcodes.setOption({
+        color: palette,
+        tooltip: {
+          trigger: "axis",
+          formatter: (items) => {
+            const item = items[0];
+            const row = ops[item.dataIndex];
+            const about = row.description ? "<br/>" + row.description : "";
+            return row.opcode + " " + row.name + about + "<br/>p99 " + row.p99_ms + " ms<br/>median " + row.median_ms + " ms<br/>" + row.requests + " requests";
+          }
+        },
+        grid: { left: 88, right: 24, top: 16, bottom: 28 },
+        xAxis: { type: yType(), name: "ms" },
+        yAxis: { type: "category", data: ops.map((row) => row.name || row.opcode), inverse: true },
+        series: [{ type: "bar", data: ops.map((row) => yValue(row.p99_ms)), itemStyle: { color: "#c45c26" } }]
+      }, true);
+      const bands = data.rtt_histogram || [];
+      charts.spread.setOption({
+        color: palette,
+        tooltip: { trigger: "axis" },
+        grid: { left: 56, right: 24, top: 16, bottom: 40 },
+        xAxis: { type: "category", data: bands.map((row) => row.label), name: "ms" },
+        yAxis: { type: yType(), name: "calls" },
+        series: [{ type: "bar", data: bands.map((row) => yValue(row.count)), itemStyle: { color: "#24576e" } }]
+      }, true);
+      table("top-asked", [term("Document id", "The Couchbase key the operation named."), "Requests", term("Lost responses", "Requests for that document whose replies are not in this file.")], (data.top_requested || []).map((row) => [row.key, row.count, row.unanswered]));
+      table("top-slow", [
+        term("Document id", "The Couchbase key the operation named."),
+        term("Time ms", "Milliseconds from the request packet to its matching reply for this call."),
+        term("Seconds", "Seconds from the start of the capture, when the request was sent. Set Stake marks this moment."),
+        term("Body bytes", "The larger of the request and reply total body lengths for this call. Extras, key, and value."),
+        "Stake"
+      ], (data.top_slowest || []).map((row) => [
+        row.key,
+        cellText(row.time_ms),
+        cellText(row.seconds),
+        cellText(row.body_bytes),
+        row.seconds == null ? "" : '<button type="button" class="set-stake" data-seconds="' + row.seconds + '">Set Stake</button>'
+      ]));
+      markStakeButtons();
+      drawNext();
+      const overall = data.rtt_overall_ms || {};
+      const bits = [];
+      if (data.capture_seconds != null) bits.push(data.capture_seconds + " seconds");
+      if (overall.rtt_median != null) bits.push("median " + overall.rtt_median + " ms");
+      if (overall.rtt_p90 != null) bits.push("p90 " + overall.rtt_p90 + " ms");
+      if (overall.rtt_p95 != null) bits.push("p95 " + overall.rtt_p95 + " ms");
+      if (overall.rtt_p99 != null) bits.push("p99 " + overall.rtt_p99 + " ms");
+      document.getElementById("subtitle").textContent = bits.join(" · ") || "No matched calls";
+      table(
+        "opcodes-seen",
+        ["Opcode", "Command", "What it does", "Requests", "Lost responses"],
+        (data.by_opcode || []).map((row) => [row.opcode, row.name, row.description || "", row.requests, row.unanswered])
+      );
+    }
+
+    function openLightbox(wrap) {
+      if (lightboxHome) closeLightbox();
+      const card = wrap.closest(".card");
+      const title = card ? card.querySelector("h2") : null;
+      lightboxHome = { wrap: wrap, parent: wrap.parentNode, next: wrap.nextSibling };
+      const stage = document.getElementById("lightbox-stage");
+      const heading = document.createElement("h2");
+      heading.textContent = title ? title.textContent : "Chart";
+      stage.insertBefore(heading, stage.firstChild);
+      stage.append(wrap);
+      document.getElementById("lightbox").hidden = false;
+      requestAnimationFrame(() => Object.values(charts).forEach((chart) => chart.resize()));
+    }
+
+    function closeLightbox() {
+      if (!lightboxHome) return;
+      const stage = document.getElementById("lightbox-stage");
+      const wrap = stage.querySelector(".chart-wrap");
+      const heading = stage.querySelector("h2");
+      if (heading) heading.remove();
+      lightboxHome.parent.insertBefore(wrap, lightboxHome.next);
+      document.getElementById("lightbox").hidden = true;
+      lightboxHome = null;
+      requestAnimationFrame(() => Object.values(charts).forEach((chart) => chart.resize()));
+    }
+
+    function boot() {
+      ["spread", "mix", "rtt", "tail", "range", "issues", "body", "ips", "opcodes"].forEach((id) => {
+        charts[id] = echarts.init(document.getElementById(id));
+      });
+      echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body]);
+      document.querySelectorAll("[data-ip-tab]").forEach((button) => {
+        button.addEventListener("click", () => {
+          ipTab = button.dataset.ipTab;
+          document.querySelectorAll("[data-ip-tab]").forEach((item) => {
+            item.classList.toggle("on", item === button);
+          });
+          drawClients();
+        });
+      });
+      window.addEventListener("resize", () => Object.values(charts).forEach((chart) => chart.resize()));
+      document.getElementById("bucket").addEventListener("change", drawTime);
+      document.getElementById("scale").addEventListener("change", () => {
+        drawFixed();
+        drawTime();
+      });
+      document.getElementById("reset-zoom").addEventListener("click", () => {
+        timeChartIds.forEach((id) => {
+          charts[id].dispatchAction({ type: "dataZoom", start: 0, end: 100 });
+        });
+      });
+      document.getElementById("remove-stake").addEventListener("click", () => {
+        stakes = [];
+        applyStakes();
+        markStakeButtons();
+      });
+      document.getElementById("top-slow").addEventListener("click", (event) => {
+        const button = event.target.closest(".set-stake");
+        if (!button || button.disabled) return;
+        addStake(button.dataset.seconds);
+      });
+      timeChartIds.forEach((id) => {
+        charts[id].getZr().on("dblclick", (event) => {
+          const point = [event.offsetX, event.offsetY];
+          const chart = charts[id];
+          if (!chart.containPixel("grid", point)) return;
+          const raw = chart.convertFromPixel({ gridIndex: 0 }, point);
+          const index = Array.isArray(raw) ? raw[0] : raw;
+          const rows = currentRows();
+          let second = null;
+          if (typeof index === "number" && rows[Math.round(index)]) second = rows[Math.round(index)].t;
+          else {
+            const found = rows.find((row) => row.t + "s" === String(index));
+            if (found) second = found.t;
+          }
+          if (second == null) return;
+          addStake(second);
+        });
+      });
+      const expandIcon = '<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
+      document.querySelectorAll(".chart").forEach((chartEl) => {
+        const wrap = document.createElement("div");
+        wrap.className = "chart-wrap";
+        chartEl.parentNode.insertBefore(wrap, chartEl);
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "expand";
+        button.setAttribute("aria-label", "Expand chart");
+        button.innerHTML = expandIcon;
+        button.addEventListener("click", () => {
+          if (lightboxHome && lightboxHome.wrap === wrap) closeLightbox();
+          else openLightbox(wrap);
+        });
+        wrap.append(chartEl, button);
+      });
+      document.getElementById("lightbox-close").addEventListener("click", closeLightbox);
+      document.getElementById("lightbox").addEventListener("click", (event) => {
+        if (event.target.id === "lightbox") closeLightbox();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") closeLightbox();
+      });
+      const seconds = data.capture_seconds || 0;
+      document.getElementById("bucket").value = seconds > 180 ? "10" : "1";
+      drawTiles();
+      drawFixed();
+      drawTime();
+    }
+
+    fetch("charts.json", { cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error("charts.json returned " + response.status);
+        return response.json();
+      })
+      .then((payload) => {
+        data = payload;
+        boot();
+      })
+      .catch((error) => {
+        const message = error && error.message ? error.message : String(error);
+        document.getElementById("status").textContent = message.indexOf("charts.json") === -1
+          ? message
+          : "Could not read charts.json beside this page. From the report folder run: python3 -m http.server";
+      });
+  </script>
+</body>
+</html>

@@ -35,42 +35,330 @@ DEFAULT_MODEL = "qwen3.8:27b-mlx"
 DEFAULT_TIMEOUT = 600
 TABLE_TOKEN = "{{UNANSWERED_TABLE}}"
 
-# Binary-protocol opcodes. Names the dissector confirms override this map.
+# Wireshark client opcode labels from packet-couchbase.c (client_opcode_vals).
+# The field reference lists couchbase.opcode but not these values.
 OPCODES = {
-    0x00: "Get",
-    0x01: "Set",
-    0x02: "Add",
-    0x03: "Replace",
-    0x04: "Delete",
-    0x05: "Increment",
-    0x06: "Decrement",
-    0x07: "Quit",
-    0x08: "Flush",
-    0x09: "GetQ",
-    0x0A: "No-op",
-    0x0B: "Version",
-    0x0C: "GetK",
-    0x0D: "GetKQ",
-    0x0E: "Append",
-    0x0F: "Prepend",
-    0x10: "Stat",
-    0x11: "SetQ",
-    0x12: "AddQ",
-    0x13: "ReplaceQ",
-    0x14: "DeleteQ",
-    0x15: "IncrementQ",
-    0x16: "DecrementQ",
-    0x17: "QuitQ",
-    0x18: "FlushQ",
-    0x19: "AppendQ",
-    0x1A: "PrependQ",
-    0x1B: "Verbosity",
-    0x1C: "Touch",
-    0x1D: "Get-and-Touch",
-    0x1E: "Get-and-TouchQ",
-    0x94: "Get Locked",
-    0x95: "Unlock",
+    0x00: 'Get',
+    0x01: 'Set',
+    0x02: 'Add',
+    0x03: 'Replace',
+    0x04: 'Delete',
+    0x05: 'Increment',
+    0x06: 'Decrement',
+    0x07: 'Quit',
+    0x08: 'Flush',
+    0x09: 'Get Quietly',
+    0x0A: 'NOOP',
+    0x0B: 'Version',
+    0x0C: 'Get Key',
+    0x0D: 'Get Key Quietly',
+    0x0E: 'Append',
+    0x0F: 'Prepend',
+    0x10: 'Statistics',
+    0x11: 'Set Quietly',
+    0x12: 'Add Quietly',
+    0x13: 'Replace Quietly',
+    0x14: 'Delete Quietly',
+    0x15: 'Increment Quietly',
+    0x16: 'Decrement Quietly',
+    0x17: 'Quit Quietly',
+    0x18: 'Flush Quietly',
+    0x19: 'Append Quietly',
+    0x1A: 'Prepend Quietly',
+    0x1B: 'Verbosity',
+    0x1C: 'Touch',
+    0x1D: 'Get and Touch',
+    0x1E: 'Gat and Touch Quietly',
+    0x1F: 'Hello',
+    0x20: 'List SASL Mechanisms',
+    0x21: 'SASL Authenticate',
+    0x22: 'SASL Step',
+    0x23: 'IOCTL Get',
+    0x24: 'IOCTL Set',
+    0x25: 'Config Validate',
+    0x26: 'Config Reload',
+    0x27: 'Audit Put',
+    0x28: 'Audit Config Reload',
+    0x29: 'Shutdown',
+    0x2D: 'Set Active Encryption Keys',
+    0x2E: 'Prune Encryption Keys',
+    0x30: 'Range Get',
+    0x31: 'Range Set',
+    0x32: 'Range Set Quietly',
+    0x33: 'Range Append',
+    0x34: 'Range Append Quietly',
+    0x35: 'Range Prepend',
+    0x36: 'Range Prepend Quietly',
+    0x37: 'Range Delete',
+    0x38: 'Range Delete Quietly',
+    0x39: 'Range Increment',
+    0x3A: 'Range Increment Quietly',
+    0x3B: 'Range Decrement',
+    0x3C: 'Range Decrement Quietly',
+    0x3D: 'Set VBucket',
+    0x3E: 'Get VBucket',
+    0x3F: 'Delete VBucket',
+    0x40: 'TAP Connect',
+    0x41: 'TAP Mutation',
+    0x42: 'TAP Delete',
+    0x43: 'TAP Flush',
+    0x44: 'TAP Opaque',
+    0x45: 'TAP VBucket Set',
+    0x46: 'TAP Checkpoint Start',
+    0x47: 'TAP Checkpoint End',
+    0x48: 'Get All VBucket Seqnos',
+    0x49: 'GetEx',
+    0x4A: 'GetEx Replica',
+    0x50: 'DCP Open Connection',
+    0x51: 'DCP Add Stream',
+    0x52: 'DCP Close Stream',
+    0x53: 'DCP Stream Request',
+    0x54: 'DCP Get Failover Log',
+    0x55: 'DCP Stream End',
+    0x56: 'DCP Snapshot Marker',
+    0x57: 'DCP (Key) Mutation',
+    0x58: 'DCP (Key) Deletion',
+    0x59: 'DCP (Key) Expiration',
+    0x5A: 'DCP Flush',
+    0x5B: 'DCP Set VBucket State',
+    0x5C: 'DCP NOOP',
+    0x5D: 'DCP Buffer Acknowledgement',
+    0x5E: 'DCP Control',
+    0x5F: 'DCP System Event',
+    0x60: 'DCP Prepare',
+    0x61: 'DCP Seqno Acknowledgement',
+    0x62: 'DCP Commit',
+    0x63: 'DCP Abort',
+    0x64: 'DCP Seqno Advanced',
+    0x65: 'DCP Out of Sequence Order Snapshot',
+    0x66: 'DCP Cache Transfer',
+    0x67: 'DCP Cache Transfer End',
+    0x70: 'Get Fusion Storage Snapshot',
+    0x71: 'Release Fusion Storage Snapshot',
+    0x72: 'Mount Fusion VBucket',
+    0x73: 'Unmount Fusion VBucket',
+    0x74: 'Sync Fusion Logstore',
+    0x75: 'Start Fusion Uploader',
+    0x76: 'Stop Fusion Uploader',
+    0x77: 'Delete Fusion Namespace',
+    0x78: 'Get Fusion Namespaces',
+    0x80: 'Stop Persistence',
+    0x81: 'Start Persistence',
+    0x82: 'Set Parameter',
+    0x83: 'Get Replica',
+    0x85: 'Create Bucket',
+    0x86: 'Delete Bucket',
+    0x87: 'List Buckets',
+    0x88: 'Expand Bucket',
+    0x89: 'Select Bucket',
+    0x90: 'Start Replication',
+    0x91: 'Observe Sequence Number',
+    0x92: 'Observe',
+    0x93: 'Evict Key',
+    0x94: 'Get Locked',
+    0x95: 'Unlock Key',
+    0x96: 'Sync',
+    0x97: 'Last Closed Checkpoint',
+    0x98: 'Restore File',
+    0x99: 'Restore Abort',
+    0x9A: 'Restore Complete',
+    0x9B: 'Online Update Start',
+    0x9C: 'Online Update Complete',
+    0x9D: 'Online Update Revert',
+    0x9E: 'Deregister TAP Client',
+    0x9F: 'Reset Replication Chain',
+    0xA0: 'Get Meta',
+    0xA1: 'Get Meta Quietly',
+    0xA2: 'Set with Meta',
+    0xA3: 'Set with Meta Quietly',
+    0xA4: 'Add with Meta',
+    0xA5: 'Add with Meta Quietly',
+    0xA6: 'Snapshot VBuckets States',
+    0xA7: 'VBucket Batch Count',
+    0xA8: 'Delete with Meta',
+    0xA9: 'Delete with Meta Quietly',
+    0xAA: 'Create Checkpoint',
+    0xAC: 'Notify VBucket Update',
+    0xAD: 'Enable Traffic',
+    0xAE: 'Disable Traffic',
+    0xAF: 'Ifconfig',
+    0xB0: 'Change VBucket Filter',
+    0xB1: 'Checkpoint Persistence',
+    0xB2: 'Return Meta',
+    0xB3: 'Compact Database',
+    0xB4: 'Set Cluster Config',
+    0xB5: 'Get Cluster Config',
+    0xB6: 'Get Random Key',
+    0xB7: 'Seqno Persistence',
+    0xB8: 'Get Keys',
+    0xB9: "Set Collection's Manifest",
+    0xBA: "Get Collection's Manifest",
+    0xBB: 'Get Collection ID',
+    0xBC: 'Get Scope ID',
+    0xC1: 'Set Drift Counter State',
+    0xC2: 'Get Adjusted Time',
+    0xC5: 'Subdoc Get',
+    0xC6: 'Subdoc Exists',
+    0xC7: 'Subdoc Dictionary Add',
+    0xC8: 'Subdoc Dictionary Upsert',
+    0xC9: 'Subdoc Delete',
+    0xCA: 'Subdoc Replace',
+    0xCB: 'Subdoc Array Push Last',
+    0xCC: 'Subdoc Array Push First',
+    0xCD: 'Subdoc Array Insert',
+    0xCE: 'Subdoc Array Add Unique',
+    0xCF: 'Subdoc Counter',
+    0xD0: 'Subdoc Multipath Lookup',
+    0xD1: 'Subdoc Multipath Mutation',
+    0xD2: 'Subdoc Get Count',
+    0xD3: 'Subdoc Replace Body With Xattr',
+    0xDA: 'RangeScan Create',
+    0xDB: 'RangeScan Continue',
+    0xDC: 'RangeScan Cancel',
+    0xE0: 'Prepare Snapshot',
+    0xE1: 'Release Snapshot',
+    0xE2: 'Download Snapshot',
+    0xE3: 'Get File Fragment',
+    0xF0: 'Scrub',
+    0xF1: 'isasl Refresh',
+    0xF2: 'SSL Certificates Refresh',
+    0xF3: 'Internal Timer Control',
+    0xF4: 'Set Control Token',
+    0xF5: 'Get Control Token',
+    0xF6: 'Update External User Permissions',
+    0xF7: 'RBAC Refresh',
+    0xF8: 'Auth Provider',
+    0xFB: 'Drop Privilege',
+    0xFC: 'Adjust Timeofday',
+    0xFD: 'EWOULDBLOCK Control',
+    0xFE: 'Get Error Map',
 }
+
+# Plain descriptions for the commands people meet on port 11210.
+# Names stay as Wireshark prints them. The chart tooltips show these sentences.
+OPCODE_DESCRIPTIONS = {
+    0x00: "Retrieves a document.",
+    0x01: "Stores a document unconditionally.",
+    0x02: "Stores a document only if it does not exist.",
+    0x03: "Stores a document only if it already exists.",
+    0x04: "Removes a document.",
+    0x05: "Increments a numeric counter.",
+    0x06: "Decrements a numeric counter.",
+    0x07: "Closes the connection.",
+    0x08: "Flushes the bucket, when that is enabled.",
+    0x09: "Quiet Get. No response when the key does not exist.",
+    0x0A: "No-op. Keep-alive.",
+    0x0B: "Gets the server version.",
+    0x0C: "Get, and return the key in the response.",
+    0x0D: "Quiet Get, and return the key.",
+    0x0E: "Appends data to an existing document.",
+    0x0F: "Prepends data to an existing document.",
+    0x10: "Retrieves server statistics.",
+    0x11: "Quiet Set. No response on success.",
+    0x12: "Quiet Add. No response on success.",
+    0x13: "Quiet Replace. No response on success.",
+    0x14: "Quiet Delete. No response on success.",
+    0x15: "Quiet Increment. No response on success.",
+    0x16: "Quiet Decrement. No response on success.",
+    0x17: "Quiet Quit. No response on success.",
+    0x18: "Quiet Flush. No response on success.",
+    0x19: "Quiet Append. No response on success.",
+    0x1A: "Quiet Prepend. No response on success.",
+    0x1B: "Sets logging verbosity.",
+    0x1C: "Updates a document's expiration time.",
+    0x1D: "Get and Touch. Retrieves the document and updates its expiration.",
+    0x1E: "Quiet Get and Touch.",
+    0x1F: "Hello. Client capability negotiation.",
+    0x20: "Lists supported SASL authentication mechanisms.",
+    0x21: "Starts SASL authentication.",
+    0x22: "Continues SASL authentication.",
+    0x23: "IOCTL Get.",
+    0x24: "IOCTL Set.",
+    0x25: "Validates configuration.",
+    0x26: "Reloads configuration.",
+    0x27: "Writes an audit event.",
+    0x28: "Reloads audit configuration.",
+    0x29: "Shuts the server down.",
+    0x30: "Replica Get.",
+    0x31: "Replica Set.",
+    0x32: "Quiet Replica Set.",
+    0x33: "Replica Append.",
+    0x34: "Quiet Replica Append.",
+    0x35: "Replica Prepend.",
+    0x36: "Quiet Replica Prepend.",
+    0x37: "Replica Delete.",
+    0x38: "Quiet Replica Delete.",
+    0x39: "Replica Increment.",
+    0x3A: "Quiet Replica Increment.",
+    0x3B: "Replica Decrement.",
+    0x3C: "Quiet Replica Decrement.",
+    0x3D: "Sets a vBucket state.",
+    0x3E: "Reads a vBucket state.",
+    0x3F: "Deletes a vBucket.",
+    0x40: "TAP Connect. Legacy replication.",
+    0x41: "TAP Mutation. Legacy replication.",
+    0x42: "TAP Delete. Legacy replication.",
+    0x43: "TAP Flush. Legacy replication.",
+    0x44: "TAP Opaque. Legacy replication.",
+    0x45: "TAP vBucket set. Legacy replication.",
+    0x46: "TAP checkpoint start. Legacy replication.",
+    0x47: "TAP checkpoint end. Legacy replication.",
+    0x50: "DCP Open. Starts a streaming connection.",
+    0x51: "DCP add stream.",
+    0x52: "DCP close stream.",
+    0x53: "DCP stream request.",
+    0x54: "DCP get failover log.",
+    0x55: "DCP stream end.",
+    0x56: "DCP snapshot marker.",
+    0x57: "DCP mutation. A document change on the stream.",
+    0x58: "DCP deletion.",
+    0x59: "DCP expiration.",
+    0x5A: "DCP flush.",
+    0x5B: "DCP set vBucket state.",
+    0x5C: "DCP noop.",
+    0x5D: "DCP buffer acknowledgement.",
+    0x5E: "DCP control.",
+    0x83: "Requests a document from a replica.",
+    0x89: "Selects the bucket for this connection.",
+    0x91: "Checks durability by sequence number.",
+    0x92: "Legacy durability check.",
+    0x94: "Fetches a document and applies a pessimistic lock.",
+    0x95: "Unlocks a previously locked document.",
+    0xA0: "Get with meta. Used by cross-datacenter replication.",
+    0xA1: "Quiet Get with meta.",
+    0xA2: "Set with meta. Used by cross-datacenter replication.",
+    0xA3: "Quiet Set with meta.",
+    0xA4: "Add with meta.",
+    0xA5: "Quiet Add with meta.",
+    0xA8: "Delete with meta.",
+    0xA9: "Quiet Delete with meta.",
+    0xB4: "Pushes an updated cluster map.",
+    0xB5: "Pulls the active cluster map.",
+    0xC5: "Sub-document Get. Reads one JSON path.",
+    0xC6: "Sub-document Exists. Checks one JSON path.",
+    0xC7: "Sub-document dictionary add.",
+    0xC8: "Sub-document dictionary upsert.",
+    0xC9: "Sub-document delete.",
+    0xCA: "Sub-document replace.",
+    0xCB: "Sub-document array push last.",
+    0xCC: "Sub-document array push first.",
+    0xCD: "Sub-document array insert.",
+    0xCE: "Sub-document array add unique.",
+    0xCF: "Sub-document counter.",
+    0xD0: "Sub-document multi lookup. Reads several JSON paths.",
+    0xD1: "Sub-document multi mutation. Changes several JSON paths.",
+    0xD2: "Sub-document get count.",
+}
+
+
+def opcode_description(opcode: str) -> str:
+    text = str(opcode or "").strip()
+    try:
+        number = int(text, 16) if text.lower().startswith("0x") else int(text)
+    except (TypeError, ValueError):
+        return ""
+    return OPCODE_DESCRIPTIONS.get(number, "")
+
 
 STATUS = {
     0x00: "success",
@@ -140,6 +428,20 @@ def status_name(status: str) -> str:
         return STATUS.get(int(status, 16), status)
     except (TypeError, ValueError):
         return status
+
+
+# extras + key + value. 1 MB is the size where a call often slows down.
+LARGE_BODY_BYTES = 1_048_576
+
+
+def body_len(value) -> int:
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return 0
+    try:
+        return int(text, 16) if text.lower().startswith("0x") else int(float(text))
+    except ValueError:
+        return 0
 
 
 def hex_int(value, width: int) -> str:
@@ -353,6 +655,7 @@ def _message_from_item(item: dict, frame: dict, ip: dict, tcp: dict) -> dict | N
         "opaque": hex_int(first(field(item, "opaque")), 8),
         "key": key if isinstance(key, str) else str(key),
         "status": hex_int(first(status_raw), 4) if status_raw not in (None, "") else "",
+        "body": body_len(first(field(item, "total_bodylength"))),
         "magic": magic,
     }
 
@@ -372,12 +675,14 @@ _FIELD_COLUMNS = (
     "couchbase.opaque",
     "couchbase.key.logical_key",
     "couchbase.status",
+    "couchbase.total_bodylength",
     "tcp.analysis.lost_segment",
     "tcp.analysis.retransmission",
     "tcp.analysis.ack_lost_segment",
 )
 # Couchbase columns, then the three frame-level TCP flags. Flags are not repeated per message.
-_CB_COLUMNS = 5
+_PREFIX_COLUMNS = 7
+_CB_COLUMNS = 6
 _FLAG_COLUMNS = 3
 
 
@@ -438,18 +743,21 @@ def messages_from_field_line(line: str) -> tuple[list[dict], str | None, dict | 
     re-read on their own. A blank column means every message lacks it. TCP flags stay
     frame-level, so a short flag column is not a shift.
     """
-    width = 7 + _CB_COLUMNS + _FLAG_COLUMNS
+    width = _PREFIX_COLUMNS + _CB_COLUMNS + _FLAG_COLUMNS
     cols = line.split("\t")
     if len(cols) < width:
         cols.extend([""] * (width - len(cols)))
-    frame, time_raw, stream, src, sport, dst, dport = cols[:7]
-    loss = _loss_event(time_raw, stream, sport, dport, cols[12], cols[13], cols[14])
-    magic, opcode, opaque, key, status = (_split_repeated(col) for col in cols[7:12])
+    frame, time_raw, stream, src, sport, dst, dport = cols[:_PREFIX_COLUMNS]
+    flag_at = _PREFIX_COLUMNS + _CB_COLUMNS
+    loss = _loss_event(time_raw, stream, sport, dport, cols[flag_at], cols[flag_at + 1], cols[flag_at + 2])
+    magic, opcode, opaque, key, status, body = (
+        _split_repeated(col) for col in cols[_PREFIX_COLUMNS:flag_at]
+    )
     present = [len(values) for values in (magic, opcode, opaque) if values]
     if not present:
         return [], None, loss
     count = max(present)
-    repeated = (magic, opcode, opaque, key, status)
+    repeated = (magic, opcode, opaque, key, status, body)
     if any(values is not None and len(values) != count for values in repeated):
         return [], frame or None, loss
 
@@ -482,6 +790,7 @@ def messages_from_field_line(line: str) -> tuple[list[dict], str | None, dict | 
                 "opaque": hex_int(at(opaque, index), 8),
                 "key": at(key, index),
                 "status": hex_int(at(status, index), 4) if at(status, index) else "",
+                "body": body_len(at(body, index)),
                 "magic": magic_int,
             }
         )
@@ -636,6 +945,264 @@ def summarize_loss(events: list[dict], ports: list[str]) -> dict:
         "client_to_server": by_direction["client_to_server"],
         "server_to_client": by_direction["server_to_client"],
         "_times": times,
+    }
+
+
+def _ms(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(value * 1000, 3)
+
+
+def _bucket_count(capture_end: float, width: int) -> int:
+    if capture_end <= 0:
+        return 1
+    return int(capture_end // width) + 1
+
+
+def _bucket_index(when: float, width: int, count: int) -> int:
+    if when < 0:
+        when = 0
+    index = int(when // width)
+    if index >= count:
+        return count - 1
+    return index
+
+
+def _rtt_histogram(samples: list[float]) -> list[dict]:
+    edges = [0, 20, 30, 40, 50, 100, 250, 1000]
+    counts = [0] * len(edges)
+    labels = [f"{edges[i]}–{edges[i + 1]}" for i in range(len(edges) - 1)] + [f"{edges[-1]}+"]
+    for gap in samples:
+        value = gap * 1000
+        placed = False
+        for index in range(len(edges) - 1):
+            if edges[index] <= value < edges[index + 1]:
+                counts[index] += 1
+                placed = True
+                break
+        if not placed:
+            counts[-1] += 1
+    return [{"label": labels[index], "count": counts[index]} for index in range(len(edges))]
+
+
+def _rtt_summary(samples: list[float]) -> dict:
+    if not samples:
+        return {
+            "rtt_n": 0,
+            "rtt_min": None,
+            "rtt_max": None,
+            "rtt_median": None,
+            "rtt_p90": None,
+            "rtt_p95": None,
+            "rtt_p99": None,
+        }
+    return {
+        "rtt_n": len(samples),
+        "rtt_min": _ms(min(samples)),
+        "rtt_max": _ms(max(samples)),
+        "rtt_median": _ms(statistics.median(samples)),
+        "rtt_p90": _ms(percentile(samples, 0.90)),
+        "rtt_p95": _ms(percentile(samples, 0.95)),
+        "rtt_p99": _ms(percentile(samples, 0.99)),
+    }
+
+
+def build_charts(
+    requests: list[dict],
+    paired: dict,
+    loss_events: list[dict],
+    ports: list[str],
+    capture_end: float,
+) -> dict:
+    """Aggregates for the chart page at 1, 5, and 10 second buckets."""
+    matched_rtts: list[tuple] = []
+    for req, resp in paired["matched"]:
+        gap = resp["time"] - req["time"]
+        if gap < 0:
+            continue
+        matched_rtts.append((
+            req["time"],
+            gap,
+            req.get("key") or "",
+            req.get("opcode") or "",
+            int(req.get("body") or 0),
+            int(resp.get("body") or 0),
+        ))
+
+    portset = set(ports)
+    timed_loss = []
+    for event in loss_events:
+        if portset and event["sport"] not in portset and event["dport"] not in portset:
+            continue
+        if not portset:
+            continue
+        if event["time"] is None:
+            continue
+        timed_loss.append(event)
+
+    widths = (1, 5, 10)
+    series: dict[str, list[dict]] = {}
+    for width in widths:
+        count = _bucket_count(capture_end, width)
+        requests_n = [0] * count
+        matched_n = [0] * count
+        unanswered_n = [0] * count
+        resp_only_n = [0] * count
+        lost_n = [0] * count
+        retrans_n = [0] * count
+        ack_n = [0] * count
+        opcode_n: list[Counter] = [Counter() for _ in range(count)]
+        samples: list[list[float]] = [[] for _ in range(count)]
+        body_in_max = [0] * count
+        body_out_max = [0] * count
+        body_large = [0] * count
+
+        def note_body(msg: dict, maxima: list[int]) -> None:
+            size = int(msg.get("body") or 0)
+            index = _bucket_index(msg["time"], width, count)
+            if size > maxima[index]:
+                maxima[index] = size
+            if size >= LARGE_BODY_BYTES:
+                body_large[index] += 1
+
+        for msg in requests:
+            index = _bucket_index(msg["time"], width, count)
+            requests_n[index] += 1
+            opcode_n[index][opcode_name(msg.get("opcode") or "")] += 1
+            note_body(msg, body_in_max)
+        for _req, resp in paired["matched"]:
+            note_body(resp, body_out_max)
+        for msg in paired["resp_only"]:
+            note_body(msg, body_out_max)
+        for when, gap, _key, _opcode, _body_in, _body_out in matched_rtts:
+            index = _bucket_index(when, width, count)
+            matched_n[index] += 1
+            samples[index].append(gap)
+        for msg in paired["unanswered"]:
+            unanswered_n[_bucket_index(msg["time"], width, count)] += 1
+        for msg in paired["resp_only"]:
+            resp_only_n[_bucket_index(msg["time"], width, count)] += 1
+        for event in timed_loss:
+            index = _bucket_index(event["time"], width, count)
+            if event["lost"]:
+                lost_n[index] += 1
+            if event["retrans"]:
+                retrans_n[index] += 1
+            if event["ack"]:
+                ack_n[index] += 1
+        rows = []
+        for index in range(count):
+            row = {
+                "t": index * width,
+                "requests": requests_n[index],
+                "matched": matched_n[index],
+                "unanswered": unanswered_n[index],
+                "resp_only": resp_only_n[index],
+                "lost": lost_n[index],
+                "retrans": retrans_n[index],
+                "ack_lost": ack_n[index],
+                "opcodes": dict(opcode_n[index]),
+                "body_in_max": body_in_max[index],
+                "body_out_max": body_out_max[index],
+                "body_large": body_large[index],
+            }
+            row.update(_rtt_summary(samples[index]))
+            rows.append(row)
+        series[str(width)] = rows
+
+    by_ip: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    by_conn: dict[tuple[str, str], list] = {}
+    by_opcode: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    by_key: Counter = Counter()
+    key_unanswered: Counter = Counter()
+    opcode_rtts: dict[str, list[float]] = defaultdict(list)
+    unanswered_keys = {id(msg) for msg in paired["unanswered"]}
+    for msg in requests:
+        ip = msg.get("src") or "(unknown)"
+        port = str(msg.get("sport") or "")
+        opcode = msg.get("opcode") or ""
+        by_ip[ip][0] += 1
+        by_opcode[opcode][0] += 1
+        conn = by_conn.get((ip, port))
+        if conn is None:
+            conn = [0, 0, str(msg.get("stream") or "")]
+            by_conn[(ip, port)] = conn
+        conn[0] += 1
+        key = msg.get("key") or ""
+        if key:
+            by_key[key] += 1
+        if id(msg) in unanswered_keys:
+            by_ip[ip][1] += 1
+            by_opcode[opcode][1] += 1
+            conn[1] += 1
+            if key:
+                key_unanswered[key] += 1
+    for _when, gap, _key, opcode, _body_in, _body_out in matched_rtts:
+        opcode_rtts[opcode].append(gap)
+
+    ranked_calls = sorted(
+        (
+            (when, gap, key, body_in, body_out)
+            for when, gap, key, _opcode, body_in, body_out in matched_rtts
+            if key
+        ),
+        key=lambda item: (-item[1], item[0]),
+    )
+    slowest = [
+        {
+            "key": key,
+            "time_ms": _ms(gap),
+            "seconds": round(when, 3),
+            "body_bytes": max(body_in, body_out),
+        }
+        for when, gap, key, body_in, body_out in ranked_calls[:10]
+    ]
+    all_rtts = [gap for _when, gap, _key, _opcode, _body_in, _body_out in matched_rtts]
+    overall = _rtt_summary(all_rtts)
+    all_ms = [gap * 1000 for gap in all_rtts]
+    return {
+        "capture_seconds": round(capture_end, 3),
+        "buckets": series,
+        "rtt_overall_ms": overall,
+        "slow_ms": {
+            "matched": len(all_ms),
+            "over_50": sum(1 for value in all_ms if value >= 50),
+            "over_100": sum(1 for value in all_ms if value >= 100),
+            "over_250": sum(1 for value in all_ms if value >= 250),
+        },
+        "rtt_histogram": _rtt_histogram(all_rtts),
+        "by_requester_ip": [
+            {"ip": ip, "requests": counts[0], "unanswered": counts[1]}
+            for ip, counts in sorted(by_ip.items(), key=lambda item: item[1][0], reverse=True)
+        ],
+        "by_connection": [
+            {
+                "ip": ip,
+                "port": port,
+                "stream": slot[2],
+                "requests": slot[0],
+                "unanswered": slot[1],
+            }
+            for (ip, port), slot in sorted(by_conn.items(), key=lambda item: item[1][0], reverse=True)
+        ],
+        "by_opcode": [
+            {
+                "opcode": opcode,
+                "name": opcode_name(opcode),
+                "requests": counts[0],
+                "unanswered": counts[1],
+                "median_ms": (summary := _rtt_summary(opcode_rtts[opcode]))["rtt_median"],
+                "p99_ms": summary["rtt_p99"],
+                "description": opcode_description(opcode),
+            }
+            for opcode, counts in sorted(by_opcode.items(), key=lambda item: item[1][0], reverse=True)
+        ],
+        "top_requested": [
+            {"key": key, "count": count, "unanswered": key_unanswered[key]}
+            for key, count in by_key.most_common(10)
+        ],
+        "top_slowest": slowest,
     }
 
 
@@ -1549,11 +2116,203 @@ def render_summary(facts: dict) -> str:
         lines.append(unanswered_table(facts["unanswered"]))
     else:
         lines.append("Every client request had a later response on the same stream and opaque.")
+    lines.extend(_next_section(facts))
     lines.append("")
     return "\n".join(lines)
 
 
-def facts_brief(facts: dict) -> str:
+def _body_peaks(charts: dict) -> tuple[int, int | None, int, int | None, int]:
+    max_in = max_out = large = 0
+    sec_in = sec_out = None
+    for row in (charts.get("buckets") or {}).get("1") or []:
+        large += int(row.get("body_large") or 0)
+        if int(row.get("body_in_max") or 0) > max_in:
+            max_in = int(row["body_in_max"])
+            sec_in = row.get("t")
+        if int(row.get("body_out_max") or 0) > max_out:
+            max_out = int(row["body_out_max"])
+            sec_out = row.get("t")
+    return max_in, sec_in, max_out, sec_out, large
+
+
+def next_questions(facts: dict, charts: dict | None = None) -> list[dict]:
+    """Questions a support engineer can ask from counts already in hand."""
+    steps: list[dict] = []
+    counts = facts["counts"]
+    edge = facts["edge"]
+    streams = facts.get("streams") or []
+    client_ip = (facts.get("client") or {}).get("ip") or ""
+    sources = {row.get("src") for row in streams if row.get("src")}
+    if len(sources) == 1 and client_ip and len(streams) > 1:
+        top = streams[0]
+        steps.append(
+            {
+                "title": "One client, many connections",
+                "text": (
+                    f"All {counts['request_messages']} requests come from {client_ip}. "
+                    f"The busiest connection is {client_ip}:{top.get('sport')} "
+                    f"(stream {top.get('stream')}), with {top.get('requests')} requests and "
+                    f"{top.get('unanswered')} unanswered. Ask what that connection does that the others do not."
+                ),
+            }
+        )
+    tcp = facts.get("tcp") or {}
+    near = tcp.get("unanswered_near_gap") or {}
+    if tcp and counts["unanswered_requests"]:
+        near_250 = near.get("0.25")
+        gap_clause = (
+            f" {near_250} of {counts['unanswered_requests']} unanswered requests "
+            "sit within 250 ms of a gap on the same stream."
+            if near_250 is not None
+            else ""
+        )
+        steps.append(
+            {
+                "title": "Ask whether the recorder dropped packets",
+                "text": (
+                    f"Port {', '.join(tcp.get('ports') or [])} shows {tcp.get('lost_segments')} lost-segment markers "
+                    f"and {tcp.get('retransmissions')} retransmissions."
+                    f"{gap_clause} "
+                    "Ask about the span port, snap length, and whether the capture disk kept up. "
+                    "Do not treat the whole unanswered set as Couchbase timeouts."
+                ),
+            }
+        )
+    if edge["interior_unanswered"] > edge["end_requests"] + edge["start_responses"]:
+        steps.append(
+            {
+                "title": "The open and close of the file are not the missing calls",
+                "text": (
+                    f"{edge['start_responses']} "
+                    f"{'response has' if edge['start_responses'] == 1 else 'responses have'} "
+                    "no request at the start, and "
+                    f"{edge['end_requests']} "
+                    f"{'request is' if edge['end_requests'] == 1 else 'requests are'} "
+                    "still in flight at the end. "
+                    f"{edge['interior_unanswered']} unanswered requests sit further inside the file."
+                ),
+            }
+        )
+    families = facts.get("families") or []
+    dominant = facts.get("dominant_family") or ""
+    if dominant and families and counts["unanswered_requests"]:
+        fam_count = families[0]["count"]
+        if fam_count >= 5 and fam_count / counts["unanswered_requests"] >= 0.5:
+            steps.append(
+                {
+                    "title": f"Most missing replies are {dominant}",
+                    "text": (
+                        f"{fam_count} of {counts['unanswered_requests']} unanswered requests are {dominant}. "
+                        "Ask the application owner whether that read is large, retried, or sent to a replica."
+                    ),
+                }
+            )
+    if not charts:
+        return steps[:6]
+    slow = charts.get("slow_ms") or {}
+    overall = charts.get("rtt_overall_ms") or {}
+    if slow.get("over_100"):
+        steps.append(
+            {
+                "title": "The slow calls are a short tail",
+                "text": (
+                    f"The median matched call is {overall.get('rtt_median')} ms. "
+                    f"{slow.get('over_100')} calls took 100 ms or more"
+                    f" and {slow.get('over_250')} took 250 ms or more. "
+                    f"The slowest matched call is {overall.get('rtt_max')} ms. "
+                    "Compare those seconds with the body-length chart before calling the server slow."
+                ),
+            }
+        )
+    max_in, sec_in, max_out, sec_out, large = _body_peaks(charts)
+    if max_in or max_out:
+        steps.append(
+            {
+                "title": "Check the large documents",
+                "text": (
+                    f"The largest request body is {max_in:,} bytes"
+                    + (f" at {sec_in}s" if sec_in is not None else "")
+                    + f". The largest reply is {max_out:,} bytes"
+                    + (f" at {sec_out}s" if sec_out is not None else "")
+                    + f". {large} messages are 1 MB (1,048,576 bytes) or larger. "
+                    "Ask whether a value that size is expected on that key, and whether it lines up with a slow second."
+                ),
+            }
+        )
+    return steps[:6]
+
+
+def _next_section(facts: dict) -> list[str]:
+    steps = facts.get("next_steps")
+    if steps is None:
+        steps = next_questions(facts)
+    lines = ["", "## Next questions and steps", ""]
+    if not steps:
+        lines.append("No further question stood out from these counts.")
+        return lines
+    for index, step in enumerate(steps, 1):
+        lines.append(f"{index}. **{step['title']}.** {step['text']}")
+        lines.append("")
+    return lines
+
+
+def chart_digest(charts: dict) -> list[str]:
+    """Extra aggregates for the local model. Numbers only, already counted."""
+    lines = ["Slow calls and body size:"]
+    slow = charts.get("slow_ms") or {}
+    overall = charts.get("rtt_overall_ms") or {}
+    lines.append(
+        "Matched calls: {matched}. At or over 50 ms: {over_50}. At or over 100 ms: {over_100}. "
+        "At or over 250 ms: {over_250}.".format(
+            matched=slow.get("matched"),
+            over_50=slow.get("over_50"),
+            over_100=slow.get("over_100"),
+            over_250=slow.get("over_250"),
+        )
+    )
+    lines.append(
+        "Round trip ms median/p90/p95/p99/max: "
+        f"{overall.get('rtt_median')}, {overall.get('rtt_p90')}, {overall.get('rtt_p95')}, "
+        f"{overall.get('rtt_p99')}, {overall.get('rtt_max')}"
+    )
+    bands = [row for row in charts.get("rtt_histogram") or [] if row.get("count")]
+    if bands:
+        lines.append(
+            "Response-time bands (ms, count): "
+            + ", ".join(f"{row['label']}={row['count']}" for row in bands)
+        )
+    max_in, sec_in, max_out, sec_out, large = _body_peaks(charts)
+    lines.append(
+        f"Largest request body: {max_in} bytes at {sec_in}s. "
+        f"Largest reply body: {max_out} bytes at {sec_out}s. "
+        f"Messages at or over 1 MB: {large}. "
+        "Total body length is extras + key + value."
+    )
+    lines.append("Requester IPs:")
+    for row in charts.get("by_requester_ip") or []:
+        lines.append(f"- {row['ip']}: {row['requests']} requests, {row['unanswered']} unanswered")
+    lines.append("Busiest client connections:")
+    for row in (charts.get("by_connection") or [])[:8]:
+        lines.append(
+            f"- {row['ip']}:{row['port']} stream {row['stream']}: "
+            f"{row['requests']} requests, {row['unanswered']} unanswered"
+        )
+    lines.append("Opcodes in this capture (opcode, name, requests, unanswered, median ms, p99 ms, what it does):")
+    for row in charts.get("by_opcode") or []:
+        lines.append(
+            f"- {row.get('opcode')} {row.get('name')}: requests={row.get('requests')} "
+            f"unanswered={row.get('unanswered')} median_ms={row.get('median_ms')} "
+            f"p99_ms={row.get('p99_ms')} {row.get('description') or ''}".rstrip()
+        )
+    lines.append("Ten slowest matched calls (ms, seconds from start, body bytes, key):")
+    for row in charts.get("top_slowest") or []:
+        lines.append(
+            f"- {row.get('time_ms')} ms at {row.get('seconds')}s body={row.get('body_bytes')} {row.get('key')}"
+        )
+    return lines
+
+
+def facts_brief(facts: dict, charts: dict | None = None) -> str:
     """Counts only. The model writes the note from this, and does not get the finished prose."""
     counts = facts["counts"]
     edge = facts["edge"]
@@ -1675,8 +2434,17 @@ def facts_brief(facts: dict) -> str:
         "Collection document ids are couchbase.key.logical_key; couchbase.key is often empty. "
         "Comma-joined opaques in one tshark row are separate messages."
     )
+    if charts:
+        lines.append("")
+        lines.extend(chart_digest(charts))
     lines.append("")
-    lines.append("Put the full key table under the last heading by leaving this token on its own line:")
+    lines.append(
+        "End the note with a Next questions and steps section of 4 to 6 numbered items. "
+        "Each item cites a count from this message. These are the next checks for a support engineer. "
+        "Do not invent a root cause, a host, or a key."
+    )
+    lines.append("")
+    lines.append("Put the full key table under All unanswered requests by leaving this token on its own line:")
     lines.append(TABLE_TOKEN)
     return "\n".join(lines)
 
@@ -1694,12 +2462,16 @@ Write GitHub-flavored markdown with these headings, in this order:
 ## What the unanswered requests are
 ## Keys outside the main family
 ## All unanswered requests
+## Next questions and steps
 
 The opening states the unanswered-request count, the unique key count, and the responses that have no request.
 Then state the round trip and the in-flight window. Separate three groups: responses already on the wire when the file opened, requests still on the wire when the file closed, and the interior rows that had more than that window of capture left.
+When slow-call counts and body lengths are present, put them in the round-trip section. A short tail of calls over 100 ms, with a maximum well under a second, is not a server timeout.
 When lost-segment markers are present in both directions and retransmissions are rare, say the missing packets fit a recorder that did not see them. Do not call the whole unanswered set Couchbase timeouts.
 Name the stream and key family that hold most of the unanswered requests. Mention duplicate keys and any opaque that also appears on a different stream.
-Under the last heading, leave the line {{UNANSWERED_TABLE}} exactly as written, on its own line. Do not invent the full key list.
+If every request shares one client IP, say so, and name the busiest source port.
+Under All unanswered requests, leave the line {{UNANSWERED_TABLE}} exactly as written, on its own line. Do not invent the full key list.
+The last section is 4 to 6 numbered questions or actions. Each one cites a count from the message.
 No preamble. No chain of thought. No extra headings."""
 
 
@@ -1950,9 +2722,27 @@ def apply_config(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
+def write_charts(out: Path, charts: dict) -> None:
+    (out / "charts.json").write_text(json.dumps(charts, separators=(",", ":")))
+    template = ROOT / "web" / "index.html"
+    if not template.is_file():
+        raise SystemExit(f"Chart page is missing: {template}")
+    (out / "index.html").write_text(template.read_text())
+    vendor_src = ROOT / "web" / "vendor"
+    library = vendor_src / "echarts.min.js"
+    if not library.is_file():
+        raise SystemExit(f"Chart library is missing: {library}")
+    vendor_out = out / "vendor"
+    vendor_out.mkdir(exist_ok=True)
+    for path in vendor_src.iterdir():
+        if path.is_file():
+            shutil.copyfile(path, vendor_out / path.name)
+    log(f"wrote {out / 'index.html'}")
+
+
 def print_dry_run(out: Path, args: argparse.Namespace, facts: dict) -> None:
     counts = facts["counts"]
-    files = ["facts.json", "orphans.tsv", "reqs.pdus.tsv", "resps.tsv", "summary.md"]
+    files = ["facts.json", "charts.json", "index.html", "vendor/echarts.min.js", "orphans.tsv", "reqs.pdus.tsv", "resps.tsv", "summary.md"]
     if not args.no_ai:
         files.append("summary.computed.md")
     print("dry-run")
@@ -1983,6 +2773,7 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
     joined_rows = 0
     pcap_names: list[str] = []
     loss = None
+    loss_events: list[dict] = []
 
     if job["mode"] == "pcap":
         if not tshark:
@@ -2024,10 +2815,20 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
         print_dry_run(out, args, facts)
         return out, True
 
+    charts = build_charts(
+        requests,
+        paired,
+        loss_events,
+        couchbase_ports(requests),
+        capture_end,
+    )
+    facts["next_steps"] = next_questions(facts, charts)
+    charts["next_steps"] = facts["next_steps"]
     computed = render_summary(facts)
     out.mkdir(parents=True, exist_ok=True)
     (out / "facts.json").write_text(json.dumps(facts, indent=2) + "\n")
     write_tsv(out, requests, responses, facts["unanswered"])
+    write_charts(out, charts)
 
     if args.no_ai:
         (out / "summary.md").write_text(computed)
@@ -2036,7 +2837,7 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
 
     try:
         raw = call_ollama(
-            facts_brief(facts),
+            facts_brief(facts, charts),
             base_url=args.ollama,
             model=args.model,
             timeout=args.timeout,

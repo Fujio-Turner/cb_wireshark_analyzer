@@ -18,5 +18,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY analyze_capture.py config.json pyproject.toml ./
 COPY tests ./tests
 COPY images ./images
+COPY web ./web
 
 ENTRYPOINT ["python3", "analyze_capture.py"]

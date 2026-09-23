@@ -81,8 +81,10 @@ def test_summary_names_the_interior_key_and_splice_fills_the_table():
     )
     text = ac.render_summary(facts)
     assert "widget::alpha::two" in text
+    assert "Next questions and steps" in text
     assert ac.TABLE_TOKEN not in text
     brief = ac.facts_brief(facts)
+    assert "Next questions and steps" in brief
     assert ac.TABLE_TOKEN in brief
     spliced = ac.splice_table(brief, ac.unanswered_table(facts["unanswered"]))
     assert "widget::alpha::two" in spliced

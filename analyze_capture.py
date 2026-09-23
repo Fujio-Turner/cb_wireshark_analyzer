@@ -372,7 +372,13 @@ _FIELD_COLUMNS = (
     "couchbase.opaque",
     "couchbase.key.logical_key",
     "couchbase.status",
+    "tcp.analysis.lost_segment",
+    "tcp.analysis.retransmission",
+    "tcp.analysis.ack_lost_segment",
 )
+# Couchbase columns, then the three frame-level TCP flags. Flags are not repeated per message.
+_CB_COLUMNS = 5
+_FLAG_COLUMNS = 3
 
 
 def iter_tshark(cmd: list[str]):
@@ -406,24 +412,46 @@ def _split_repeated(value: str) -> list[str] | None:
     return value.split(FIELD_AGG)
 
 
-def messages_from_field_line(line: str) -> tuple[list[dict], str | None]:
-    """One tshark fields row. The frame number comes back when columns do not line up.
+def _loss_event(time_raw: str, stream: str, sport: str, dport: str, lost: str, retrans: str, ack: str) -> dict | None:
+    if not (lost or retrans or ack):
+        return None
+    try:
+        when = float(time_raw) if time_raw else 0.0
+    except ValueError:
+        when = None
+    return {
+        "time": when,
+        "stream": stream,
+        "sport": sport,
+        "dport": dport,
+        "lost": bool(lost),
+        "retrans": bool(retrans),
+        "ack": bool(ack),
+    }
 
-    tshark drops a repeated field that one message lacks, which shifts the rest.
-    Those frames are re-read on their own. A blank column means every message lacks it.
+
+def messages_from_field_line(line: str) -> tuple[list[dict], str | None, dict | None]:
+    """One tshark fields row, plus a TCP-gap event when this frame carries one.
+
+    The frame number comes back when Couchbase columns do not line up. tshark drops a
+    repeated field that one message lacks, which shifts the rest. Those frames are
+    re-read on their own. A blank column means every message lacks it. TCP flags stay
+    frame-level, so a short flag column is not a shift.
     """
+    width = 7 + _CB_COLUMNS + _FLAG_COLUMNS
     cols = line.split("\t")
-    if len(cols) < 12:
-        cols.extend([""] * (12 - len(cols)))
+    if len(cols) < width:
+        cols.extend([""] * (width - len(cols)))
     frame, time_raw, stream, src, sport, dst, dport = cols[:7]
+    loss = _loss_event(time_raw, stream, sport, dport, cols[12], cols[13], cols[14])
     magic, opcode, opaque, key, status = (_split_repeated(col) for col in cols[7:12])
     present = [len(values) for values in (magic, opcode, opaque) if values]
     if not present:
-        return [], None
+        return [], None, loss
     count = max(present)
     repeated = (magic, opcode, opaque, key, status)
     if any(values is not None and len(values) != count for values in repeated):
-        return [], frame or None
+        return [], frame or None, loss
 
     def at(values: list[str] | None, index: int) -> str:
         if values is None:
@@ -457,7 +485,7 @@ def messages_from_field_line(line: str) -> tuple[list[dict], str | None]:
                 "magic": magic_int,
             }
         )
-    return messages, None
+    return messages, None, loss
 
 
 def _keep_client_message(message: dict | None, requests: list[dict], responses: list[dict], magics: Counter) -> None:
@@ -511,9 +539,21 @@ def _iter_ek_messages(pcap: Path, tshark: str, display: str):
                 yield message
 
 
-def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter]:
-    """One fields pass. JSON is only for the rare frame whose columns do not line up."""
-    cmd = [tshark, "-n", "-r", str(pcap), "-Y", "couchbase", "-T", "fields"]
+def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter, list[dict]]:
+    """One fields pass for Couchbase messages and TCP gap flags.
+
+    JSON is only for the rare frame whose Couchbase columns do not line up.
+    """
+    cmd = [
+        tshark,
+        "-n",
+        "-r",
+        str(pcap),
+        "-Y",
+        "couchbase || tcp.analysis.lost_segment || tcp.analysis.retransmission || tcp.analysis.ack_lost_segment",
+        "-T",
+        "fields",
+    ]
     for name in _FIELD_COLUMNS:
         cmd.extend(("-e", name))
     cmd.extend(
@@ -530,11 +570,14 @@ def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter]
     requests: list[dict] = []
     responses: list[dict] = []
     magics: Counter = Counter()
+    loss_events: list[dict] = []
     redo: list[str] = []
     for line in iter_tshark(cmd):
         if not line:
             continue
-        messages, bad_frame = messages_from_field_line(line)
+        messages, bad_frame, loss = messages_from_field_line(line)
+        if loss:
+            loss_events.append(loss)
         if bad_frame is not None:
             if bad_frame:
                 redo.append(bad_frame)
@@ -550,7 +593,7 @@ def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter]
                 _keep_client_message(message, requests, responses, magics)
     if not requests and not responses:
         raise SystemExit(f"No Couchbase client requests or responses in {pcap}")
-    return requests, responses, magics
+    return requests, responses, magics, loss_events
 
 
 def couchbase_ports(requests: list[dict]) -> list[str]:
@@ -558,62 +601,28 @@ def couchbase_ports(requests: list[dict]) -> list[str]:
     return [port for port, _ in counts.most_common()]
 
 
-def load_tcp_loss(pcap: Path, tshark: str, ports: list[str]) -> dict:
-    """One pass. A packet can carry more than one analysis flag, so count flags, not rows."""
+def summarize_loss(events: list[dict], ports: list[str]) -> dict:
+    """Keep gap events on the Couchbase ports. One packet can carry more than one flag."""
     if not ports:
         return {"available": False}
-    port_filter = " or ".join(f"tcp.port=={port}" for port in ports)
-    server_ports = set(ports)
-    cmd = [
-        tshark,
-        "-n",
-        "-r",
-        str(pcap),
-        "-Y",
-        f"({port_filter}) && (tcp.analysis.lost_segment || tcp.analysis.retransmission || tcp.analysis.ack_lost_segment)",
-        "-T",
-        "fields",
-        "-e",
-        "frame.time_relative",
-        "-e",
-        "tcp.stream",
-        "-e",
-        "tcp.srcport",
-        "-e",
-        "tcp.analysis.lost_segment",
-        "-e",
-        "tcp.analysis.retransmission",
-        "-e",
-        "tcp.analysis.ack_lost_segment",
-        "-E",
-        "separator=\t",
-        "-E",
-        "occurrence=f",
-    ]
-    log("counting TCP gaps on the Couchbase ports")
+    portset = set(ports)
     lost = retrans = ack_lost = 0
     by_stream: Counter = Counter()
     by_direction = Counter()
     times: dict[str, list[float]] = defaultdict(list)
-    for line in iter_tshark(cmd):
-        if not line:
+    for event in events:
+        if event["sport"] not in portset and event["dport"] not in portset:
             continue
-        cols = line.split("\t")
-        if len(cols) < 6:
-            continue
-        time_raw, stream, sport, lost_flag, retrans_flag, ack_flag = cols[:6]
-        if lost_flag:
+        if event["lost"]:
             lost += 1
-            by_stream[stream] += 1
-            try:
-                times[stream].append(float(time_raw))
-            except ValueError:
-                pass
-            direction = "server_to_client" if sport in server_ports else "client_to_server"
+            by_stream[event["stream"]] += 1
+            if event["time"] is not None:
+                times[event["stream"]].append(event["time"])
+            direction = "server_to_client" if event["sport"] in portset else "client_to_server"
             by_direction[direction] += 1
-        if retrans_flag:
+        if event["retrans"]:
             retrans += 1
-        if ack_flag:
+        if event["ack"]:
             ack_lost += 1
     for stream_times in times.values():
         stream_times.sort()
@@ -1980,14 +1989,14 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
             raise SystemExit("tshark is not on PATH and not in /Applications/Wireshark.app.")
         pcap = job["pcap"]
         pcap_names = [path.name for path in job.get("also") or [pcap]]
-        requests, responses, magics = load_pcap(pcap, tshark)
+        requests, responses, magics, loss_events = load_pcap(pcap, tshark)
         capinfos = find_capinfos(tshark)
         duration = None
         if capinfos:
             duration, packet_count = read_capinfos(capinfos, pcap)
         times = [msg["time"] for msg in requests + responses]
         capture_end = max([t for t in [duration, max(times) if times else 0] if t is not None])
-        loss = load_tcp_loss(pcap, tshark, couchbase_ports(requests))
+        loss = summarize_loss(loss_events, couchbase_ports(requests))
         source = str(pcap)
     else:
         requests, responses, joined_rows = load_tsv_pair(job["reqs"], job.get("resps"))

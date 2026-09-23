@@ -27,13 +27,13 @@ def test_header_row_is_recognized(tmp_path):
     path = tmp_path / "both.tsv"
     path.write_text(
         "frame.number\tframe.time_relative\ttcp.stream\tcouchbase.magic\tcouchbase.opcode\tcouchbase.opaque\tcouchbase.key.logical_key\tcouchbase.status\n"
-        "1\t0.1\t0\t0x80\t0x00\t0x1\tcache::a\t\n"
+        "1\t0.1\t0\t0x80\t0x00\t0x1\tdoc::a\t\n"
         "2\t0.2\t0\t0x18\t0x00\t0x1\t\t0x0000\n"
     )
     requests, responses, _joined = ac.load_table(path)
     assert len(requests) == 1
     assert len(responses) == 1
-    assert requests[0]["key"] == "cache::a"
+    assert requests[0]["key"] == "doc::a"
     assert responses[0]["status"] == "0x0000"
 
 

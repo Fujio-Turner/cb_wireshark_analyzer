@@ -22,8 +22,8 @@ def message(time, stream, opaque, opcode="0x00", key="doc", kind="req", status="
 
 def sample():
     requests = [
-        message(1.0, "0", "0x00000001", key="cache::manifest::aaa"),
-        message(0.2, "0", "0x00000002", key="cache::manifest::bbb"),
+        message(1.0, "0", "0x00000001", key="widget::alpha::one"),
+        message(0.2, "0", "0x00000002", key="widget::alpha::two"),
         message(9.98, "0", "0x00000003", "0x01", "edge::key::1"),
     ]
     responses = [
@@ -39,7 +39,7 @@ def test_response_before_request_is_not_a_match():
     assert len(paired["matched"]) == 1
     assert len(paired["unanswered"]) == 2
     assert len(paired["resp_only"]) == 1
-    assert paired["matched"][0][0]["key"] == "cache::manifest::aaa"
+    assert paired["matched"][0][0]["key"] == "widget::alpha::one"
 
 
 def test_edges_use_the_longest_matched_round_trip():
@@ -80,22 +80,22 @@ def test_summary_names_the_interior_key_and_splice_fills_the_table():
         loss=None,
     )
     text = ac.render_summary(facts)
-    assert "cache::manifest::bbb" in text
+    assert "widget::alpha::two" in text
     assert ac.TABLE_TOKEN not in text
     brief = ac.facts_brief(facts)
     assert ac.TABLE_TOKEN in brief
     spliced = ac.splice_table(brief, ac.unanswered_table(facts["unanswered"]))
-    assert "cache::manifest::bbb" in spliced
+    assert "widget::alpha::two" in spliced
     assert ac.TABLE_TOKEN not in spliced
 
 
 def test_same_opaque_on_two_streams_stays_two_operations():
     requests = [
-        message(1.0, "7", "0x0000000a", "0x01", "ref::one"),
-        message(1.1, "9", "0x0000000a", "0x00", "dat::other"),
+        message(1.0, "1", "0x0000000a", "0x01", "red::one"),
+        message(1.1, "2", "0x0000000a", "0x00", "blue::other"),
     ]
-    responses = [message(1.2, "9", "0x0000000a", kind="res", status="0x0000")]
+    responses = [message(1.2, "2", "0x0000000a", kind="res", status="0x0000")]
     paired = ac.pair_messages(requests, responses)
     assert len(paired["matched"]) == 1
-    assert paired["unanswered"][0]["stream"] == "7"
-    assert paired["matched"][0][0]["stream"] == "9"
+    assert paired["unanswered"][0]["stream"] == "1"
+    assert paired["matched"][0][0]["stream"] == "2"

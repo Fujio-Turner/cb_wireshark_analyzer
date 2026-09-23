@@ -264,17 +264,32 @@ def prefer_plain_pcaps(paths: list[Path]) -> list[Path]:
     return plain or paths
 
 
+def _choose_rep(members: list[Path]) -> tuple[Path, list[Path]]:
+    plain = [path for path in members if not path.name.lower().endswith(".gz")]
+    rep = sorted(plain or members, key=lambda path: path.name)[0]
+    return rep, sorted(members, key=lambda path: path.name)
+
+
 def unique_pcaps(paths: list[Path]) -> list[tuple[Path, list[Path]]]:
-    """Group capture files by content. Prefer an uncompressed file as the representative."""
+    """Group capture files by content. Hash only files that share a size."""
     paths = prefer_plain_pcaps(paths)
-    groups: dict[str, list[Path]] = defaultdict(list)
+    if not paths:
+        return []
+    if len(paths) == 1:
+        return [_choose_rep(paths)]
+    by_size: dict[int, list[Path]] = defaultdict(list)
     for path in paths:
-        groups[file_md5(path)].append(path)
+        by_size[path.stat().st_size].append(path)
     chosen = []
-    for members in groups.values():
-        plain = [p for p in members if not p.name.lower().endswith(".gz")]
-        rep = sorted(plain or members, key=lambda p: p.name)[0]
-        chosen.append((rep, sorted(members, key=lambda p: p.name)))
+    for group in by_size.values():
+        if len(group) == 1:
+            chosen.append(_choose_rep(group))
+            continue
+        by_hash: dict[str, list[Path]] = defaultdict(list)
+        for path in group:
+            by_hash[file_md5(path)].append(path)
+        for members in by_hash.values():
+            chosen.append(_choose_rep(members))
     return sorted(chosen, key=lambda item: item[0].name)
 
 
@@ -342,17 +357,130 @@ def _message_from_item(item: dict, frame: dict, ip: dict, tcp: dict) -> dict | N
     }
 
 
-def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter]:
+# Unit separator. Commas appear in document keys, so they cannot join repeated fields.
+FIELD_AGG = "\x1f"
+_FIELD_COLUMNS = (
+    "frame.number",
+    "frame.time_relative",
+    "tcp.stream",
+    "ip.src",
+    "tcp.srcport",
+    "ip.dst",
+    "tcp.dstport",
+    "couchbase.magic",
+    "couchbase.opcode",
+    "couchbase.opaque",
+    "couchbase.key.logical_key",
+    "couchbase.status",
+)
+
+
+def iter_tshark(cmd: list[str]):
+    """Stream tshark stdout. One process, one read of the capture."""
+    stderr_file = tempfile.NamedTemporaryFile(prefix="tshark-", suffix=".err", delete=False)
+    stderr_path = Path(stderr_file.name)
+    stderr_file.close()
+    stderr_handle = open(stderr_path, "w")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_handle)
+    assert proc.stdout is not None
+    try:
+        for raw in proc.stdout:
+            yield raw.decode("utf-8", "replace").rstrip("\n")
+        code = proc.wait()
+        if code != 0:
+            stderr_handle.close()
+            tail = stderr_path.read_text(errors="replace")[-2000:]
+            raise SystemExit(f"tshark exited {code}\n{tail}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        stderr_handle.close()
+        stderr_path.unlink(missing_ok=True)
+
+
+def _split_repeated(value: str) -> list[str] | None:
+    """None means this column is absent on every message in the frame."""
+    if value == "":
+        return None
+    return value.split(FIELD_AGG)
+
+
+def messages_from_field_line(line: str) -> tuple[list[dict], str | None]:
+    """One tshark fields row. The frame number comes back when columns do not line up.
+
+    tshark drops a repeated field that one message lacks, which shifts the rest.
+    Those frames are re-read on their own. A blank column means every message lacks it.
+    """
+    cols = line.split("\t")
+    if len(cols) < 12:
+        cols.extend([""] * (12 - len(cols)))
+    frame, time_raw, stream, src, sport, dst, dport = cols[:7]
+    magic, opcode, opaque, key, status = (_split_repeated(col) for col in cols[7:12])
+    present = [len(values) for values in (magic, opcode, opaque) if values]
+    if not present:
+        return [], None
+    count = max(present)
+    repeated = (magic, opcode, opaque, key, status)
+    if any(values is not None and len(values) != count for values in repeated):
+        return [], frame or None
+
+    def at(values: list[str] | None, index: int) -> str:
+        if values is None:
+            return ""
+        return values[index]
+
+    try:
+        when = float(time_raw) if time_raw else 0.0
+    except ValueError:
+        when = 0.0
+    messages = []
+    for index in range(count):
+        magic_text = at(magic, index)
+        try:
+            magic_int = int(magic_text, 16) if magic_text.lower().startswith("0x") else int(magic_text or "0")
+        except ValueError:
+            continue
+        messages.append(
+            {
+                "frame": frame,
+                "time": when,
+                "stream": stream,
+                "src": src,
+                "sport": sport,
+                "dst": dst,
+                "dport": dport,
+                "opcode": hex_int(at(opcode, index), 2),
+                "opaque": hex_int(at(opaque, index), 8),
+                "key": at(key, index),
+                "status": hex_int(at(status, index), 4) if at(status, index) else "",
+                "magic": magic_int,
+            }
+        )
+    return messages, None
+
+
+def _keep_client_message(message: dict | None, requests: list[dict], responses: list[dict], magics: Counter) -> None:
+    if message is None:
+        return
+    magics[message["magic"]] += 1
+    if message["magic"] in CLIENT_REQ_MAGIC:
+        requests.append(message)
+    elif message["magic"] in CLIENT_RES_MAGIC:
+        responses.append(message)
+
+
+def _iter_ek_messages(pcap: Path, tshark: str, display: str):
     cmd = [
         tshark,
         "-n",
         "-r",
         str(pcap),
         "-Y",
-        "couchbase",
+        display,
         "-T",
         "ek",
-        # -J includes field values. -j only emits {"filtered": "field.name"}.
+        # -J includes values. -j only emits {"filtered": "field.name"}.
         "-J",
         "frame",
         "-J",
@@ -362,94 +490,67 @@ def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter]
         "-J",
         "couchbase",
     ]
+    for line in iter_tshark(cmd):
+        if '"layers"' not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        layers = obj.get("layers") or {}
+        cb = layers.get("couchbase")
+        if not cb:
+            continue
+        frame = layers.get("frame") or {}
+        ip = layers.get("ip") or {}
+        tcp = layers.get("tcp") or {}
+        items = cb if isinstance(cb, list) else [cb]
+        for item in items:
+            message = _message_from_item(item, frame, ip, tcp)
+            if message is not None:
+                yield message
+
+
+def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter]:
+    """One fields pass. JSON is only for the rare frame whose columns do not line up."""
+    cmd = [tshark, "-n", "-r", str(pcap), "-Y", "couchbase", "-T", "fields"]
+    for name in _FIELD_COLUMNS:
+        cmd.extend(("-e", name))
+    cmd.extend(
+        (
+            "-E",
+            f"aggregator={FIELD_AGG}",
+            "-E",
+            "occurrence=a",
+            "-E",
+            "separator=\t",
+        )
+    )
     log(f"reading Couchbase messages from {pcap.name}")
-    stderr_file = tempfile.NamedTemporaryFile(prefix="tshark-", suffix=".err", delete=False)
-    stderr_path = Path(stderr_file.name)
-    stderr_file.close()
-    stderr_handle = open(stderr_path, "w")
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_handle)
-    assert proc.stdout is not None
     requests: list[dict] = []
     responses: list[dict] = []
     magics: Counter = Counter()
-    try:
-        for raw in proc.stdout:
-            line = raw.decode("utf-8", "replace").strip()
-            if '"layers"' not in line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            layers = obj.get("layers") or {}
-            cb = layers.get("couchbase")
-            if not cb:
-                continue
-            frame = layers.get("frame") or {}
-            ip = layers.get("ip") or {}
-            tcp = layers.get("tcp") or {}
-            items = cb if isinstance(cb, list) else [cb]
-            for item in items:
-                message = _message_from_item(item, frame, ip, tcp)
-                if message is None:
-                    continue
-                magics[message["magic"]] += 1
-                if message["magic"] in CLIENT_REQ_MAGIC:
-                    requests.append(message)
-                elif message["magic"] in CLIENT_RES_MAGIC:
-                    responses.append(message)
-        code = proc.wait()
-        if code != 0:
-            stderr_handle.close()
-            tail = stderr_path.read_text(errors="replace")[-2000:]
-            raise SystemExit(f"tshark exited {code}\n{tail}")
-    finally:
-        stderr_handle.close()
-        stderr_path.unlink(missing_ok=True)
+    redo: list[str] = []
+    for line in iter_tshark(cmd):
+        if not line:
+            continue
+        messages, bad_frame = messages_from_field_line(line)
+        if bad_frame is not None:
+            if bad_frame:
+                redo.append(bad_frame)
+            continue
+        for message in messages:
+            _keep_client_message(message, requests, responses, magics)
+    if redo:
+        log(f"re-reading {len(redo)} frames whose Couchbase columns did not line up")
+        for start in range(0, len(redo), 40):
+            chunk = redo[start : start + 40]
+            display = " || ".join(f"frame.number=={number}" for number in chunk)
+            for message in _iter_ek_messages(pcap, tshark, display):
+                _keep_client_message(message, requests, responses, magics)
     if not requests and not responses:
         raise SystemExit(f"No Couchbase client requests or responses in {pcap}")
     return requests, responses, magics
-
-
-def learn_opcode_names(pcap: Path, tshark: str) -> dict[str, str]:
-    """First Info column per opcode, e.g. 'Get Locked Request, Opcode: 0x94'."""
-    cmd = [
-        tshark,
-        "-n",
-        "-r",
-        str(pcap),
-        "-Y",
-        "couchbase",
-        "-T",
-        "fields",
-        "-e",
-        "couchbase.opcode",
-        "-e",
-        "_ws.col.Info",
-        "-E",
-        "aggregator=|",
-        "-E",
-        "occurrence=f",
-    ]
-    proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
-    learned: dict[str, str] = {}
-    for line in proc.stdout.splitlines():
-        opcode_raw, _, info = line.partition("\t")
-        if not opcode_raw or not info:
-            continue
-        opcode = hex_int(opcode_raw.split("|", 1)[0], 2)
-        if opcode in learned:
-            continue
-        head = info.split(",", 1)[0]
-        head = re.sub(r"\s+with flexible framing extras", "", head)
-        for suffix in (" Server Request", " Server Response", " Request", " Response"):
-            if head.endswith(suffix):
-                head = head[: -len(suffix)]
-                break
-        head = head.strip()
-        if head:
-            learned[opcode] = head
-    return learned
 
 
 def couchbase_ports(requests: list[dict]) -> list[str]:
@@ -458,63 +559,70 @@ def couchbase_ports(requests: list[dict]) -> list[str]:
 
 
 def load_tcp_loss(pcap: Path, tshark: str, ports: list[str]) -> dict:
+    """One pass. A packet can carry more than one analysis flag, so count flags, not rows."""
     if not ports:
         return {"available": False}
     port_filter = " or ".join(f"tcp.port=={port}" for port in ports)
     server_ports = set(ports)
-
-    def rows(display: str) -> list[list[str]]:
-        cmd = [
-            tshark,
-            "-n",
-            "-r",
-            str(pcap),
-            "-Y",
-            display,
-            "-T",
-            "fields",
-            "-e",
-            "frame.time_relative",
-            "-e",
-            "tcp.stream",
-            "-e",
-            "tcp.srcport",
-            "-e",
-            "tcp.dstport",
-            "-E",
-            "separator=|",
-        ]
-        proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
-        parsed = []
-        for line in proc.stdout.splitlines():
-            if line.strip():
-                parsed.append(line.split("|"))
-        return parsed
-
+    cmd = [
+        tshark,
+        "-n",
+        "-r",
+        str(pcap),
+        "-Y",
+        f"({port_filter}) && (tcp.analysis.lost_segment || tcp.analysis.retransmission || tcp.analysis.ack_lost_segment)",
+        "-T",
+        "fields",
+        "-e",
+        "frame.time_relative",
+        "-e",
+        "tcp.stream",
+        "-e",
+        "tcp.srcport",
+        "-e",
+        "tcp.analysis.lost_segment",
+        "-e",
+        "tcp.analysis.retransmission",
+        "-e",
+        "tcp.analysis.ack_lost_segment",
+        "-E",
+        "separator=\t",
+        "-E",
+        "occurrence=f",
+    ]
     log("counting TCP gaps on the Couchbase ports")
-    lost_rows = rows(f"({port_filter}) and tcp.analysis.lost_segment")
-    retrans = rows(f"({port_filter}) and tcp.analysis.retransmission")
-    ack_lost = rows(f"({port_filter}) and tcp.analysis.ack_lost_segment")
+    lost = retrans = ack_lost = 0
     by_stream: Counter = Counter()
     by_direction = Counter()
     times: dict[str, list[float]] = defaultdict(list)
-    for cols in lost_rows:
-        if len(cols) < 4:
+    for line in iter_tshark(cmd):
+        if not line:
             continue
-        stream = cols[1]
-        sport = cols[2]
-        by_stream[stream] += 1
-        times[stream].append(float(cols[0]))
-        direction = "server_to_client" if sport in server_ports else "client_to_server"
-        by_direction[direction] += 1
+        cols = line.split("\t")
+        if len(cols) < 6:
+            continue
+        time_raw, stream, sport, lost_flag, retrans_flag, ack_flag = cols[:6]
+        if lost_flag:
+            lost += 1
+            by_stream[stream] += 1
+            try:
+                times[stream].append(float(time_raw))
+            except ValueError:
+                pass
+            direction = "server_to_client" if sport in server_ports else "client_to_server"
+            by_direction[direction] += 1
+        if retrans_flag:
+            retrans += 1
+        if ack_flag:
+            ack_lost += 1
     for stream_times in times.values():
         stream_times.sort()
     return {
         "available": True,
         "ports": ports,
-        "lost_segments": len(lost_rows),
-        "retransmissions": len(retrans),
-        "ack_lost_segments": len(ack_lost),
+        "lost_segments": lost,
+        "retransmissions": retrans,
+        "ack_lost_segments": ack_lost,
         "lost_by_stream": dict(by_stream.most_common()),
         "client_to_server": by_direction["client_to_server"],
         "server_to_client": by_direction["server_to_client"],
@@ -1873,7 +1981,6 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
         pcap = job["pcap"]
         pcap_names = [path.name for path in job.get("also") or [pcap]]
         requests, responses, magics = load_pcap(pcap, tshark)
-        opcode_names = learn_opcode_names(pcap, tshark)
         capinfos = find_capinfos(tshark)
         duration = None
         if capinfos:
@@ -1904,14 +2011,13 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
         opcode_names=opcode_names,
         loss=loss,
     )
-    computed = render_summary(facts)
     if args.dry_run:
         print_dry_run(out, args, facts)
         return out, True
 
+    computed = render_summary(facts)
     out.mkdir(parents=True, exist_ok=True)
-    public_facts = {key: value for key, value in facts.items()}
-    (out / "facts.json").write_text(json.dumps(public_facts, indent=2) + "\n")
+    (out / "facts.json").write_text(json.dumps(facts, indent=2) + "\n")
     write_tsv(out, requests, responses, facts["unanswered"])
 
     if args.no_ai:

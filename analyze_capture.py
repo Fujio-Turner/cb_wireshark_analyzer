@@ -1,0 +1,2020 @@
+#!/usr/bin/env python3
+"""Match Couchbase requests and responses in a Wireshark dump.
+
+The script counts. A local Ollama model (config.json, default qwen3.8:27b-mlx)
+writes the note from those counts. Pass --no-ai to keep the counted note only.
+Pass --dry-run to print the plan without writing files or calling the model.
+
+Input is a pcap/pcapng, a tshark field export (.tsv or .csv), or a directory
+containing them. A request export alone has no responses and, on collections,
+an empty couchbase.key. When a pcap sits next to that export, the pcap is used.
+"""
+
+from __future__ import annotations
+
+import argparse
+import bisect
+import hashlib
+import json
+import os
+import re
+import shutil
+import statistics
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from collections import Counter, defaultdict
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent
+DEFAULT_OLLAMA = "http://127.0.0.1:11434"
+DEFAULT_MODEL = "qwen3.8:27b-mlx"
+DEFAULT_TIMEOUT = 600
+TABLE_TOKEN = "{{UNANSWERED_TABLE}}"
+
+# Binary-protocol opcodes. Names the dissector confirms override this map.
+OPCODES = {
+    0x00: "Get",
+    0x01: "Set",
+    0x02: "Add",
+    0x03: "Replace",
+    0x04: "Delete",
+    0x05: "Increment",
+    0x06: "Decrement",
+    0x07: "Quit",
+    0x08: "Flush",
+    0x09: "GetQ",
+    0x0A: "No-op",
+    0x0B: "Version",
+    0x0C: "GetK",
+    0x0D: "GetKQ",
+    0x0E: "Append",
+    0x0F: "Prepend",
+    0x10: "Stat",
+    0x11: "SetQ",
+    0x12: "AddQ",
+    0x13: "ReplaceQ",
+    0x14: "DeleteQ",
+    0x15: "IncrementQ",
+    0x16: "DecrementQ",
+    0x17: "QuitQ",
+    0x18: "FlushQ",
+    0x19: "AppendQ",
+    0x1A: "PrependQ",
+    0x1B: "Verbosity",
+    0x1C: "Touch",
+    0x1D: "Get-and-Touch",
+    0x1E: "Get-and-TouchQ",
+    0x94: "Get Locked",
+    0x95: "Unlock",
+}
+
+STATUS = {
+    0x00: "success",
+    0x01: "key not found",
+    0x02: "key exists",
+    0x03: "value too large",
+    0x04: "invalid arguments",
+    0x05: "not stored",
+    0x06: "non-numeric",
+    0x07: "not my vbucket",
+    0x08: "authentication error",
+    0x09: "locked",
+    0x81: "unknown command",
+    0x82: "out of memory",
+    0x83: "not supported",
+    0x84: "internal error",
+    0x85: "busy",
+    0x86: "temporary failure",
+}
+
+CLIENT_REQ_MAGIC = {0x80, 0x08}
+CLIENT_RES_MAGIC = {0x81, 0x18}
+MAGIC_ROLE = {
+    0x80: "client request",
+    0x08: "client request, flexible framing",
+    0x81: "client response",
+    0x18: "client response, flexible framing",
+    0x82: "server request",
+    0x83: "server response",
+}
+
+COLUMN_ALIASES = {
+    "frame": ("frame.number", "frame", "no.", "no", "number"),
+    "time": ("frame.time_relative", "time", "time_relative", "frame.time"),
+    "stream": ("tcp.stream", "stream"),
+    "src": ("ip.src", "src", "source"),
+    "sport": ("tcp.srcport", "srcport", "src_port", "source port"),
+    "dst": ("ip.dst", "dst", "destination"),
+    "dport": ("tcp.dstport", "dstport", "dst_port", "destination port"),
+    "opcode": ("couchbase.opcode", "opcode"),
+    "opaque": ("couchbase.opaque", "opaque"),
+    "key": ("couchbase.key.logical_key", "logical_key", "couchbase.key", "key"),
+    "status": ("couchbase.status", "status"),
+    "magic": ("couchbase.magic", "magic"),
+}
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def log(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+def opcode_name(opcode: str, learned: dict[str, str] | None = None) -> str:
+    if learned and opcode in learned:
+        return learned[opcode]
+    try:
+        return OPCODES.get(int(opcode, 16), opcode)
+    except (TypeError, ValueError):
+        return opcode or ""
+
+
+def status_name(status: str) -> str:
+    if not status:
+        return ""
+    try:
+        return STATUS.get(int(status, 16), status)
+    except (TypeError, ValueError):
+        return status
+
+
+def hex_int(value, width: int) -> str:
+    if value is None or value == "":
+        return ""
+    text = str(value).strip()
+    if "," in text:
+        return text
+    number = int(text, 16) if text.lower().startswith("0x") else int(float(text))
+    return f"0x{number:0{width}x}"
+
+
+def first(value):
+    if isinstance(value, list):
+        return value[0] if value else ""
+    return value
+
+
+def field(item: dict, suffix: str):
+    """EK flattens fields to couchbase_couchbase_<suffix>."""
+    if not isinstance(item, dict):
+        return None
+    direct = (
+        f"couchbase_couchbase_{suffix}",
+        f"couchbase_{suffix}",
+        suffix,
+    )
+    for key in direct:
+        if key in item and item[key] not in (None, ""):
+            return item[key]
+    tail = "_" + suffix
+    for key, val in item.items():
+        if key.endswith(tail) and val not in (None, ""):
+            return val
+    return None
+
+
+def key_family(key: str) -> str:
+    if not key:
+        return "(no key)"
+    parts = key.split("::")
+    if len(parts) >= 2:
+        return "::".join(parts[:2])
+    return parts[0]
+
+
+def percentile(values: list[float], p: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    index = (len(ordered) - 1) * p
+    low = int(index)
+    high = min(low + 1, len(ordered) - 1)
+    frac = index - low
+    return ordered[low] * (1 - frac) + ordered[high] * frac
+
+
+def fmt_secs(value: float) -> str:
+    return f"{value:.3f}"
+
+
+def fmt_ms(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value * 1000:.1f} ms"
+
+
+def md_table(headers: list[str], rows: list[list[str]]) -> str:
+    head = "| " + " | ".join(headers) + " |"
+    rule = "| " + " | ".join("---" for _ in headers) + " |"
+    body = ["| " + " | ".join(str(cell) for cell in row) + " |" for row in rows]
+    return "\n".join([head, rule, *body])
+
+
+def backtick(text: str) -> str:
+    return "`" + text.replace("|", "\\|") + "`"
+
+
+def find_tshark(explicit: str | None) -> str | None:
+    if explicit:
+        return explicit
+    found = shutil.which("tshark")
+    if found:
+        return found
+    mac = Path("/Applications/Wireshark.app/Contents/MacOS/tshark")
+    if mac.exists():
+        return str(mac)
+    return None
+
+
+def find_capinfos(tshark: str | None) -> str | None:
+    if tshark:
+        sibling = Path(tshark).with_name("capinfos")
+        if sibling.exists():
+            return str(sibling)
+    found = shutil.which("capinfos")
+    return found
+
+
+def is_pcap(path: Path) -> bool:
+    name = path.name.lower()
+    return name.endswith((".pcap", ".pcapng", ".pcap.gz", ".pcapng.gz"))
+
+
+def is_table(path: Path) -> bool:
+    return path.suffix.lower() in {".tsv", ".csv", ".txt", ".tsx"}
+
+
+def file_md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def prefer_plain_pcaps(paths: list[Path]) -> list[Path]:
+    """A .pcap.gz next to the same capture's .pcap is the compressed copy, not a second capture."""
+    plain = [path for path in paths if not path.name.lower().endswith(".gz")]
+    return plain or paths
+
+
+def unique_pcaps(paths: list[Path]) -> list[tuple[Path, list[Path]]]:
+    """Group capture files by content. Prefer an uncompressed file as the representative."""
+    paths = prefer_plain_pcaps(paths)
+    groups: dict[str, list[Path]] = defaultdict(list)
+    for path in paths:
+        groups[file_md5(path)].append(path)
+    chosen = []
+    for members in groups.values():
+        plain = [p for p in members if not p.name.lower().endswith(".gz")]
+        rep = sorted(plain or members, key=lambda p: p.name)[0]
+        chosen.append((rep, sorted(members, key=lambda p: p.name)))
+    return sorted(chosen, key=lambda item: item[0].name)
+
+
+def parse_capinfos_text(text: str) -> tuple[float | None, int | None]:
+    """Pull duration and packet count out of capinfos' text report.
+
+    The summary line is rounded ("82 k"). The per-interface line is the exact count.
+    """
+    duration = None
+    packets = None
+    match = re.search(r"Capture duration:\s+([0-9.]+)", text)
+    if match:
+        duration = float(match.group(1))
+    match = re.search(r"Number of packets\s*=\s*([0-9,]+)", text)
+    if match:
+        packets = int(match.group(1).replace(",", ""))
+    else:
+        match = re.search(r"Number of packets:\s+([0-9.,]+)\s*(k|m)?", text, re.I)
+        if match:
+            number = float(match.group(1).replace(",", ""))
+            unit = (match.group(2) or "").lower()
+            if unit == "k":
+                number *= 1000
+            elif unit == "m":
+                number *= 1_000_000
+            packets = int(number)
+    return duration, packets
+
+
+def read_capinfos(capinfos: str, pcap: Path) -> tuple[float | None, int | None]:
+    proc = subprocess.run(
+        [capinfos, str(pcap)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return parse_capinfos_text(proc.stdout or "")
+
+
+def _message_from_item(item: dict, frame: dict, ip: dict, tcp: dict) -> dict | None:
+    magic_raw = field(item, "magic")
+    if magic_raw is None:
+        return None
+    try:
+        magic = int(first(magic_raw))
+    except (TypeError, ValueError):
+        return None
+    key = first(field(item, "key_logical_key")) or first(field(item, "key")) or ""
+    if isinstance(key, str):
+        key = key.strip()
+    status_raw = field(item, "status")
+    return {
+        "frame": str(first(frame.get("frame_frame_number", ""))),
+        "time": float(first(frame.get("frame_frame_time_relative", 0)) or 0),
+        "stream": str(first(tcp.get("tcp_tcp_stream", ""))),
+        "src": str(first(ip.get("ip_ip_src", ""))),
+        "sport": str(first(tcp.get("tcp_tcp_srcport", ""))),
+        "dst": str(first(ip.get("ip_ip_dst", ""))),
+        "dport": str(first(tcp.get("tcp_tcp_dstport", ""))),
+        "opcode": hex_int(first(field(item, "opcode")), 2),
+        "opaque": hex_int(first(field(item, "opaque")), 8),
+        "key": key if isinstance(key, str) else str(key),
+        "status": hex_int(first(status_raw), 4) if status_raw not in (None, "") else "",
+        "magic": magic,
+    }
+
+
+def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter]:
+    cmd = [
+        tshark,
+        "-n",
+        "-r",
+        str(pcap),
+        "-Y",
+        "couchbase",
+        "-T",
+        "ek",
+        # -J includes field values. -j only emits {"filtered": "field.name"}.
+        "-J",
+        "frame",
+        "-J",
+        "ip",
+        "-J",
+        "tcp",
+        "-J",
+        "couchbase",
+    ]
+    log(f"reading Couchbase messages from {pcap.name}")
+    stderr_file = tempfile.NamedTemporaryFile(prefix="tshark-", suffix=".err", delete=False)
+    stderr_path = Path(stderr_file.name)
+    stderr_file.close()
+    stderr_handle = open(stderr_path, "w")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_handle)
+    assert proc.stdout is not None
+    requests: list[dict] = []
+    responses: list[dict] = []
+    magics: Counter = Counter()
+    try:
+        for raw in proc.stdout:
+            line = raw.decode("utf-8", "replace").strip()
+            if '"layers"' not in line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            layers = obj.get("layers") or {}
+            cb = layers.get("couchbase")
+            if not cb:
+                continue
+            frame = layers.get("frame") or {}
+            ip = layers.get("ip") or {}
+            tcp = layers.get("tcp") or {}
+            items = cb if isinstance(cb, list) else [cb]
+            for item in items:
+                message = _message_from_item(item, frame, ip, tcp)
+                if message is None:
+                    continue
+                magics[message["magic"]] += 1
+                if message["magic"] in CLIENT_REQ_MAGIC:
+                    requests.append(message)
+                elif message["magic"] in CLIENT_RES_MAGIC:
+                    responses.append(message)
+        code = proc.wait()
+        if code != 0:
+            stderr_handle.close()
+            tail = stderr_path.read_text(errors="replace")[-2000:]
+            raise SystemExit(f"tshark exited {code}\n{tail}")
+    finally:
+        stderr_handle.close()
+        stderr_path.unlink(missing_ok=True)
+    if not requests and not responses:
+        raise SystemExit(f"No Couchbase client requests or responses in {pcap}")
+    return requests, responses, magics
+
+
+def learn_opcode_names(pcap: Path, tshark: str) -> dict[str, str]:
+    """First Info column per opcode, e.g. 'Get Locked Request, Opcode: 0x94'."""
+    cmd = [
+        tshark,
+        "-n",
+        "-r",
+        str(pcap),
+        "-Y",
+        "couchbase",
+        "-T",
+        "fields",
+        "-e",
+        "couchbase.opcode",
+        "-e",
+        "_ws.col.Info",
+        "-E",
+        "aggregator=|",
+        "-E",
+        "occurrence=f",
+    ]
+    proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    learned: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        opcode_raw, _, info = line.partition("\t")
+        if not opcode_raw or not info:
+            continue
+        opcode = hex_int(opcode_raw.split("|", 1)[0], 2)
+        if opcode in learned:
+            continue
+        head = info.split(",", 1)[0]
+        head = re.sub(r"\s+with flexible framing extras", "", head)
+        for suffix in (" Server Request", " Server Response", " Request", " Response"):
+            if head.endswith(suffix):
+                head = head[: -len(suffix)]
+                break
+        head = head.strip()
+        if head:
+            learned[opcode] = head
+    return learned
+
+
+def couchbase_ports(requests: list[dict]) -> list[str]:
+    counts = Counter(msg["dport"] for msg in requests if msg.get("dport"))
+    return [port for port, _ in counts.most_common()]
+
+
+def load_tcp_loss(pcap: Path, tshark: str, ports: list[str]) -> dict:
+    if not ports:
+        return {"available": False}
+    port_filter = " or ".join(f"tcp.port=={port}" for port in ports)
+    server_ports = set(ports)
+
+    def rows(display: str) -> list[list[str]]:
+        cmd = [
+            tshark,
+            "-n",
+            "-r",
+            str(pcap),
+            "-Y",
+            display,
+            "-T",
+            "fields",
+            "-e",
+            "frame.time_relative",
+            "-e",
+            "tcp.stream",
+            "-e",
+            "tcp.srcport",
+            "-e",
+            "tcp.dstport",
+            "-E",
+            "separator=|",
+        ]
+        proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        parsed = []
+        for line in proc.stdout.splitlines():
+            if line.strip():
+                parsed.append(line.split("|"))
+        return parsed
+
+    log("counting TCP gaps on the Couchbase ports")
+    lost_rows = rows(f"({port_filter}) and tcp.analysis.lost_segment")
+    retrans = rows(f"({port_filter}) and tcp.analysis.retransmission")
+    ack_lost = rows(f"({port_filter}) and tcp.analysis.ack_lost_segment")
+    by_stream: Counter = Counter()
+    by_direction = Counter()
+    times: dict[str, list[float]] = defaultdict(list)
+    for cols in lost_rows:
+        if len(cols) < 4:
+            continue
+        stream = cols[1]
+        sport = cols[2]
+        by_stream[stream] += 1
+        times[stream].append(float(cols[0]))
+        direction = "server_to_client" if sport in server_ports else "client_to_server"
+        by_direction[direction] += 1
+    for stream_times in times.values():
+        stream_times.sort()
+    return {
+        "available": True,
+        "ports": ports,
+        "lost_segments": len(lost_rows),
+        "retransmissions": len(retrans),
+        "ack_lost_segments": len(ack_lost),
+        "lost_by_stream": dict(by_stream.most_common()),
+        "client_to_server": by_direction["client_to_server"],
+        "server_to_client": by_direction["server_to_client"],
+        "_times": times,
+    }
+
+
+def gap_counts(unanswered: list[dict], loss: dict) -> dict[str, int]:
+    times: dict[str, list[float]] = loss.get("_times") or {}
+    counts = {}
+    for window in (0.05, 0.25, 1.0, 2.5):
+        hits = 0
+        for msg in unanswered:
+            arr = times.get(str(msg["stream"]))
+            if not arr:
+                continue
+            index = bisect.bisect_left(arr, msg["time"])
+            if index < len(arr) and arr[index] <= msg["time"] + window:
+                hits += 1
+        counts[str(window)] = hits
+    return counts
+
+
+def sniff_delimiter(path: Path) -> str:
+    first = path.read_bytes()[:8192].splitlines()[0] if path.stat().st_size else b""
+    if b"\t" in first:
+        return "\t"
+    return ","
+
+
+def is_number(text: str) -> bool:
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False
+
+
+def map_header(cells: list[str]) -> dict[str, int]:
+    lookup = {cell.strip().lower(): index for index, cell in enumerate(cells)}
+    found = {}
+    for name, aliases in COLUMN_ALIASES.items():
+        for alias in aliases:
+            if alias in lookup:
+                found[name] = lookup[alias]
+                break
+    return found
+
+
+def split_joined(value: str, count: int) -> list[str]:
+    if count <= 1:
+        return [value]
+    if value == "":
+        return [""] * count
+    parts = value.split(",")
+    if len(parts) < count:
+        parts.extend([""] * (count - len(parts)))
+    return parts[:count]
+
+
+def rows_to_messages(rows: list[list[str]], columns: dict[str, int] | None, kind: str) -> list[dict]:
+    messages = []
+    for cells in rows:
+        def col(name: str, positional: int | None = None) -> str:
+            if columns and name in columns and columns[name] < len(cells):
+                return cells[columns[name]]
+            if positional is not None and positional < len(cells):
+                return cells[positional]
+            return ""
+
+        if columns:
+            opaque_raw = col("opaque")
+            opcode_raw = col("opcode")
+            key_raw = col("key")
+            status_raw = col("status")
+            frame = col("frame")
+            time_raw = col("time") or "0"
+            stream = col("stream")
+            src, sport, dst, dport = col("src"), col("sport"), col("dst"), col("dport")
+            magic_raw = col("magic")
+        elif kind == "request":
+            # frame, time, stream, src, sport, dst, dport, opcode, opaque, key
+            frame, time_raw, stream = cells[0], cells[1], cells[2]
+            src, sport, dst, dport = cells[3], cells[4], cells[5], cells[6]
+            opcode_raw, opaque_raw = cells[7], cells[8]
+            key_raw = cells[9] if len(cells) > 9 else ""
+            status_raw = ""
+            magic_raw = ""
+        else:
+            # frame, time, stream, opcode, opaque, status
+            frame, time_raw, stream = cells[0], cells[1], cells[2]
+            opcode_raw, opaque_raw, status_raw = cells[3], cells[4], cells[5] if len(cells) > 5 else ""
+            src = sport = dst = dport = key_raw = magic_raw = ""
+
+        opaques = [part for part in opaque_raw.split(",") if part != ""] or [""]
+        opcodes = split_joined(opcode_raw, len(opaques))
+        keys = split_joined(key_raw, len(opaques))
+        statuses = split_joined(status_raw, len(opaques))
+        try:
+            when = float(time_raw)
+        except ValueError:
+            when = 0.0
+        magic = None
+        if magic_raw and "," not in magic_raw:
+            try:
+                magic = int(magic_raw, 16) if str(magic_raw).lower().startswith("0x") else int(float(magic_raw))
+            except ValueError:
+                magic = None
+        for index, opaque in enumerate(opaques):
+            messages.append(
+                {
+                    "frame": frame,
+                    "time": when,
+                    "stream": stream,
+                    "src": src,
+                    "sport": sport,
+                    "dst": dst,
+                    "dport": dport,
+                    "opcode": hex_int(opcodes[index], 2) if opcodes[index] else "",
+                    "opaque": hex_int(opaque, 8) if opaque else "",
+                    "key": keys[index],
+                    "status": hex_int(statuses[index], 4) if statuses[index] else "",
+                    "magic": magic if magic is not None else (0x80 if kind == "request" else 0x18),
+                }
+            )
+    return messages
+
+
+def load_table(path: Path) -> tuple[list[dict], list[dict], int]:
+    delimiter = sniff_delimiter(path)
+    lines = path.read_text(errors="replace").splitlines()
+    rows = [line.split(delimiter) for line in lines if line.strip()]
+    if not rows:
+        raise SystemExit(f"{path} is empty")
+    columns = None
+    joined_rows = 0
+    if not is_number(rows[0][0]):
+        columns = map_header(rows[0])
+        if "opaque" not in columns or "stream" not in columns:
+            raise SystemExit(
+                f"{path.name} has no tcp.stream and couchbase.opaque columns. "
+                "Export those fields from tshark, or pass the pcap."
+            )
+        rows = rows[1:]
+    kind = "request"
+    if columns and "magic" in columns:
+        requests, responses = [], []
+        # Split after expansion by magic on each source row.
+        req_rows, res_rows = [], []
+        for cells in rows:
+            magic = cells[columns["magic"]] if columns["magic"] < len(cells) else ""
+            try:
+                value = int(magic, 16) if str(magic).lower().startswith("0x") else int(float(magic or "0"))
+            except ValueError:
+                value = 0
+            if value in CLIENT_RES_MAGIC:
+                res_rows.append(cells)
+            else:
+                req_rows.append(cells)
+        requests = rows_to_messages(req_rows, columns, "request")
+        responses = rows_to_messages(res_rows, columns, "response")
+        return requests, responses, 0
+    width = len(rows[0])
+    if columns:
+        kind = "response" if "status" in columns and "src" not in columns else "request"
+    elif width >= 10:
+        kind = "request"
+    elif width >= 6:
+        kind = "response"
+    else:
+        raise SystemExit(
+            f"{path.name} has {width} columns. Expected 10 (requests) or 6 (responses), "
+            "or a header row naming tcp.stream and couchbase.opaque."
+        )
+    for cells in rows:
+        opaque_index = columns["opaque"] if columns and "opaque" in columns else (8 if kind == "request" else 4)
+        if opaque_index < len(cells) and "," in cells[opaque_index]:
+            joined_rows += 1
+    messages = rows_to_messages(rows, columns, kind)
+    if kind == "request":
+        return messages, [], joined_rows
+    return [], messages, joined_rows
+
+
+def load_tsv_pair(reqs_path: Path, resps_path: Path | None) -> tuple[list[dict], list[dict], int]:
+    reqs, resps, joined = load_table(reqs_path)
+    if resps_path is not None:
+        extra_reqs, extra_resps, extra_joined = load_table(resps_path)
+        # A response file can be mislabeled; keep whichever side it actually holds.
+        if extra_resps:
+            resps.extend(extra_resps)
+        elif extra_reqs and not reqs:
+            reqs = extra_reqs
+        elif extra_reqs:
+            log(f"{resps_path.name} looked like requests; expected a response export")
+        joined += extra_joined
+    if not reqs:
+        raise SystemExit(f"No requests in {reqs_path}")
+    if not resps:
+        raise SystemExit(
+            f"No responses for {reqs_path.name}. Pass --resps, or put the pcap in the same folder."
+        )
+    return reqs, resps, joined
+
+
+def pair_messages(requests: list[dict], responses: list[dict]) -> dict:
+    """Pair on (tcp.stream, opaque) in time order.
+
+    A response timestamp earlier than the request is an in-flight response
+    from before that request, not a match for it. Opaque is per connection,
+    so the stream stays in the key.
+    """
+    by_req: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    by_res: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for msg in requests:
+        by_req[(msg["stream"], msg["opaque"])].append(msg)
+    for msg in responses:
+        by_res[(msg["stream"], msg["opaque"])].append(msg)
+
+    matched = []
+    unanswered = []
+    resp_only = []
+    for key in set(by_req) | set(by_res):
+        reqs = sorted(by_req.get(key, []), key=lambda msg: (msg["time"], msg["frame"]))
+        resps = sorted(by_res.get(key, []), key=lambda msg: (msg["time"], msg["frame"]))
+        i = j = 0
+        while i < len(reqs) and j < len(resps):
+            if resps[j]["time"] < reqs[i]["time"]:
+                resp_only.append(resps[j])
+                j += 1
+                continue
+            matched.append((reqs[i], resps[j]))
+            i += 1
+            j += 1
+        unanswered.extend(reqs[i:])
+        resp_only.extend(resps[j:])
+    unanswered.sort(key=lambda msg: (msg["time"], msg["frame"]))
+    resp_only.sort(key=lambda msg: (msg["time"], msg["frame"]))
+    return {"matched": matched, "unanswered": unanswered, "resp_only": resp_only}
+
+
+def bin_width(capture_end: float) -> int:
+    if capture_end <= 180:
+        return 10
+    if capture_end <= 1800:
+        return 60
+    return 300
+
+
+def build_facts(
+    requests: list[dict],
+    responses: list[dict],
+    paired: dict,
+    *,
+    source_label: str,
+    pcap_names: list[str],
+    capture_end: float,
+    packet_count: int | None,
+    magics: Counter | None,
+    joined_rows: int,
+    opcode_names: dict[str, str],
+    loss: dict | None,
+) -> dict:
+    matched = paired["matched"]
+    unanswered = paired["unanswered"]
+    resp_only = paired["resp_only"]
+    rtts = [resp["time"] - req["time"] for req, resp in matched if resp["time"] >= req["time"]]
+    max_rtt = max(rtts) if rtts else None
+    window = max_rtt if max_rtt is not None else 1.0
+    window_source = "maximum matched round trip" if max_rtt is not None else "1 second fallback, no matched round trip"
+
+    def enrich(msg: dict, left: float | None = None) -> dict:
+        row = {
+            "frame": msg["frame"],
+            "time": msg["time"],
+            "time_s": fmt_secs(msg["time"]),
+            "seconds_left": None if left is None else round(left, 3),
+            "stream": msg["stream"],
+            "src": msg["src"],
+            "sport": msg["sport"],
+            "dst": msg["dst"],
+            "dport": msg["dport"],
+            "opcode": msg["opcode"],
+            "opcode_name": opcode_name(msg["opcode"], opcode_names),
+            "opaque": msg["opaque"],
+            "key": msg["key"],
+            "status": msg.get("status") or "",
+            "status_name": status_name(msg.get("status") or ""),
+        }
+        return row
+
+    unanswered_rows = [enrich(msg, capture_end - msg["time"]) for msg in unanswered]
+    resp_only_rows = [enrich(msg, capture_end - msg["time"]) for msg in resp_only]
+    start_rows = [row for row in resp_only_rows if row["time"] <= window]
+    end_rows = [row for row in unanswered_rows if (row["seconds_left"] or 0) <= window]
+    end_rows_1s = [row for row in unanswered_rows if (row["seconds_left"] or 0) <= 1.0]
+    interior_unanswered = [row for row in unanswered_rows if (row["seconds_left"] or 0) > window]
+    interior_resp_only = [row for row in resp_only_rows if row["time"] > window]
+
+    width = bin_width(capture_end)
+    bins = int(capture_end // width) + 1 if capture_end > 0 else 1
+    histogram = [
+        {"start": i * width, "end": (i + 1) * width, "unanswered": 0, "resp_only": 0, "matched": 0}
+        for i in range(bins)
+    ]
+
+    def bin_index(when: float) -> int:
+        return min(bins - 1, max(0, int(when // width)))
+
+    for row in unanswered_rows:
+        histogram[bin_index(row["time"])]["unanswered"] += 1
+    for row in resp_only_rows:
+        histogram[bin_index(row["time"])]["resp_only"] += 1
+    for req, _resp in matched:
+        histogram[bin_index(req["time"])]["matched"] += 1
+
+    frame_counts = Counter(msg["frame"] for msg in requests)
+    multi_frames = sum(1 for count in frame_counts.values() if count > 1)
+    extra_messages = sum(count - 1 for count in frame_counts.values() if count > 1)
+    empty_keys = sum(1 for msg in requests if not msg.get("key"))
+
+    families = Counter(key_family(row["key"]) for row in unanswered_rows)
+    dominant = families.most_common(1)[0][0] if families else ""
+    other_rows = [row for row in unanswered_rows if key_family(row["key"]) != dominant]
+    dupes = [
+        {"key": key, "count": count}
+        for key, count in Counter(row["key"] for row in unanswered_rows if row["key"]).most_common()
+        if count > 1
+    ]
+
+    stream_reqs = Counter(msg["stream"] for msg in requests)
+    stream_un = Counter(row["stream"] for row in unanswered_rows)
+    endpoints: dict[str, dict] = {}
+    for msg in requests:
+        endpoints.setdefault(
+            msg["stream"],
+            {"src": msg["src"], "sport": msg["sport"], "dst": msg["dst"], "dport": msg["dport"]},
+        )
+    streams = []
+    for stream, req_count in stream_reqs.most_common():
+        end = endpoints.get(stream, {})
+        un = stream_un[stream]
+        streams.append(
+            {
+                "stream": stream,
+                "src": end.get("src", ""),
+                "sport": end.get("sport", ""),
+                "dst": end.get("dst", ""),
+                "dport": end.get("dport", ""),
+                "requests": req_count,
+                "unanswered": un,
+                "share": (un / req_count) if req_count else 0,
+            }
+        )
+
+    resp_streams_by_opaque: dict[str, set[str]] = defaultdict(set)
+    for msg in responses:
+        resp_streams_by_opaque[msg["opaque"]].add(msg["stream"])
+    cross = []
+    for row in unanswered_rows:
+        others = resp_streams_by_opaque.get(row["opaque"], set()) - {row["stream"]}
+        if others:
+            cross.append(
+                {
+                    "opaque": row["opaque"],
+                    "request_stream": row["stream"],
+                    "response_streams": sorted(others),
+                    "key": row["key"],
+                    "time_s": row["time_s"],
+                    "opcode_name": row["opcode_name"],
+                }
+            )
+
+    client = Counter((msg["src"], msg["sport"]) for msg in requests).most_common(1)
+    server = Counter((msg["dst"], msg["dport"]) for msg in requests).most_common(1)
+    ports = couchbase_ports(requests)
+
+    tcp = None
+    if loss and loss.get("available"):
+        near = gap_counts(unanswered, loss)
+        tcp = {
+            "ports": loss["ports"],
+            "lost_segments": loss["lost_segments"],
+            "retransmissions": loss["retransmissions"],
+            "ack_lost_segments": loss["ack_lost_segments"],
+            "lost_by_stream": loss["lost_by_stream"],
+            "client_to_server": loss["client_to_server"],
+            "server_to_client": loss["server_to_client"],
+            "unanswered_near_gap": near,
+        }
+
+    magic_rows = []
+    if magics:
+        for magic, count in magics.most_common():
+            magic_rows.append(
+                {
+                    "magic": f"0x{magic:02x}",
+                    "role": MAGIC_ROLE.get(magic, "other"),
+                    "messages": count,
+                }
+            )
+
+    return {
+        "source": source_label,
+        "pcap_files": pcap_names,
+        "capture_seconds": capture_end,
+        "packet_count": packet_count,
+        "client": {"ip": client[0][0][0], "port": client[0][0][1]} if client else {},
+        "server": {"ip": server[0][0][0], "port": server[0][0][1]} if server else {},
+        "couchbase_ports": ports,
+        "counts": {
+            "request_messages": len(requests),
+            "request_frames": len(frame_counts),
+            "multi_message_frames": multi_frames,
+            "extra_messages_in_those_frames": extra_messages,
+            "joined_tsv_rows": joined_rows,
+            "empty_keys": empty_keys,
+            "response_messages": len(responses),
+            "matched": len(matched),
+            "unanswered_requests": len(unanswered_rows),
+            "unique_unanswered_keys": len({row["key"] for row in unanswered_rows if row["key"]}),
+            "responses_without_request": len(resp_only_rows),
+        },
+        "rtt_seconds": {
+            "median": statistics.median(rtts) if rtts else None,
+            "mean": statistics.mean(rtts) if rtts else None,
+            "p90": percentile(rtts, 0.90),
+            "p95": percentile(rtts, 0.95),
+            "p99": percentile(rtts, 0.99),
+            "max": max_rtt,
+            "samples": len(rtts),
+        },
+        "edge": {
+            "window_seconds": window,
+            "window_source": window_source,
+            "start_responses": len(start_rows),
+            "end_requests": len(end_rows),
+            "end_requests_within_1s": len(end_rows_1s),
+            "interior_unanswered": len(interior_unanswered),
+            "interior_responses_without_request": len(interior_resp_only),
+            "start_examples": start_rows[:8],
+            "closing_examples": end_rows[:8],
+            "end_examples": end_rows_1s[:8],
+        },
+        "bin_seconds": width,
+        "bins": histogram,
+        "magics": magic_rows,
+        "opcodes_requests": _opcode_counter(requests, opcode_names),
+        "opcodes_unanswered": _opcode_counter(unanswered, opcode_names),
+        "opcodes_resp_only": _opcode_counter(resp_only, opcode_names),
+        "status_responses": _status_counter(responses),
+        "families": [{"family": name, "count": count} for name, count in families.most_common()],
+        "dominant_family": dominant,
+        "duplicate_keys": dupes,
+        "streams": streams,
+        "cross_stream_opaque": cross[:8],
+        "cross_stream_opaque_count": len(cross),
+        "other_keys": other_rows,
+        "unanswered": unanswered_rows,
+        "tcp": tcp,
+    }
+
+
+def _opcode_counter(messages: list[dict], learned: dict[str, str]) -> list[dict]:
+    counts = Counter(msg["opcode"] for msg in messages)
+    return [
+        {"opcode": opcode, "name": opcode_name(opcode, learned), "count": count}
+        for opcode, count in counts.most_common()
+    ]
+
+
+def _status_counter(messages: list[dict]) -> list[dict]:
+    counts = Counter(msg.get("status") or "" for msg in messages)
+    rows = []
+    for status, count in counts.most_common():
+        if not status:
+            continue
+        rows.append({"status": status, "name": status_name(status), "count": count})
+    return rows
+
+
+def _endpoint_phrase(facts: dict) -> str:
+    client = facts.get("client") or {}
+    server = facts.get("server") or {}
+    if not client or not server:
+        return "The client and server addresses were not both in the export."
+    return (
+        f"Client requests are from `{client['ip']}` to `{server['ip']}` port `{server['port']}`."
+    )
+
+
+def _stream_phrase(stream: dict) -> str:
+    left = f"`{stream['src']}:{stream['sport']}`" if stream.get("src") else "an unknown client port"
+    right = f"`{stream['dst']}:{stream['dport']}`" if stream.get("dst") else "the server"
+    return f"{left} → {right}"
+
+
+def unanswered_table(rows: list[dict]) -> str:
+    table_rows = []
+    for row in rows:
+        table_rows.append(
+            [
+                row["time_s"],
+                f"{row['seconds_left']:.3f}" if row["seconds_left"] is not None else "",
+                row["frame"],
+                row["stream"],
+                row["opcode_name"],
+                backtick(row["key"]) if row["key"] else "",
+            ]
+        )
+    return md_table(
+        ["Time (s)", "Left (s)", "Frame", "Stream", "Op", "Key"],
+        table_rows,
+    )
+
+
+def render_summary(facts: dict) -> str:
+    counts = facts["counts"]
+    edge = facts["edge"]
+    rtt = facts["rtt_seconds"]
+    lines: list[str] = []
+    lines.append("# Orphaned Couchbase requests")
+    lines.append("")
+    lines.append(f"Source: `{facts['source']}`")
+    if facts.get("pcap_files"):
+        shown = ", ".join(f"`{name}`" for name in facts["pcap_files"])
+        lines.append("")
+        lines.append(f"Capture file{'s' if len(facts['pcap_files']) > 1 else ''}: {shown}.")
+    lines.append("")
+    lines.append(
+        f"**{counts['unanswered_requests']} client requests have no matching response** "
+        f"({counts['unique_unanswered_keys']} document keys). "
+        f"**{counts['responses_without_request']} responses have no matching request.**"
+    )
+    lines.append("")
+    lines.append(
+        f"Matched calls return in {fmt_ms(rtt['median']) or 'an unknown time'}"
+        + (f" (maximum {fmt_ms(rtt['max'])})" if rtt["max"] is not None else "")
+        + f". The in-flight window is {fmt_ms(edge['window_seconds'])} ({edge['window_source']}). "
+        f"Inside that window there "
+        f"{'is' if edge['start_responses'] == 1 else 'are'} "
+        f"**{edge['start_responses']}** response"
+        f"{'' if edge['start_responses'] == 1 else 's'} whose request was sent before the recording started, and "
+        f"**{edge['end_requests']}** request"
+        f"{'' if edge['end_requests'] == 1 else 's'} whose response would have arrived after it stopped "
+        f"(**{edge['end_requests_within_1s']}** if that end window is widened to 1 second). "
+        f"The other **{edge['interior_unanswered']}** unanswered requests and "
+        f"**{edge['interior_responses_without_request']}** unmatched responses sit further inside the file."
+    )
+    lines.append("")
+    lines.append("## What was captured")
+    lines.append("")
+    if facts.get("packet_count") or facts.get("capture_seconds"):
+        bits = []
+        if facts.get("packet_count"):
+            bits.append(f"{facts['packet_count']:,} packets")
+        if facts.get("capture_seconds"):
+            bits.append(f"{facts['capture_seconds']:.3f} seconds")
+        lines.append("The recording is " + " and ".join(bits) + ".")
+        lines.append("")
+    lines.append(_endpoint_phrase(facts))
+    lines.append("")
+    lines.append(
+        f"Client requests: **{counts['request_messages']}** messages in "
+        f"**{counts['request_frames']}** frames. "
+        f"Client responses: **{counts['response_messages']}** messages. "
+        f"Matched on `tcp.stream` + `couchbase.opaque`: **{counts['matched']}**."
+    )
+    if facts["magics"]:
+        lines.append("")
+        lines.append(
+            md_table(
+                ["Magic", "Role", "Messages"],
+                [[row["magic"], row["role"], str(row["messages"])] for row in facts["magics"]],
+            )
+        )
+        lines.append("")
+        lines.append(
+            "Server-initiated messages (magic `0x82` / `0x83`) are counted above and are not part of the client pairing."
+        )
+    lines.append("")
+    lines.append("## How the requests and responses were matched")
+    lines.append("")
+    lines.append(
+        "An operation is the pair `tcp.stream` and `couchbase.opaque`. "
+        "The same opaque on two streams is two connections, each with its own counter. "
+        "Messages on a pair are matched in time order. A response timestamp earlier than the request stays unmatched: "
+        "it was already on the wire, and it is not the answer to the later request."
+    )
+    lines.append("")
+    lines.append(
+        "The same comparison in a spreadsheet is column K on the request sheet, `=C1&\"-\"&I1` "
+        "(stream and opaque), column G on the response sheet, `=C1&\"-\"&E1`, and "
+        "`=COUNTIF(Responses!G:G, K1)` on the request sheet. A count of 0 is an unanswered request."
+    )
+    lines.append("")
+    lines.append(
+        "Request columns are frame, time, tcp.stream, source, source port, destination, destination port, "
+        "opcode, opaque, key. Response columns are frame, time, tcp.stream, opcode, opaque, status."
+    )
+    if counts["empty_keys"] == counts["request_messages"] and counts["request_messages"]:
+        lines.append("")
+        lines.append(
+            "Every request key in this export is empty. With collections the document id is "
+            "`couchbase.key.logical_key`, and `couchbase.key` itself is blank. "
+            "Pass the pcap to fill the keys in."
+        )
+    elif counts["empty_keys"]:
+        lines.append("")
+        lines.append(
+            f"{counts['empty_keys']} requests have no document key. "
+            "Where a collection logical key was present, that value is the key used here."
+        )
+    if counts["multi_message_frames"]:
+        lines.append("")
+        lines.append(
+            f"**{counts['multi_message_frames']}** frames contain more than one client request "
+            f"({counts['extra_messages_in_those_frames']} extra messages). "
+            "A field export joins those opcodes and opaques with commas in one cell. "
+            "A single `COUNTIF` on the joined cell looks for one id that no response row equals. "
+            "Each message is matched on its own opaque here."
+        )
+    if counts["joined_tsv_rows"]:
+        lines.append("")
+        lines.append(
+            f"The request export had {counts['joined_tsv_rows']} rows with a comma-joined opaque. Those rows were split before the match."
+        )
+    lines.append("")
+    lines.append("## Round trip and the edges of the file")
+    lines.append("")
+    if rtt["samples"]:
+        lines.append(
+            md_table(
+                ["", "Round trip"],
+                [
+                    ["Median", fmt_ms(rtt["median"])],
+                    ["Mean", fmt_ms(rtt["mean"])],
+                    ["90th percentile", fmt_ms(rtt["p90"])],
+                    ["95th percentile", fmt_ms(rtt["p95"])],
+                    ["99th percentile", fmt_ms(rtt["p99"])],
+                    ["Maximum", fmt_ms(rtt["max"])],
+                    ["Matched samples", str(rtt["samples"])],
+                ],
+            )
+        )
+    else:
+        lines.append("No request had a later response, so there is no round-trip sample. The edge window is 1 second.")
+    lines.append("")
+    lines.append(
+        "A capture slices in-flight work at both ends. A response whose request was sent before the tap opened "
+        "has no request in the file. A request whose answer would arrive after the tap closed has no response in the file. "
+        f"The window used for that slice is {fmt_ms(edge['window_seconds'])}."
+    )
+    lines.append("")
+    edge_rows = [
+        [
+            "Start",
+            "Response whose request was sent before the capture opened",
+            str(edge["start_responses"]),
+        ],
+        [
+            "End",
+            f"Request still in flight when the capture closed (within {fmt_ms(edge['window_seconds'])})",
+            str(edge["end_requests"]),
+        ],
+        [
+            "End, 1 second",
+            "Same cutoff widened to 1 second",
+            str(edge["end_requests_within_1s"]),
+        ],
+        [
+            "Interior",
+            "Unanswered requests with more than the in-flight window left in the file",
+            str(edge["interior_unanswered"]),
+        ],
+        [
+            "Interior",
+            "Responses with no request after the opening window",
+            str(edge["interior_responses_without_request"]),
+        ],
+    ]
+    lines.append(md_table(["Edge", "What it is", "Count"], edge_rows))
+    if edge["start_examples"]:
+        lines.append("")
+        lines.append("Responses in the opening window:")
+        lines.append("")
+        lines.append(
+            md_table(
+                ["Time (s)", "Frame", "Stream", "Op", "Opaque", "Status"],
+                [
+                    [
+                        row["time_s"],
+                        row["frame"],
+                        row["stream"],
+                        row["opcode_name"],
+                        backtick(row["opaque"]),
+                        row["status"] or "",
+                    ]
+                    for row in edge["start_examples"]
+                ],
+            )
+        )
+    if edge["end_examples"]:
+        lines.append("")
+        lines.append("Requests in the last second, including the closing window:")
+        lines.append("")
+        lines.append(
+            md_table(
+                ["Time (s)", "Left (s)", "Frame", "Stream", "Op", "Key"],
+                [
+                    [
+                        row["time_s"],
+                        f"{row['seconds_left']:.3f}",
+                        row["frame"],
+                        row["stream"],
+                        row["opcode_name"],
+                        backtick(row["key"]) if row["key"] else "",
+                    ]
+                    for row in edge["end_examples"]
+                ],
+            )
+        )
+    if facts["bins"]:
+        lines.append("")
+        lines.append(
+            f"Counts by {facts['bin_seconds']}-second slice. The interior rows are spread through the recording, next to the matched traffic."
+        )
+        lines.append("")
+        lines.append(
+            md_table(
+                ["Seconds", "Unanswered requests", "Responses with no request", "Matched requests"],
+                [
+                    [
+                        f"{row['start']}–{row['end']}",
+                        str(row["unanswered"]),
+                        str(row["resp_only"]),
+                        str(row["matched"]),
+                    ]
+                    for row in facts["bins"]
+                    if row["unanswered"] or row["resp_only"] or row["matched"]
+                ],
+            )
+        )
+    resp_only_ops = facts["opcodes_resp_only"]
+    if resp_only_ops:
+        lines.append("")
+        bits = ", ".join(f"{row['count']} {row['name']}" for row in resp_only_ops[:6])
+        lines.append(f"Responses with no request, by opcode: {bits}.")
+
+    tcp = facts.get("tcp")
+    lines.append("")
+    lines.append("## Packets missing from the recording")
+    lines.append("")
+    if not tcp:
+        lines.append(
+            "This run did not read a pcap, so TCP lost-segment markers were not counted. "
+            "Pass the capture file to measure holes next to the unanswered requests."
+        )
+    elif tcp["lost_segments"] == 0:
+        lines.append(
+            f"tshark reported no lost-segment markers on port {', '.join(tcp['ports'])}. "
+            f"Retransmissions: {tcp['retransmissions']}."
+        )
+    else:
+        ports = ", ".join(tcp["ports"])
+        lines.append(
+            f"On port {ports} tshark reports **{tcp['lost_segments']:,}** lost-segment markers, "
+            f"**{tcp['retransmissions']:,}** retransmissions, and "
+            f"**{tcp['ack_lost_segments']:,}** packets acknowledging a segment the capture never saw."
+        )
+        lines.append("")
+        lines.append(
+            f"The holes run both ways: **{tcp['client_to_server']:,}** client → server and "
+            f"**{tcp['server_to_client']:,}** server → client. "
+            "A hole toward the server leaves a response with no request in the file. "
+            "A hole toward the client leaves a request with no response."
+        )
+        top_stream = next(iter(tcp["lost_by_stream"]), None)
+        if top_stream is not None:
+            lines.append("")
+            lines.append(
+                f"Stream `{top_stream}` has {tcp['lost_by_stream'][top_stream]:,} of those lost-segment markers."
+            )
+        near = tcp["unanswered_near_gap"]
+        lines.append("")
+        lines.append("Unanswered requests with a lost-segment marker on the same stream after the request:")
+        lines.append("")
+        lines.append(
+            md_table(
+                ["Window after the request", "Unanswered requests with a gap"],
+                [
+                    ["50 ms", f"{near.get('0.05', 0)} of {counts['unanswered_requests']}"],
+                    ["250 ms", f"{near.get('0.25', 0)} of {counts['unanswered_requests']}"],
+                    ["1 s", f"{near.get('1.0', 0)} of {counts['unanswered_requests']}"],
+                    ["2.5 s", f"{near.get('2.5', 0)} of {counts['unanswered_requests']}"],
+                ],
+            )
+        )
+        if tcp["lost_segments"] and tcp["retransmissions"] * 20 < tcp["lost_segments"]:
+            lines.append("")
+            lines.append(
+                "Retransmissions are rare next to those holes, which fits packets the recorder did not see."
+            )
+
+    lines.append("")
+    lines.append("## What the unanswered requests are")
+    lines.append("")
+    if facts["opcodes_unanswered"]:
+        lines.append(
+            md_table(
+                ["Opcode", "Name", "Unanswered"],
+                [
+                    [backtick(row["opcode"]), row["name"], str(row["count"])]
+                    for row in facts["opcodes_unanswered"]
+                ],
+            )
+        )
+    if facts["opcodes_requests"]:
+        lines.append("")
+        sent = ", ".join(f"{row['count']:,} {row['name']}" for row in facts["opcodes_requests"][:8])
+        lines.append(f"The client sent {sent}.")
+    if facts["status_responses"]:
+        lines.append("")
+        statuses = ", ".join(
+            f"**{row['count']:,}** `{row['status']}` ({row['name']})" for row in facts["status_responses"][:6]
+        )
+        lines.append(f"Responses that are present: {statuses}.")
+    if facts["families"]:
+        lines.append("")
+        lines.append(
+            md_table(
+                ["Key family", "Unanswered requests"],
+                [[backtick(row["family"]), str(row["count"])] for row in facts["families"][:12]],
+            )
+        )
+    if facts["duplicate_keys"]:
+        lines.append("")
+        lines.append("Document keys requested more than once with no response either time:")
+        lines.append("")
+        for row in facts["duplicate_keys"]:
+            lines.append(f"- {backtick(row['key'])} ({row['count']} times)")
+    if facts["streams"]:
+        lines.append("")
+        lines.append("Connections with at least one client request:")
+        lines.append("")
+        shown = [row for row in facts["streams"] if row["unanswered"]] or facts["streams"][:8]
+        lines.append(
+            md_table(
+                ["Stream", "Path", "Requests", "Unanswered", "Share"],
+                [
+                    [
+                        row["stream"],
+                        _stream_phrase(row),
+                        str(row["requests"]),
+                        str(row["unanswered"]),
+                        f"{row['share'] * 100:.1f}%",
+                    ]
+                    for row in shown
+                ],
+            )
+        )
+        quiet = [row["stream"] for row in facts["streams"] if not row["unanswered"]]
+        if quiet:
+            lines.append("")
+            lines.append(
+                "Streams with requests and no unanswered ones: "
+                + ", ".join(f"`{stream}`" for stream in quiet)
+                + "."
+            )
+    if facts["cross_stream_opaque_count"]:
+        lines.append("")
+        example = facts["cross_stream_opaque"][0]
+        lines.append(
+            f"{facts['cross_stream_opaque_count']} unanswered opaque value"
+            f"{'' if facts['cross_stream_opaque_count'] == 1 else 's'} also appear on a response in another stream. "
+            f"Example: opaque `{example['opaque']}` is an unanswered {example['opcode_name']} on stream "
+            f"`{example['request_stream']}` at t={example['time_s']}"
+            + (f" for {backtick(example['key'])}" if example["key"] else "")
+            + f", and a different connection (stream {', '.join('`'+s+'`' for s in example['response_streams'])}) "
+            "used the same opaque. The stream keeps them apart."
+        )
+    other = facts["other_keys"]
+    dominant = facts["dominant_family"]
+    if other and dominant and dominant != "(no key)":
+        lines.append("")
+        lines.append(
+            f"## Keys outside `{dominant}`"
+        )
+        lines.append("")
+        lines.append(
+            f"The other {counts['unanswered_requests'] - len(other)} unanswered requests are `{dominant}`. These are the rest."
+        )
+        lines.append("")
+        lines.append(
+            md_table(
+                ["Time (s)", "Left (s)", "Stream", "Op", "Key"],
+                [
+                    [
+                        row["time_s"],
+                        f"{row['seconds_left']:.3f}",
+                        row["stream"],
+                        row["opcode_name"],
+                        backtick(row["key"]) if row["key"] else "",
+                    ]
+                    for row in other
+                ],
+            )
+        )
+    lines.append("")
+    lines.append("## All unanswered requests")
+    lines.append("")
+    if facts["unanswered"]:
+        lines.append("Sorted by time. Left is seconds of capture remaining after the request.")
+        lines.append("")
+        lines.append(unanswered_table(facts["unanswered"]))
+    else:
+        lines.append("Every client request had a later response on the same stream and opaque.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def facts_brief(facts: dict) -> str:
+    """Counts only. The model writes the note from this, and does not get the finished prose."""
+    counts = facts["counts"]
+    edge = facts["edge"]
+    rtt = facts["rtt_seconds"]
+    lines = [
+        "Write the capture note from these counts. Do not invent a number or a key.",
+        "",
+        f"Source: {facts['source']}",
+        f"Capture files: {', '.join(facts.get('pcap_files') or []) or '(tsv export)'}",
+        f"Packets: {facts.get('packet_count')}",
+        f"Duration seconds: {facts.get('capture_seconds')}",
+        f"Client: {facts.get('client')}",
+        f"Server: {facts.get('server')}",
+        f"Request messages: {counts['request_messages']} in {counts['request_frames']} frames",
+        f"Multi-message request frames: {counts['multi_message_frames']} ({counts['extra_messages_in_those_frames']} extra messages)",
+        f"Joined tsv rows that were split: {counts['joined_tsv_rows']}",
+        f"Requests with an empty document key: {counts['empty_keys']}",
+        f"Response messages: {counts['response_messages']}",
+        f"Matched: {counts['matched']}",
+        f"Unanswered requests: {counts['unanswered_requests']}",
+        f"Unique unanswered keys: {counts['unique_unanswered_keys']}",
+        f"Responses with no request: {counts['responses_without_request']}",
+        f"Round trip median/mean/p90/p95/p99/max seconds: "
+        f"{rtt['median']}, {rtt['mean']}, {rtt['p90']}, {rtt['p95']}, {rtt['p99']}, {rtt['max']}",
+        f"Edge window seconds: {edge['window_seconds']} ({edge['window_source']})",
+        f"Start-window responses: {edge['start_responses']}",
+        f"End-window requests: {edge['end_requests']}",
+        f"Requests in the last 1 second: {edge['end_requests_within_1s']}",
+        f"Interior unanswered: {edge['interior_unanswered']}",
+        f"Interior responses with no request: {edge['interior_responses_without_request']}",
+        "",
+        "Magic counts:",
+    ]
+    for row in facts["magics"]:
+        lines.append(f"- {row['magic']} {row['role']}: {row['messages']}")
+    lines.append("")
+    lines.append("Opening-window responses:")
+    for row in edge["start_examples"]:
+        lines.append(
+            f"- t={row['time_s']} frame {row['frame']} stream {row['stream']} {row['opcode_name']} opaque {row['opaque']} status {row['status']}"
+        )
+    lines.append("")
+    window = edge["window_seconds"]
+    lines.append(
+        f"Requests inside the closing window (left <= {window:.6f}s). "
+        f"Count is {edge['end_requests']}. These are the in-flight requests:"
+    )
+    closing = edge.get("closing_examples")
+    if closing is None:
+        closing = [row for row in edge["end_examples"] if (row["seconds_left"] or 0) <= window + 1e-9]
+    wider = [row for row in edge["end_examples"] if (row["seconds_left"] or 0) > window + 1e-9]
+    for row in closing:
+        lines.append(
+            f"- t={row['time_s']} left={row['seconds_left']} frame {row['frame']} stream {row['stream']} {row['opcode_name']} {row['key']}"
+        )
+    lines.append(
+        f"Other requests in the last 1 second but outside that window. "
+        f"The 1-second count is {edge['end_requests_within_1s']} and includes the closing-window rows above:"
+    )
+    for row in wider:
+        lines.append(
+            f"- t={row['time_s']} left={row['seconds_left']} frame {row['frame']} stream {row['stream']} {row['opcode_name']} {row['key']}"
+        )
+    lines.append("")
+    lines.append(f"Bins of {facts['bin_seconds']} seconds (unanswered, response-only, matched):")
+    for row in facts["bins"]:
+        if row["unanswered"] or row["resp_only"] or row["matched"]:
+            lines.append(
+                f"- {row['start']}-{row['end']}: {row['unanswered']}, {row['resp_only']}, {row['matched']}"
+            )
+    tcp = facts.get("tcp")
+    lines.append("")
+    if not tcp:
+        lines.append("TCP loss: not measured. Say the pcap is required for lost-segment counts.")
+    else:
+        lines.append(
+            f"TCP ports {tcp['ports']}: lost_segments={tcp['lost_segments']} "
+            f"retransmissions={tcp['retransmissions']} ack_lost={tcp['ack_lost_segments']} "
+            f"client_to_server={tcp['client_to_server']} server_to_client={tcp['server_to_client']}"
+        )
+        lines.append(f"Lost by stream: {tcp['lost_by_stream']}")
+        lines.append(f"Unanswered with a gap after the request: {tcp['unanswered_near_gap']}")
+    lines.append("")
+    lines.append("Request opcodes: " + ", ".join(f"{row['count']} {row['name']} ({row['opcode']})" for row in facts["opcodes_requests"]))
+    lines.append("Unanswered opcodes: " + ", ".join(f"{row['count']} {row['name']} ({row['opcode']})" for row in facts["opcodes_unanswered"]))
+    lines.append("Response-only opcodes: " + ", ".join(f"{row['count']} {row['name']}" for row in facts["opcodes_resp_only"]))
+    lines.append("Response status: " + ", ".join(f"{row['count']} {row['status']} {row['name']}" for row in facts["status_responses"]))
+    lines.append("Key families: " + ", ".join(f"{row['count']} {row['family']}" for row in facts["families"]))
+    lines.append(f"Dominant family: {facts['dominant_family']}")
+    if facts["duplicate_keys"]:
+        lines.append("Duplicate unanswered keys:")
+        for row in facts["duplicate_keys"]:
+            lines.append(f"- {row['count']} {row['key']}")
+    lines.append("Streams:")
+    for row in facts["streams"]:
+        if row["unanswered"] or row["requests"] >= 20:
+            lines.append(
+                f"- stream {row['stream']} {row['src']}:{row['sport']} -> {row['dst']}:{row['dport']} "
+                f"requests={row['requests']} unanswered={row['unanswered']}"
+            )
+    if facts["cross_stream_opaque_count"]:
+        lines.append(f"Same opaque on another stream: {facts['cross_stream_opaque_count']}")
+        for row in facts["cross_stream_opaque"][:3]:
+            lines.append(
+                f"- opaque {row['opaque']} unanswered on stream {row['request_stream']} ({row['opcode_name']} {row['key']}) "
+                f"also on response streams {row['response_streams']}"
+            )
+    lines.append("")
+    lines.append(f"Keys outside {facts['dominant_family']}:")
+    for row in facts["other_keys"]:
+        lines.append(
+            f"- t={row['time_s']} left={row['seconds_left']} stream {row['stream']} {row['opcode_name']} {row['key']}"
+        )
+    lines.append("")
+    lines.append(
+        "How the match works: composite key is tcp.stream + '-' + couchbase.opaque. "
+        "Spreadsheet equivalent: Requests K =C1&\"-\"&I1, Responses G =C1&\"-\"&E1, "
+        "Requests L =COUNTIF(Responses!G:G, K1). Zero is unanswered. "
+        "Collection document ids are couchbase.key.logical_key; couchbase.key is often empty. "
+        "Comma-joined opaques in one tshark row are separate messages."
+    )
+    lines.append("")
+    lines.append("Put the full key table under the last heading by leaving this token on its own line:")
+    lines.append(TABLE_TOKEN)
+    return "\n".join(lines)
+
+
+SYSTEM_PROMPT = """You are a Couchbase support engineer writing a packet-capture note.
+
+Use only the counts in the user message. If a figure is missing, leave it out. Do not invent keys, hosts, times, or causes.
+
+Write GitHub-flavored markdown with these headings, in this order:
+# Orphaned Couchbase requests
+## What was captured
+## How the requests and responses were matched
+## Round trip and the edges of the file
+## Packets missing from the recording
+## What the unanswered requests are
+## Keys outside the main family
+## All unanswered requests
+
+The opening states the unanswered-request count, the unique key count, and the responses that have no request.
+Then state the round trip and the in-flight window. Separate three groups: responses already on the wire when the file opened, requests still on the wire when the file closed, and the interior rows that had more than that window of capture left.
+When lost-segment markers are present in both directions and retransmissions are rare, say the missing packets fit a recorder that did not see them. Do not call the whole unanswered set Couchbase timeouts.
+Name the stream and key family that hold most of the unanswered requests. Mention duplicate keys and any opaque that also appears on a different stream.
+Under the last heading, leave the line {{UNANSWERED_TABLE}} exactly as written, on its own line. Do not invent the full key list.
+No preamble. No chain of thought. No extra headings."""
+
+
+def strip_think(text: str) -> str:
+    return _THINK_RE.sub("", text or "").strip()
+
+
+def clean_model_markdown(text: str) -> str:
+    text = strip_think(text).strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:markdown|md)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    if not text.startswith("#"):
+        index = text.find("\n#")
+        if index != -1:
+            text = text[index + 1 :]
+    return text.strip() + "\n"
+
+
+def splice_table(text: str, table: str) -> str:
+    block = "Sorted by time. Left is seconds of capture remaining after the request.\n\n" + table
+    if TABLE_TOKEN in text:
+        return text.replace(TABLE_TOKEN, block)
+    return text.rstrip() + "\n\n## All unanswered requests\n\n" + block + "\n"
+
+
+def call_ollama(note: str, *, base_url: str, model: str, timeout: int) -> str:
+    url = base_url.rstrip("/") + "/api/chat"
+    payload = {
+        "model": model,
+        "think": False,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": note,
+            },
+        ],
+        "options": {"temperature": 0.2, "num_predict": 8192},
+    }
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    log(f"asking {model} at {base_url}")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:1500]
+        raise SystemExit(f"Ollama returned {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"Could not reach Ollama at {base_url}: {exc.reason}") from exc
+    message = body.get("message") or {}
+    content = message.get("content") or body.get("response") or ""
+    if not str(content).strip():
+        raise SystemExit(
+            "The model returned an empty note. If it spent the reply on hidden thinking, "
+            "confirm the model accepts think:false, or raise --timeout."
+        )
+    return str(content)
+
+
+def write_tsv(path: Path, requests: list[dict], responses: list[dict], unanswered: list[dict]) -> None:
+    def req_line(msg: dict) -> str:
+        return "\t".join(
+            [
+                msg["frame"],
+                f"{msg['time']:.9f}",
+                msg["stream"],
+                msg["src"],
+                msg["sport"],
+                msg["dst"],
+                msg["dport"],
+                msg["opcode"],
+                msg["opaque"],
+                msg["key"],
+            ]
+        )
+
+    def resp_line(msg: dict) -> str:
+        return "\t".join(
+            [
+                msg["frame"],
+                f"{msg['time']:.9f}",
+                msg["stream"],
+                msg["opcode"],
+                msg["opaque"],
+                msg.get("status") or "",
+            ]
+        )
+
+    (path / "reqs.pdus.tsv").write_text("\n".join(req_line(msg) for msg in requests) + "\n")
+    (path / "resps.tsv").write_text("\n".join(resp_line(msg) for msg in responses) + "\n")
+    header = "\t".join(
+        [
+            "frame",
+            "time_s",
+            "seconds_before_capture_end",
+            "tcp.stream",
+            "src",
+            "src_port",
+            "dst",
+            "dst_port",
+            "opcode",
+            "opcode_name",
+            "opaque",
+            "couchbase.key",
+            "response_count",
+        ]
+    )
+    body = []
+    for row in unanswered:
+        left = "" if row["seconds_left"] is None else f"{row['seconds_left']:.3f}"
+        body.append(
+            "\t".join(
+                [
+                    row["frame"],
+                    row["time_s"],
+                    left,
+                    row["stream"],
+                    row["src"],
+                    row["sport"],
+                    row["dst"],
+                    row["dport"],
+                    row["opcode"],
+                    row["opcode_name"],
+                    row["opaque"],
+                    row["key"],
+                    "0",
+                ]
+            )
+        )
+    (path / "orphans.tsv").write_text(header + "\n" + "\n".join(body) + ("\n" if body else ""))
+
+
+def sibling_resps(reqs_path: Path) -> Path | None:
+    folder = reqs_path.parent
+    for name in ("resps.tsv", "responses.tsv", "resp.tsv"):
+        candidate = folder / name
+        if candidate.exists() and candidate != reqs_path:
+            return candidate
+    return None
+
+
+def sibling_pcaps(folder: Path) -> list[Path]:
+    found = [path for path in folder.iterdir() if path.is_file() and is_pcap(path)]
+    return sorted(found, key=lambda path: path.name)
+
+
+def resolve_job(args: argparse.Namespace) -> dict:
+    if args.pcap:
+        return {"mode": "pcap", "pcap": Path(args.pcap).expanduser().resolve(), "also": []}
+    if args.reqs:
+        reqs = Path(args.reqs).expanduser().resolve()
+        resps = Path(args.resps).expanduser().resolve() if args.resps else sibling_resps(reqs)
+        return {"mode": "tsv", "reqs": reqs, "resps": resps}
+
+    raw = Path(args.path).expanduser().resolve() if args.path else None
+    if raw is None:
+        raise SystemExit("Pass a pcap, a tsv export, or a directory.")
+    if not raw.exists():
+        raise SystemExit(f"No such path: {raw}")
+
+    if raw.is_dir():
+        pcaps = unique_pcaps(sibling_pcaps(raw))
+        if pcaps and not args.from_tsv:
+            if len(pcaps) > 1:
+                names = "\n".join(str(rep) for rep, _members in pcaps)
+                raise SystemExit(f"More than one distinct capture in {raw}:\n{names}\nPass one file.")
+            rep, members = pcaps[0]
+            return {"mode": "pcap", "pcap": rep, "also": members}
+        reqs = next((raw / name for name in ("reqs.tsv", "requests.tsv") if (raw / name).exists()), None)
+        if reqs is None:
+            tables = [path for path in raw.iterdir() if path.is_file() and is_table(path)]
+            if len(tables) == 1:
+                reqs = tables[0]
+            else:
+                raise SystemExit(f"No pcap or reqs.tsv in {raw}")
+        return {"mode": "tsv", "reqs": reqs, "resps": sibling_resps(reqs)}
+
+    if is_pcap(raw):
+        return {"mode": "pcap", "pcap": raw, "also": [raw]}
+    if is_table(raw):
+        if not args.from_tsv:
+            pcaps = unique_pcaps(sibling_pcaps(raw.parent))
+            if len(pcaps) == 1:
+                rep, members = pcaps[0]
+                log(
+                    f"{raw.name} is a field export. Using {rep.name} so responses, "
+                    "collection keys, and TCP gaps come from the capture."
+                )
+                return {"mode": "pcap", "pcap": rep, "also": members}
+            if len(pcaps) > 1:
+                names = ", ".join(rep.name for rep, _ in pcaps)
+                raise SystemExit(f"Several different pcaps next to {raw.name}: {names}. Pass one with --pcap.")
+        return {"mode": "tsv", "reqs": raw, "resps": Path(args.resps).resolve() if args.resps else sibling_resps(raw)}
+    raise SystemExit(f"Do not know how to read {raw}")
+
+
+def default_out(job: dict, args: argparse.Namespace) -> Path:
+    if args.out:
+        return Path(args.out).expanduser().resolve()
+    if job["mode"] == "pcap":
+        return job["pcap"].parent / "orphan-report"
+    return job["reqs"].parent / "orphan-report"
+
+
+def load_config(path: Path | None = None) -> dict:
+    if path is None:
+        path = ROOT / "config.json"
+    else:
+        path = path.expanduser()
+        if not path.is_absolute():
+            path = Path.cwd() / path
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path} must be a JSON object")
+    return data
+
+
+def apply_config(args: argparse.Namespace) -> argparse.Namespace:
+    """CLI flags win, then environment, then config.json, then built-in defaults."""
+    cfg = load_config(Path(args.config) if args.config else None)
+    ollama = cfg.get("ollama") or {}
+    if not isinstance(ollama, dict):
+        ollama = {}
+    if args.model is None:
+        args.model = ollama.get("model") or DEFAULT_MODEL
+    if args.ollama is None:
+        args.ollama = os.environ.get("OLLAMA_BASE_URL") or ollama.get("base_url") or DEFAULT_OLLAMA
+    if args.timeout is None:
+        args.timeout = int(ollama.get("timeout_seconds") or DEFAULT_TIMEOUT)
+    if not args.tshark:
+        from_env = (os.environ.get("TSHARK") or "").strip()
+        from_file = str(cfg.get("tshark") or "").strip()
+        args.tshark = from_env or from_file or None
+    if not args.out:
+        configured_out = str(cfg.get("output_dir") or "").strip()
+        if configured_out:
+            args.out = configured_out
+    return args
+
+
+def print_dry_run(out: Path, args: argparse.Namespace, facts: dict) -> None:
+    counts = facts["counts"]
+    files = ["facts.json", "orphans.tsv", "reqs.pdus.tsv", "resps.tsv", "summary.md"]
+    if not args.no_ai:
+        files.append("summary.computed.md")
+    print("dry-run")
+    print(f"source: {facts['source']}")
+    print(f"output directory (not created): {out}")
+    print("files that would be written:")
+    for name in files:
+        print(f"  {name}")
+    if args.no_ai:
+        print("model: skipped (--no-ai)")
+    else:
+        print(f"model: would call {args.model} at {args.ollama}")
+    print(
+        f"unanswered {counts['unanswered_requests']}, "
+        f"responses without a request {counts['responses_without_request']}, "
+        f"matched {counts['matched']}"
+    )
+
+
+def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
+    job = resolve_job(args)
+    out = default_out(job, args)
+    tshark = find_tshark(args.tshark)
+    opcode_names: dict[str, str] = {}
+    magics: Counter | None = None
+    packet_count = None
+    capture_end = 0.0
+    joined_rows = 0
+    pcap_names: list[str] = []
+    loss = None
+
+    if job["mode"] == "pcap":
+        if not tshark:
+            raise SystemExit("tshark is not on PATH and not in /Applications/Wireshark.app.")
+        pcap = job["pcap"]
+        pcap_names = [path.name for path in job.get("also") or [pcap]]
+        requests, responses, magics = load_pcap(pcap, tshark)
+        opcode_names = learn_opcode_names(pcap, tshark)
+        capinfos = find_capinfos(tshark)
+        duration = None
+        if capinfos:
+            duration, packet_count = read_capinfos(capinfos, pcap)
+        times = [msg["time"] for msg in requests + responses]
+        capture_end = max([t for t in [duration, max(times) if times else 0] if t is not None])
+        loss = load_tcp_loss(pcap, tshark, couchbase_ports(requests))
+        source = str(pcap)
+    else:
+        requests, responses, joined_rows = load_tsv_pair(job["reqs"], job.get("resps"))
+        times = [msg["time"] for msg in requests + responses]
+        capture_end = max(times) if times else 0.0
+        source = str(job["reqs"])
+        if job.get("resps"):
+            source += f" + {job['resps'].name}"
+
+    paired = pair_messages(requests, responses)
+    facts = build_facts(
+        requests,
+        responses,
+        paired,
+        source_label=source,
+        pcap_names=pcap_names,
+        capture_end=capture_end,
+        packet_count=packet_count,
+        magics=magics,
+        joined_rows=joined_rows,
+        opcode_names=opcode_names,
+        loss=loss,
+    )
+    computed = render_summary(facts)
+    if args.dry_run:
+        print_dry_run(out, args, facts)
+        return out, True
+
+    out.mkdir(parents=True, exist_ok=True)
+    public_facts = {key: value for key, value in facts.items()}
+    (out / "facts.json").write_text(json.dumps(public_facts, indent=2) + "\n")
+    write_tsv(out, requests, responses, facts["unanswered"])
+
+    if args.no_ai:
+        (out / "summary.md").write_text(computed)
+        log(f"wrote {out / 'summary.md'}")
+        return out, True
+
+    try:
+        raw = call_ollama(
+            facts_brief(facts),
+            base_url=args.ollama,
+            model=args.model,
+            timeout=args.timeout,
+        )
+    except SystemExit as exc:
+        (out / "summary.md").write_text(computed)
+        log(str(exc))
+        log(f"Ollama did not write the note. The counted report is {out / 'summary.md'}")
+        return out, False
+    cleaned = splice_table(clean_model_markdown(raw), unanswered_table(facts["unanswered"]))
+    (out / "summary.computed.md").write_text(computed)
+    (out / "summary.md").write_text(cleaned)
+    missing = [
+        row["key"]
+        for row in facts["unanswered"]
+        if row["key"] and row["key"] not in cleaned
+    ]
+    headline = str(facts["counts"]["unanswered_requests"])
+    if headline not in cleaned or (facts["unanswered"] and len(missing) > max(3, len(facts["unanswered"]) // 5)):
+        log(
+            "The model note dropped counted keys or the unanswered total. "
+            "summary.md is the model text; summary.computed.md is the counted note."
+        )
+    else:
+        log("model note kept the counted keys")
+    log(f"wrote {out / 'summary.md'}")
+    return out, True
+
+
+def self_test() -> int:
+    try:
+        import pytest
+    except ImportError as exc:
+        raise SystemExit(
+            "pytest is not installed. From the project root: python3 -m venv .venv && "
+            "source .venv/bin/activate && pip install -r requirements.txt"
+        ) from exc
+    return int(pytest.main(["-q", str(ROOT / "tests")]))
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Count unanswered Couchbase ops in a Wireshark dump and write a note with a local Qwen model."
+    )
+    parser.add_argument(
+        "path",
+        nargs="?",
+        help="pcap/pcapng, a .tsv/.csv field export, or a directory of those files",
+    )
+    parser.add_argument("--pcap", help="capture file to read with tshark")
+    parser.add_argument("--reqs", help="request field export (10 columns, or a header row)")
+    parser.add_argument("--resps", help="response field export (6 columns, or a header row)")
+    parser.add_argument(
+        "--from-tsv",
+        action="store_true",
+        help="read the tsv even when a pcap is in the same folder",
+    )
+    parser.add_argument("-o", "--out", help="output directory (default: orphan-report next to the input)")
+    parser.add_argument("--model", default=None, help=f"Ollama model (default from config.json, else {DEFAULT_MODEL})")
+    parser.add_argument("--ollama", default=None, help=f"Ollama base URL (default from config.json, else {DEFAULT_OLLAMA})")
+    parser.add_argument("--timeout", type=int, default=None, help="seconds to wait for the model (default from config.json)")
+    parser.add_argument("--no-ai", action="store_true", help="write the counted note and skip Ollama")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="count and print the plan; do not write files or call Ollama",
+    )
+    parser.add_argument("--config", help="path to config.json (default: config.json next to this script)")
+    parser.add_argument("--tshark", help="path to tshark")
+    parser.add_argument("--self-test", action="store_true", help="run pytest on tests/ and exit")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.self_test:
+        return self_test()
+    if not args.path and not args.pcap and not args.reqs:
+        parse_args(["-h"])
+    args = apply_config(args)
+    out, ai_ok = run_job(args)
+    if args.dry_run:
+        return 0
+    counts_path = out / "facts.json"
+    counts = json.loads(counts_path.read_text())["counts"]
+    log(
+        f"unanswered {counts['unanswered_requests']}, "
+        f"responses without a request {counts['responses_without_request']}, "
+        f"matched {counts['matched']}"
+    )
+    print(out / "summary.md")
+    return 0 if ai_ok else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

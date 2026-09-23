@@ -1,0 +1,13 @@
+.git
+.venv
+venv
+__pycache__
+.pytest_cache
+.mypy_cache
+.DS_Store
+orphan-report
+captures
+*.pcap
+*.pcapng
+*.pcap.gz
+*.pcapng.gz

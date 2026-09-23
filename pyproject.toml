@@ -1,0 +1,9 @@
+[project]
+name = "cb-capture-orphans"
+version = "0.1.0"
+description = "Count unanswered Couchbase operations in a Wireshark dump and write a note with a local Qwen model."
+requires-python = ">=3.11"
+readme = "README.md"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

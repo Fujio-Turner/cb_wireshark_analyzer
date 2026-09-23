@@ -1,0 +1,9 @@
+{
+  "ollama": {
+    "base_url": "http://127.0.0.1:11434",
+    "model": "qwen3.8:27b-mlx",
+    "timeout_seconds": 600
+  },
+  "tshark": "",
+  "output_dir": ""
+}

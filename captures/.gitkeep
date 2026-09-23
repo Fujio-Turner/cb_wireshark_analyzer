@@ -1,0 +1,2 @@
+# Drop pcap and tsv exports here. This directory is mounted at /captures in Docker.
+# The captures themselves are gitignored.

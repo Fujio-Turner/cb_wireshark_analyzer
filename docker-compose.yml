@@ -1,0 +1,22 @@
+# Two ways to run the same image:
+#   docker compose run --rm test
+#   docker compose run --rm analyze --dry-run --no-ai /captures/your.pcap -o /out
+#
+# Ollama stays on the machine that hosts Docker. The container reaches it at
+# host.docker.internal. Override with OLLAMA_BASE_URL if the model is elsewhere.
+services:
+  analyze:
+    build: .
+    image: cb-capture-orphans:0.1.0
+    volumes:
+      - ${CAPTURE_DIR:-./captures}:/captures:ro
+      - ${OUT_DIR:-./orphan-report}:/out
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+
+  test:
+    build: .
+    image: cb-capture-orphans:0.1.0
+    entrypoint: ["python3", "-m", "pytest", "-q"]

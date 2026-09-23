@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="220" viewBox="0 0 960 220" role="img" aria-labelledby="title desc">
+  <title id="title">How a capture becomes a note</title>
+  <desc id="desc">Wireshark dump goes through tshark or a tsv, then stream plus opaque matching, edge and loss counts, and either a dry-run or a Qwen note.</desc>
+  <rect width="960" height="220" rx="16" fill="#f6f3ee"/>
+  <text x="24" y="32" font-family="Georgia, 'Iowan Old Style', serif" font-size="18" fill="#1c2430">From dump to note</text>
+  <g font-family="ui-sans-serif, Helvetica, sans-serif" font-size="13" fill="#1c2430">
+    <rect x="24" y="64" width="140" height="72" rx="10" fill="#1c2430"/>
+    <text x="94" y="96" text-anchor="middle" fill="#f6f3ee">pcap or tsv</text>
+    <text x="94" y="116" text-anchor="middle" fill="#e4b089" font-size="11">Wireshark dump</text>
+
+    <rect x="204" y="64" width="150" height="72" rx="10" fill="#fff" stroke="#1c2430"/>
+    <text x="279" y="96" text-anchor="middle">one message / row</text>
+    <text x="279" y="116" text-anchor="middle" fill="#5c6670" font-size="11">tshark or the export</text>
+
+    <rect x="394" y="64" width="160" height="72" rx="10" fill="#c45c26"/>
+    <text x="474" y="96" text-anchor="middle" fill="#fff">stream + opaque</text>
+    <text x="474" y="116" text-anchor="middle" fill="#f6d7c4" font-size="11">the match key</text>
+
+    <rect x="594" y="56" width="150" height="88" rx="10" fill="#fff" stroke="#1c2430"/>
+    <text x="669" y="88" text-anchor="middle">edges + gaps</text>
+    <text x="669" y="108" text-anchor="middle" fill="#5c6670" font-size="11">open, close, loss</text>
+    <text x="669" y="126" text-anchor="middle" fill="#5c6670" font-size="11">facts.json</text>
+
+    <rect x="784" y="64" width="152" height="72" rx="10" fill="#24576e"/>
+    <text x="860" y="96" text-anchor="middle" fill="#fff">summary.md</text>
+    <text x="860" y="116" text-anchor="middle" fill="#c5dbe3" font-size="11">Qwen, or --no-ai</text>
+
+    <path d="M164 100 H204 M354 100 H394 M554 100 H594 M744 100 H784" stroke="#1c2430" stroke-width="1.5" fill="none"/>
+    <path d="M198 100 l-8 -4 v8 z M388 100 l-8 -4 v8 z M588 100 l-8 -4 v8 z M778 100 l-8 -4 v8 z" fill="#1c2430"/>
+  </g>
+  <text x="24" y="176" font-family="ui-sans-serif, Helvetica, sans-serif" font-size="12" fill="#5c6670">--dry-run stops after the counts. It prints the plan and does not write files or call the model.</text>
+  <text x="24" y="198" font-family="ui-sans-serif, Helvetica, sans-serif" font-size="12" fill="#5c6670">Python owns every number. The model writes the note from those counts.</text>
+</svg>

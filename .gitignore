@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+.DS_Store
+
+# Generated notes and local captures. The tool reads these; it does not ship them.
+orphan-report/
+captures/*
+!captures/.gitkeep
+*.pcap
+*.pcapng
+*.pcap.gz
+*.pcapng.gz

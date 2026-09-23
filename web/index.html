@@ -140,6 +140,8 @@
     }
     #lightbox .expand { display: block; }
     .tables { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+    #interest, #conn-rate { overflow-x: auto; }
+    #conn-rate { margin-top: 8px; }
     @media (max-width: 800px) { .tables { grid-template-columns: 1fr; } }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
@@ -327,7 +329,7 @@
       </section>
       <section class="card">
         <h2>Median, p99, TCP loss, and retries</h2>
-        <p class="note">The left axis is milliseconds. <button type="button" class="term" data-tip="The middle call. Half were faster, half were slower.">Median</button> and <button type="button" class="term" data-tip="99 percent of matched calls in that bucket were this fast or faster. This is the slow end.">p99</button> are solid. The right axis counts packets. <button type="button" class="term" data-tip="The capture shows a hole in the TCP byte stream. A later packet arrived, and the bytes before it are not in the file.">TCP loss</button> and <button type="button" class="term" data-tip="The sender transmitted the same TCP data again.">retries</button> are dashed.</p>
+        <p class="note">The left axis is milliseconds. <button type="button" class="term" data-tip="The middle call. Half were faster, half were slower.">Median</button> and <button type="button" class="term" data-tip="99 percent of matched calls in that bucket were this fast or faster. This is the slow end.">p99</button> are solid. The right axis counts packets. <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply, so the request can be left without a response.">Loss toward the client</button> and <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request, so a reply can arrive with no request in the file.">loss toward the server</button> are dashed, with <button type="button" class="term" data-tip="The sender transmitted the same TCP data again.">retries</button>.</p>
         <div id="tail" class="chart"></div>
       </section>
       <section class="card">
@@ -337,12 +339,12 @@
       </section>
       <section class="card">
         <h2><button type="button" class="term" data-tip="A request is in the file and its reply is not. The recording may have stopped first, or the reply packet was never captured.">Lost responses</button>, retries, and TCP loss</h2>
-        <p class="note">Bars on the left are Couchbase operations. <button type="button" class="term" data-tip="The capture shows a hole in the TCP byte stream. A later packet arrived, and the bytes before it are not in the file.">TCP loss</button> and <button type="button" class="term" data-tip="The sender transmitted the same TCP data again.">retries</button> use the right axis.</p>
+        <p class="note">Bars on the left are Couchbase operations. The right axis counts packets. Dashed lines split <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply.">loss toward the client</button> from <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request.">loss toward the server</button>. Retries are on that same axis.</p>
         <div id="issues" class="chart"></div>
       </section>
       <section class="card">
         <h2>Total body length</h2>
-        <p class="note">The horizontal axis is the same seconds as the other time charts. The vertical axis is bytes. Each bar is the largest <button type="button" class="term" data-tip="Bytes of extras, key, and value in one Couchbase packet. Wireshark labels this Total Body Length.">total body length</button> in that second. Into Couchbase is the request. Out of Couchbase is the reply. A high bar means a lot of document data moved in or out during that second. A 1 Gbit NIC can carry about 125 MB/s. A 10 Gbit NIC can carry about 1,250 MB/s. The crosshair and stakes match the other time charts.</p>
+        <p class="note">The horizontal axis is the same seconds as the other time charts. The vertical axis is bytes. Bars are the largest <button type="button" class="term" data-tip="Bytes of extras, key, and value in one Couchbase packet. Wireshark labels this Total Body Length.">total body length</button> in that second: one document into Couchbase, and one document out. Dashed lines add every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC can carry about 125 MB/s. A 10 Gbit NIC can carry about 1,250 MB/s.</p>
         <div id="body" class="chart"></div>
       </section>
     </div>
@@ -355,6 +357,7 @@
         <h2 id="ip-title">Requests by client IP</h2>
         <p class="note" id="ip-note"></p>
         <div id="ips" class="chart"></div>
+        <div id="conn-rate"></div>
       </section>
       <section class="card">
         <h2>p99 by opcode</h2>
@@ -369,15 +372,26 @@
       </section>
       <section class="card">
         <h2>Ten slowest document ids</h2>
-        <p class="note">Each row is one matched call. <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">Time ms</button> is how long that call took. <button type="button" class="term" data-tip="Seconds from the start of the capture, when the request was sent. Set Stake marks this moment on the time charts.">Seconds</button> is when it was sent. <button type="button" class="term" data-tip="The larger of the request and reply total body lengths for this call, in bytes. Extras, key, and value.">Body bytes</button> is how big that call was. Set Stake draws that moment. Clicking it again does not add another line.</p>
+        <p class="note">Each row is one matched call. <button type="button" class="term" data-tip="The client’s semi-transaction number. The request and its reply carry the same opaque. The same number on another TCP stream is a different call.">Opaque</button> is how that request is tied to its response, together with the TCP stream. <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">Time ms</button> is how long that call took. <button type="button" class="term" data-tip="Seconds from the start of the capture, when the request was sent. Set Stake marks this moment on the time charts.">Seconds</button> is when it was sent. <button type="button" class="term" data-tip="The larger of the request and reply total body lengths for this call, in bytes. Extras, key, and value.">Body bytes</button> is how big that call was. Set Stake draws that moment. Clicking it again does not add another line.</p>
         <div id="top-slow"></div>
       </section>
     </div>
+    <section class="card">
+      <h2>Points of interest</h2>
+      <p class="note">The model picked these seconds. The other columns are the counted values in that second. Bytes in and bytes out are every document body added together. Toward the client is a hole in the reply direction. Toward the server is a hole in the request direction. Remove stake clears every line. Set Stake puts that one back.</p>
+      <div id="interest"></div>
+    </section>
+    <section class="card glossary" id="next-steps">
+      <h2>Next questions / steps</h2>
+      <ol id="next-list"></ol>
+    </section>
     <section class="card glossary">
       <h2>What the words mean</h2>
       <dl>
         <dt>Matched call</dt>
-        <dd>A request and its reply are both in this capture. They are paired by TCP connection and the Couchbase opaque id, which is the client’s number for that operation.</dd>
+        <dd>A request and its reply are both in this capture. They share a TCP stream and the same opaque, the client’s semi-transaction number for that one call.</dd>
+        <dt>Opaque</dt>
+        <dd>The semi-transaction number on a Couchbase request. The matching response repeats it. In Wireshark, filter <code>tcp.stream</code> and <code>couchbase.opaque</code> together to see that pair. The same opaque on a different stream is a different call.</dd>
         <dt>Lost response</dt>
         <dd>The request is in the file and the reply is not. That happens when the recording stops while the call is still open, or when the reply packet was never captured.</dd>
         <dt>Response without request</dt>
@@ -395,7 +409,7 @@
         <dt>Total body length</dt>
         <dd>Bytes of extras, key, and value in one Couchbase packet. Into Couchbase is the request. Out of Couchbase is the reply. 1 MB is 1,048,576 bytes.</dd>
         <dt>TCP loss</dt>
-        <dd>A hole in the recorded TCP byte stream. A later packet arrived, and the bytes before it are missing from the file.</dd>
+        <dd>A hole in the recorded TCP byte stream. Toward the client means the server’s packets are missing, often the reply. Toward the server means the client’s packets are missing, often the request.</dd>
         <dt>Retry</dt>
         <dd>The sender transmitted the same TCP data again.</dd>
       </dl>
@@ -405,18 +419,14 @@
         <li>Calls by opcode and response time lines up a burst of one operation, such as Get, with the median and p99 in that same moment.</li>
         <li>Round trip follows the typical call and the slow tail across the capture. The crosshair is the same moment on every time chart.</li>
         <li>Latency range shows the spread in each bucket. The thick part is median to p90. The thin line is the fastest call to the slowest.</li>
-        <li>Lost responses, retries, and TCP loss shows missing Couchbase replies next to holes and resent TCP data. A lost response beside a TCP hole often means the packet was not recorded.</li>
+        <li>Lost responses, retries, and TCP loss shows missing Couchbase replies next to holes and resent TCP data. Loss toward the client lines up with a missing reply. Loss toward the server lines up with a reply whose request is missing.</li>
         <li>Requests by client IP is which machine sent the operations. p99 by opcode is which kind of operation has the slow tail.</li>
-        <li>Total body length shows the largest request and the largest reply in each second. A high bar is a lot of document data moving in or out. A 1 Gbit NIC carries about 125 MB/s, and a 10 Gbit NIC about 1,250 MB/s.</li>
+        <li>Total body length uses bars for the largest request and the largest reply, and dashed lines for every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC carries about 125 MB/s, and a 10 Gbit NIC about 1,250 MB/s.</li>
         <li>The tables are the busiest document ids, and the ten slowest matched calls. Set Stake on a slow call marks that second on the time charts, including the body-length chart.</li>
       </ol>
       <h2>Opcodes in this capture</h2>
       <p class="note">The hex code and what each command does. The chart popup shows the command name and the count.</p>
       <div id="opcodes-seen"></div>
-    </section>
-    <section class="card glossary" id="next-steps">
-      <h2>Next questions / steps</h2>
-      <ol id="next-list"></ol>
     </section>
   </main>
   <script>
@@ -460,12 +470,14 @@
         });
         if (!chosen) return null;
         const color = stakeColors[index % stakeColors.length];
+        const pi = interestIndex(second);
+        const flag = "Stake " + (index + 1) + (pi ? "(pi:" + pi + ")" : "");
         return {
           xAxis: chosen.t + "s",
           lineStyle: { color: color, type: "dashed", width: 1.75 },
           label: {
             show: true,
-            formatter: "Stake " + (index + 1),
+            formatter: flag,
             position: "insideEndTop",
             color: "#ffffff",
             backgroundColor: color,
@@ -485,6 +497,15 @@
       };
     }
 
+    function interestIndex(second) {
+      const items = (data && data.interest_stakes) || [];
+      const mark = snappedStake(Number(second));
+      for (let index = 0; index < items.length; index += 1) {
+        if (snappedStake(Number(items[index].seconds)) === mark) return index + 1;
+      }
+      return 0;
+    }
+
     function snappedStake(second) {
       const rows = currentRows();
       let chosen = null;
@@ -502,15 +523,20 @@
       });
     }
 
-    function addStake(second) {
+    function takeStake(second) {
       const value = Number(second);
       if (!Number.isFinite(value)) return false;
       const mark = snappedStake(value);
-      if (stakes.some((item) => snappedStake(Number(item)) === mark)) {
+      if (stakes.some((item) => snappedStake(Number(item)) === mark)) return false;
+      stakes.push(value);
+      return true;
+    }
+
+    function addStake(second) {
+      if (!takeStake(second)) {
         markStakeButtons();
         return false;
       }
-      stakes.push(value);
       applyStakes();
       markStakeButtons();
       return true;
@@ -578,10 +604,43 @@
       return {
         tooltip: {
           trigger: "axis",
-          axisPointer: { type: "cross", label: { backgroundColor: "#1c2430" } }
+          axisPointer: { type: "cross", label: { backgroundColor: "#1c2430" } },
+          formatter: (items) => {
+            const list = Array.isArray(items) ? items : [items];
+            const lines = [list[0].axisValueLabel || list[0].axisValue];
+            list.forEach((item) => {
+              if (!item || item.seriesName === STAKE_SERIES) return;
+              if (item.value == null || item.value === "-") return;
+              if (Array.isArray(item.value)) {
+                lines.push(item.marker + prettyName(item.seriesName));
+                lines.push("median " + item.value[0] + " ms, p90 " + item.value[1] + " ms");
+                lines.push("min " + item.value[2] + " ms, max " + item.value[3] + " ms");
+                return;
+              }
+              lines.push(item.marker + prettyName(item.seriesName) + ": " + item.value);
+            });
+            return lines.join("<br/>");
+          }
         },
         axisPointer: { type: "cross", link: [{ xAxisIndex: "all" }] }
       };
+    }
+
+    function scopedName(chartId, label) {
+      return chartId + "\u0001" + label;
+    }
+
+    function prettyName(name) {
+      const text = String(name == null ? "" : name);
+      const mark = text.indexOf("\u0001");
+      return mark === -1 ? text : text.slice(mark + 1);
+    }
+
+    function scopedLegend(chartId, labels, extra) {
+      return Object.assign({
+        data: labels.map((label) => scopedName(chartId, label)),
+        formatter: prettyName
+      }, extra || {});
     }
 
     function drawTime() {
@@ -591,22 +650,22 @@
       charts.rtt.setOption({
         color: palette,
         ...cross(),
-        legend: { data: ["Median", "p90", "p95", "p99"] },
+        legend: scopedLegend("rtt", ["Median", "p90", "p95", "p99"]),
         grid: baseGrid(),
         dataZoom: axisZoom(),
         xAxis: { type: "category", data: names },
         yAxis: { type: kind, name: "ms" },
         series: pin([
-          { name: "Median", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
-          { name: "p90", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p90)) },
-          { name: "p95", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p95)) },
-          { name: "p99", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p99)) }
+          { name: scopedName("rtt", "Median"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
+          { name: scopedName("rtt", "p90"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p90)) },
+          { name: scopedName("rtt", "p95"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p95)) },
+          { name: scopedName("rtt", "p99"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p99)) }
         ], rows)
       }, true);
       charts.tail.setOption({
-        color: ["#c45c26", "#24576e", "#1c2430", "#d4a017"],
+        color: ["#c45c26", "#24576e", "#1c2430", "#6e8b74", "#d4a017"],
         ...cross(),
-        legend: { data: ["Median", "p99", "TCP loss", "Retries"] },
+        legend: scopedLegend("tail", ["Median", "p99", "Loss toward client", "Loss toward server", "Retries"]),
         grid: baseGrid(),
         dataZoom: axisZoom(),
         xAxis: { type: "category", data: names },
@@ -615,22 +674,23 @@
           { type: kind, name: "packets", splitLine: { show: false } }
         ],
         series: pin([
-          { name: "Median", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
-          { name: "p99", type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p99)) },
-          { name: "TCP loss", type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost)) },
-          { name: "Retries", type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.retrans)) }
+          { name: scopedName("tail", "Median"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
+          { name: scopedName("tail", "p99"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p99)) },
+          { name: scopedName("tail", "Loss toward client"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost_s2c)) },
+          { name: scopedName("tail", "Loss toward server"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost_c2s)) },
+          { name: scopedName("tail", "Retries"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.retrans)) }
         ], rows)
       }, true);
       charts.range.setOption({
         color: palette,
         ...cross(),
-        legend: { data: ["Median to p90"] },
+        legend: scopedLegend("range", ["Median to p90"]),
         grid: baseGrid(),
         dataZoom: axisZoom(),
         xAxis: { type: "category", data: names },
         yAxis: { type: kind, name: "ms" },
         series: pin([{
-          name: "Median to p90",
+          name: scopedName("range", "Median to p90"),
           type: "candlestick",
           itemStyle: {
             color: "#c45c26",
@@ -650,7 +710,7 @@
       charts.mix.setOption({
         color: palette,
         ...cross(),
-        legend: { type: "scroll", data: opcodeNames.concat(["Median", "p99"]) },
+        legend: scopedLegend("mix", opcodeNames.concat(["Median", "p99"]), { type: "scroll" }),
         tooltip: {
           trigger: "axis",
           axisPointer: { type: "cross", label: { backgroundColor: "#1c2430" } },
@@ -659,7 +719,7 @@
             items.forEach((item) => {
               if (item.seriesName === STAKE_SERIES) return;
               if (item.value == null || item.value === "-" || item.value === 0) return;
-              lines.push(item.marker + item.seriesName + ": " + item.value);
+              lines.push(item.marker + prettyName(item.seriesName) + ": " + item.value);
             });
             return lines.join("<br/>");
           }
@@ -672,20 +732,22 @@
           { type: kind, name: "ms", splitLine: { show: false } }
         ],
         series: pin(opcodeNames.map((name) => ({
-          name: name,
+          name: scopedName("mix", name),
           type: "bar",
           stack: "opcode",
           emphasis: { focus: "series" },
           data: rows.map((row) => yValue((row.opcodes && row.opcodes[name]) || 0))
         })).concat([
-          { name: "Median", type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
-          { name: "p99", type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { width: 2 }, data: rows.map((row) => yValue(row.rtt_p99)) }
+          { name: scopedName("mix", "Median"), type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
+          { name: scopedName("mix", "p99"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { width: 2 }, data: rows.map((row) => yValue(row.rtt_p99)) }
         ]), rows)
       }, true);
       charts.issues.setOption({
         color: palette,
         ...cross(),
-        legend: { data: ["Matched", "Lost response", "Response without request", "TCP loss", "Retries"] },
+        legend: scopedLegend("issues", ["Matched", "Lost response", "Response without request", "Loss toward client", "Loss toward server", "Retries"], {
+          selected: { [scopedName("issues", "Matched")]: false }
+        }),
         grid: baseGrid(),
         dataZoom: axisZoom(),
         xAxis: { type: "category", data: names },
@@ -694,25 +756,33 @@
           { type: kind, name: "packets", splitLine: { show: false } }
         ],
         series: pin([
-          { name: "Matched", type: "bar", stack: "ops", data: rows.map((row) => yValue(row.matched)) },
-          { name: "Lost response", type: "bar", stack: "ops", data: rows.map((row) => yValue(row.unanswered)) },
-          { name: "Response without request", type: "bar", stack: "ops", data: rows.map((row) => yValue(row.resp_only)) },
-          { name: "TCP loss", type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.lost)) },
-          { name: "Retries", type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.retrans)) }
+          { name: scopedName("issues", "Matched"), type: "bar", stack: "ops", data: rows.map((row) => yValue(row.matched)) },
+          { name: scopedName("issues", "Lost response"), type: "bar", stack: "ops", data: rows.map((row) => yValue(row.unanswered)) },
+          { name: scopedName("issues", "Response without request"), type: "bar", stack: "ops", data: rows.map((row) => yValue(row.resp_only)) },
+          { name: scopedName("issues", "Loss toward client"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost_s2c)) },
+          { name: scopedName("issues", "Loss toward server"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost_c2s)) },
+          { name: scopedName("issues", "Retries"), type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.retrans)) }
         ], rows)
       }, true);
       charts.body.setOption({
         color: palette,
         ...cross(),
-        legend: { data: ["Into Couchbase", "Out of Couchbase"] },
+        legend: scopedLegend("body", ["Largest request", "Largest reply", "All bytes in", "All bytes out"], {
+          selected: {
+            [scopedName("body", "All bytes in")]: false,
+            [scopedName("body", "All bytes out")]: false
+          }
+        }),
         tooltip: {
           trigger: "axis",
           axisPointer: { type: "cross", label: { backgroundColor: "#1c2430" } },
           formatter: (items) => {
             const row = rows[items[0].dataIndex] || {};
             const lines = [items[0].axisValueLabel || items[0].axisValue];
-            lines.push("Into Couchbase: " + formatBytes(row.body_in_max) + " largest request");
-            lines.push("Out of Couchbase: " + formatBytes(row.body_out_max) + " largest reply");
+            lines.push("Largest request: " + formatBytes(row.body_in_max));
+            lines.push("Largest reply: " + formatBytes(row.body_out_max));
+            lines.push("All bytes in: " + formatBytes(row.body_in_bytes));
+            lines.push("All bytes out: " + formatBytes(row.body_out_bytes));
             if (row.body_large) lines.push(row.body_large + " messages at 1 MB or more");
             return lines.join("<br/>");
           }
@@ -722,8 +792,10 @@
         xAxis: { type: "category", data: names },
         yAxis: { type: kind, name: "bytes" },
         series: pin([
-          { name: "Into Couchbase", type: "bar", data: rows.map((row) => yValue(row.body_in_max)) },
-          { name: "Out of Couchbase", type: "bar", data: rows.map((row) => yValue(row.body_out_max)) }
+          { name: scopedName("body", "Largest request"), type: "bar", data: rows.map((row) => yValue(row.body_in_max)) },
+          { name: scopedName("body", "Largest reply"), type: "bar", data: rows.map((row) => yValue(row.body_out_max)) },
+          { name: scopedName("body", "All bytes in"), type: "line", showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.body_in_bytes)) },
+          { name: scopedName("body", "All bytes out"), type: "line", showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.body_out_bytes)) }
         ], rows)
       }, true);
       if (lightboxHome) requestAnimationFrame(() => Object.values(charts).forEach((chart) => chart.resize()));
@@ -746,7 +818,17 @@
       let rows;
       if (ipTab === "port") {
         title.textContent = "Requests by IP and port";
-        note.textContent = "Each slice is one client connection, shown as IP and source port.";
+        note.textContent = "Each slice is one client connection. The table is sorted by unanswered percent, so the connection that drops the most replies is first.";
+        const ranked = connections.slice().sort((a, b) => {
+          const rateA = a.requests ? a.unanswered / a.requests : 0;
+          const rateB = b.requests ? b.unanswered / b.requests : 0;
+          if (rateB !== rateA) return rateB - rateA;
+          return (b.unanswered || 0) - (a.unanswered || 0);
+        });
+        table("conn-rate", ["Connection", "Requests", "Lost responses", "Unanswered %"], ranked.map((row) => {
+          const pct = row.unanswered_pct != null ? row.unanswered_pct : (row.requests ? Math.round(1000 * row.unanswered / row.requests) / 10 : 0);
+          return [escapeHtml(row.ip + ":" + row.port), row.requests, row.unanswered, pct + "%"];
+        }));
         rows = connections.map((row) => ({
           name: row.ip + ":" + row.port,
           value: row.requests,
@@ -765,6 +847,8 @@
           unanswered: row.unanswered,
           detail: row.ip
         }));
+        const connBox = document.getElementById("conn-rate");
+        if (connBox) connBox.innerHTML = "";
       }
       const top = rows.slice(0, 12);
       const rest = rows.slice(12);
@@ -782,7 +866,10 @@
           trigger: "item",
           formatter: (item) => {
             const row = item.data || {};
-            return (row.detail || item.name) + "<br/>" + item.value + " requests (" + item.percent + "%)<br/>" + (row.unanswered || 0) + " lost responses";
+            const requests = item.value || 0;
+            const missed = row.unanswered || 0;
+            const pct = requests ? Math.round(1000 * missed / requests) / 10 : 0;
+            return (row.detail || item.name) + "<br/>" + requests + " requests (" + item.percent + "%)<br/>" + missed + " lost responses (" + pct + "%)";
           }
         },
         series: [{
@@ -793,6 +880,54 @@
           labelLayout: { hideOverlap: true }
         }]
       }, true);
+    }
+
+    function bucketAt(seconds) {
+      const rows = (data.buckets && data.buckets["1"]) || [];
+      let chosen = null;
+      rows.forEach((row) => {
+        if (!chosen || Math.abs(row.t - seconds) < Math.abs(chosen.t - seconds)) chosen = row;
+      });
+      return chosen || {};
+    }
+
+    function topOpcode(row) {
+      const counts = row.opcodes || {};
+      let name = "";
+      let best = -1;
+      Object.keys(counts).forEach((key) => {
+        if (counts[key] > best) {
+          best = counts[key];
+          name = key;
+        }
+      });
+      return best > 0 ? name : "—";
+    }
+
+    function drawInterest() {
+      const items = data.interest_stakes || [];
+      table(
+        "interest",
+        ["pi", "Seconds", "Point", "Median ms", "p99 ms", "Top opcode", "Bytes in", "Bytes out", "Toward client", "Toward server", "Lost responses", "Stake"],
+        items.map((row, index) => {
+          const bucket = bucketAt(Number(row.seconds));
+          return [
+            "pi:" + (index + 1),
+            escapeHtml(cellText(row.seconds)),
+            escapeHtml(row.title || ""),
+            cellText(bucket.rtt_median),
+            cellText(bucket.rtt_p99),
+            escapeHtml(topOpcode(bucket)),
+            cellText(bucket.body_in_bytes),
+            cellText(bucket.body_out_bytes),
+            cellText(bucket.lost_s2c),
+            cellText(bucket.lost_c2s),
+            cellText(bucket.unanswered),
+            row.seconds == null ? "" : '<button type="button" class="set-stake" data-seconds="' + row.seconds + '">Set Stake</button>'
+          ];
+        })
+      );
+      markStakeButtons();
     }
 
     function drawNext() {
@@ -882,18 +1017,23 @@
       table("top-asked", [term("Document id", "The Couchbase key the operation named."), "Requests", term("Lost responses", "Requests for that document whose replies are not in this file.")], (data.top_requested || []).map((row) => [row.key, row.count, row.unanswered]));
       table("top-slow", [
         term("Document id", "The Couchbase key the operation named."),
+        term("Stream", "The TCP connection number. Opaque is only unique inside this stream."),
+        term("Opaque", "The client’s semi-transaction number. The request and the matching response carry this same value."),
         term("Time ms", "Milliseconds from the request packet to its matching reply for this call."),
         term("Seconds", "Seconds from the start of the capture, when the request was sent. Set Stake marks this moment."),
         term("Body bytes", "The larger of the request and reply total body lengths for this call. Extras, key, and value."),
         "Stake"
       ], (data.top_slowest || []).map((row) => [
         row.key,
+        cellText(row.stream),
+        cellText(row.opaque),
         cellText(row.time_ms),
         cellText(row.seconds),
         cellText(row.body_bytes),
         row.seconds == null ? "" : '<button type="button" class="set-stake" data-seconds="' + row.seconds + '">Set Stake</button>'
       ]));
       markStakeButtons();
+      drawInterest();
       drawNext();
       const overall = data.rtt_overall_ms || {};
       const bits = [];
@@ -966,10 +1106,14 @@
         applyStakes();
         markStakeButtons();
       });
-      document.getElementById("top-slow").addEventListener("click", (event) => {
-        const button = event.target.closest(".set-stake");
-        if (!button || button.disabled) return;
-        addStake(button.dataset.seconds);
+      ["top-slow", "interest"].forEach((id) => {
+        const box = document.getElementById(id);
+        if (!box) return;
+        box.addEventListener("click", (event) => {
+          const button = event.target.closest(".set-stake");
+          if (!button || button.disabled) return;
+          addStake(button.dataset.seconds);
+        });
       });
       timeChartIds.forEach((id) => {
         charts[id].getZr().on("dblclick", (event) => {
@@ -1014,6 +1158,7 @@
       });
       const seconds = data.capture_seconds || 0;
       document.getElementById("bucket").value = seconds > 180 ? "10" : "1";
+      (data.interest_stakes || []).forEach((item) => takeStake(item.seconds));
       drawTiles();
       drawFixed();
       drawTime();

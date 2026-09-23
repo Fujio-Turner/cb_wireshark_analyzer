@@ -70,11 +70,28 @@ def test_buckets_percentiles_and_top_keys():
     assert charts["top_slowest"][0]["key"] == "widget::slow"
     assert charts["top_slowest"][0]["time_ms"] == 150.0
     assert charts["top_slowest"][0]["seconds"] == 1.2
+    assert charts["top_slowest"][0]["opaque"] == "0x3"
+    assert charts["top_slowest"][0]["stream"] == "0"
     assert charts["top_slowest"][0]["body_bytes"] == 1048576
     assert first["body_in_max"] == 0
     assert second["body_in_max"] == 1048576
+    assert second["body_in_bytes"] == 1048576
     assert second["body_out_max"] == 200
+    assert second["body_out_bytes"] == 200
     assert second["body_large"] == 1
+    assert second["lost_s2c"] == 1
+    assert second["lost_c2s"] == 0
+    assert charts["by_connection"][0]["unanswered_pct"] == 33.3
+    candidates = ac.interest_candidates(charts)
+    assert any(item["seconds"] == 1.2 and item["title"] == "Slow call" for item in candidates)
+    picked = ac.parse_interest_stakes(
+        '[{"seconds": 99, "title": "Invented", "why": "no"}, {"seconds": 1.2, "title": "Big and slow", "why": "150 ms"}]',
+        candidates,
+    )
+    assert [item["seconds"] for item in picked] == [1.2]
+    assert picked[0]["title"] == "Big and slow"
+    offline = ac.choose_interest_stakes(charts, base_url="", model="", timeout=1, use_model=False)
+    assert any(item["seconds"] == 1.2 for item in offline)
     assert charts["slow_ms"]["over_100"] == 1
     assert charts["slow_ms"]["over_250"] == 0
     assert next(row["count"] for row in charts["rtt_histogram"] if row["label"] == "100–250") == 1

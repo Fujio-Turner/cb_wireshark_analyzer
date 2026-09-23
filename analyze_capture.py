@@ -1028,6 +1028,8 @@ def build_charts(
             req.get("opcode") or "",
             int(req.get("body") or 0),
             int(resp.get("body") or 0),
+            req.get("opaque") or "",
+            str(req.get("stream") or ""),
         ))
 
     portset = set(ports)
@@ -1050,17 +1052,22 @@ def build_charts(
         unanswered_n = [0] * count
         resp_only_n = [0] * count
         lost_n = [0] * count
+        lost_c2s = [0] * count
+        lost_s2c = [0] * count
         retrans_n = [0] * count
         ack_n = [0] * count
         opcode_n: list[Counter] = [Counter() for _ in range(count)]
         samples: list[list[float]] = [[] for _ in range(count)]
         body_in_max = [0] * count
         body_out_max = [0] * count
+        body_in_sum = [0] * count
+        body_out_sum = [0] * count
         body_large = [0] * count
 
-        def note_body(msg: dict, maxima: list[int]) -> None:
+        def note_body(msg: dict, maxima: list[int], totals: list[int]) -> None:
             size = int(msg.get("body") or 0)
             index = _bucket_index(msg["time"], width, count)
+            totals[index] += size
             if size > maxima[index]:
                 maxima[index] = size
             if size >= LARGE_BODY_BYTES:
@@ -1070,12 +1077,12 @@ def build_charts(
             index = _bucket_index(msg["time"], width, count)
             requests_n[index] += 1
             opcode_n[index][opcode_name(msg.get("opcode") or "")] += 1
-            note_body(msg, body_in_max)
+            note_body(msg, body_in_max, body_in_sum)
         for _req, resp in paired["matched"]:
-            note_body(resp, body_out_max)
+            note_body(resp, body_out_max, body_out_sum)
         for msg in paired["resp_only"]:
-            note_body(msg, body_out_max)
-        for when, gap, _key, _opcode, _body_in, _body_out in matched_rtts:
+            note_body(msg, body_out_max, body_out_sum)
+        for when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream in matched_rtts:
             index = _bucket_index(when, width, count)
             matched_n[index] += 1
             samples[index].append(gap)
@@ -1087,6 +1094,10 @@ def build_charts(
             index = _bucket_index(event["time"], width, count)
             if event["lost"]:
                 lost_n[index] += 1
+                if event["sport"] in portset:
+                    lost_s2c[index] += 1
+                else:
+                    lost_c2s[index] += 1
             if event["retrans"]:
                 retrans_n[index] += 1
             if event["ack"]:
@@ -1100,11 +1111,15 @@ def build_charts(
                 "unanswered": unanswered_n[index],
                 "resp_only": resp_only_n[index],
                 "lost": lost_n[index],
+                "lost_c2s": lost_c2s[index],
+                "lost_s2c": lost_s2c[index],
                 "retrans": retrans_n[index],
                 "ack_lost": ack_n[index],
                 "opcodes": dict(opcode_n[index]),
                 "body_in_max": body_in_max[index],
                 "body_out_max": body_out_max[index],
+                "body_in_bytes": body_in_sum[index],
+                "body_out_bytes": body_out_sum[index],
                 "body_large": body_large[index],
             }
             row.update(_rtt_summary(samples[index]))
@@ -1138,13 +1153,13 @@ def build_charts(
             conn[1] += 1
             if key:
                 key_unanswered[key] += 1
-    for _when, gap, _key, opcode, _body_in, _body_out in matched_rtts:
+    for _when, gap, _key, opcode, _body_in, _body_out, _opaque, _stream in matched_rtts:
         opcode_rtts[opcode].append(gap)
 
     ranked_calls = sorted(
         (
-            (when, gap, key, body_in, body_out)
-            for when, gap, key, _opcode, body_in, body_out in matched_rtts
+            (when, gap, key, body_in, body_out, opaque, stream)
+            for when, gap, key, _opcode, body_in, body_out, opaque, stream in matched_rtts
             if key
         ),
         key=lambda item: (-item[1], item[0]),
@@ -1155,10 +1170,12 @@ def build_charts(
             "time_ms": _ms(gap),
             "seconds": round(when, 3),
             "body_bytes": max(body_in, body_out),
+            "opaque": opaque,
+            "stream": stream,
         }
-        for when, gap, key, body_in, body_out in ranked_calls[:10]
+        for when, gap, key, body_in, body_out, opaque, stream in ranked_calls[:10]
     ]
-    all_rtts = [gap for _when, gap, _key, _opcode, _body_in, _body_out in matched_rtts]
+    all_rtts = [gap for _when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream in matched_rtts]
     overall = _rtt_summary(all_rtts)
     all_ms = [gap * 1000 for gap in all_rtts]
     return {
@@ -1183,6 +1200,7 @@ def build_charts(
                 "stream": slot[2],
                 "requests": slot[0],
                 "unanswered": slot[1],
+                "unanswered_pct": round(100 * slot[1] / slot[0], 1) if slot[0] else 0,
             }
             for (ip, port), slot in sorted(by_conn.items(), key=lambda item: item[1][0], reverse=True)
         ],
@@ -2307,7 +2325,8 @@ def chart_digest(charts: dict) -> list[str]:
     lines.append("Ten slowest matched calls (ms, seconds from start, body bytes, key):")
     for row in charts.get("top_slowest") or []:
         lines.append(
-            f"- {row.get('time_ms')} ms at {row.get('seconds')}s body={row.get('body_bytes')} {row.get('key')}"
+            f"- {row.get('time_ms')} ms at {row.get('seconds')}s body={row.get('body_bytes')} "
+            f"stream {row.get('stream')} opaque {row.get('opaque')} {row.get('key')}"
         )
     return lines
 
@@ -2498,14 +2517,168 @@ def splice_table(text: str, table: str) -> str:
     return text.rstrip() + "\n\n## All unanswered requests\n\n" + block + "\n"
 
 
-def call_ollama(note: str, *, base_url: str, model: str, timeout: int) -> str:
+INTEREST_SYSTEM = """You mark points of interest on a Couchbase capture chart.
+
+Return only a JSON array. No markdown. Each object has "seconds", "title", and "why".
+"seconds" must be one of the candidate seconds in the user message. Do not invent a time.
+Pick 4 to 6 moments that are worth a vertical line: where slowness, a large body, and TCP loss line up, plus a moment that is only a loss spike or only a large body when those are different seconds.
+"title" is at most 6 words. "why" is one sentence and cites a number from that candidate.
+"""
+
+
+def interest_candidates(charts: dict) -> list[dict]:
+    """Counted seconds the model is allowed to stake. Nearby seconds collapse to one."""
+    found: list[dict] = []
+
+    def add(seconds: float | int | None, title: str, why: str) -> None:
+        if seconds is None:
+            return
+        try:
+            seconds = round(float(seconds), 3)
+        except (TypeError, ValueError):
+            return
+        for item in found:
+            if abs(item["seconds"] - seconds) < 0.5:
+                return
+        found.append({"seconds": seconds, "title": title, "why": why})
+
+    for row in (charts.get("top_slowest") or [])[:4]:
+        add(
+            row.get("seconds"),
+            "Slow call",
+            f"{row.get('time_ms')} ms, body {row.get('body_bytes')} bytes",
+        )
+    rows = ((charts.get("buckets") or {}).get("1") or [])
+    if rows:
+        peak_p99 = max(rows, key=lambda row: row.get("rtt_p99") or 0)
+        if peak_p99.get("rtt_p99"):
+            add(
+                peak_p99.get("t"),
+                "Highest p99",
+                f"p99 {peak_p99.get('rtt_p99')} ms, median {peak_p99.get('rtt_median')} ms",
+            )
+        peak_loss = max(rows, key=lambda row: row.get("lost") or 0)
+        if peak_loss.get("lost"):
+            add(
+                peak_loss.get("t"),
+                "Most TCP loss",
+                f"{peak_loss.get('lost')} lost segments, {peak_loss.get('unanswered')} lost responses",
+            )
+        peak_out = max(rows, key=lambda row: row.get("body_out_max") or 0)
+        if peak_out.get("body_out_max"):
+            add(
+                peak_out.get("t"),
+                "Largest reply",
+                f"{peak_out.get('body_out_max')} bytes out of Couchbase",
+            )
+        peak_in = max(rows, key=lambda row: row.get("body_in_max") or 0)
+        if peak_in.get("body_in_max"):
+            add(
+                peak_in.get("t"),
+                "Largest request",
+                f"{peak_in.get('body_in_max')} bytes into Couchbase",
+            )
+        peak_miss = max(rows, key=lambda row: row.get("unanswered") or 0)
+        if peak_miss.get("unanswered"):
+            add(
+                peak_miss.get("t"),
+                "Most lost responses",
+                f"{peak_miss.get('unanswered')} requests with no reply",
+            )
+    return found[:8]
+
+
+def _fallback_interest(candidates: list[dict]) -> list[dict]:
+    return [
+        {"seconds": item["seconds"], "title": item["title"], "why": item["why"]}
+        for item in candidates[:6]
+    ]
+
+
+def parse_interest_stakes(text: str, candidates: list[dict]) -> list[dict]:
+    """Keep model rows whose second is one of the counted candidates."""
+    cleaned = strip_think(text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start == -1 or end <= start:
+        raise ValueError("model stake reply had no JSON array")
+    payload = json.loads(cleaned[start : end + 1])
+    if not isinstance(payload, list):
+        raise ValueError("model stake reply was not a list")
+    chosen: list[dict] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        try:
+            seconds = float(item.get("seconds"))
+        except (TypeError, ValueError):
+            continue
+        match = None
+        for candidate in candidates:
+            gap = abs(candidate["seconds"] - seconds)
+            if gap <= 0.75 and (match is None or gap < abs(match["seconds"] - seconds)):
+                match = candidate
+        if match is None:
+            continue
+        if any(abs(row["seconds"] - match["seconds"]) < 0.5 for row in chosen):
+            continue
+        title = str(item.get("title") or match["title"]).strip()[:80] or match["title"]
+        why = str(item.get("why") or match["why"]).strip()[:280] or match["why"]
+        chosen.append({"seconds": match["seconds"], "title": title, "why": why})
+        if len(chosen) >= 6:
+            break
+    if not chosen:
+        raise ValueError("model stake reply matched no candidate second")
+    return chosen
+
+
+def choose_interest_stakes(
+    charts: dict,
+    *,
+    base_url: str,
+    model: str,
+    timeout: int,
+    use_model: bool,
+) -> list[dict]:
+    candidates = interest_candidates(charts)
+    if not candidates or not use_model:
+        return _fallback_interest(candidates)
+    lines = ["Candidate seconds. Use only these seconds.", ""]
+    for item in candidates:
+        lines.append(f"- {item['seconds']}s {item['title']}: {item['why']}")
+    try:
+        raw = call_ollama(
+            "\n".join(lines),
+            base_url=base_url,
+            model=model,
+            timeout=min(int(timeout), 180),
+            system=INTEREST_SYSTEM,
+        )
+        picked = parse_interest_stakes(raw, candidates)
+        log(f"model marked {len(picked)} points of interest")
+        return picked
+    except (SystemExit, ValueError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        log(f"Interest stakes fell back to the counted seconds: {exc}")
+        return _fallback_interest(candidates)
+
+
+def call_ollama(
+    note: str,
+    *,
+    base_url: str,
+    model: str,
+    timeout: int,
+    system: str | None = None,
+) -> str:
     url = base_url.rstrip("/") + "/api/chat"
     payload = {
         "model": model,
         "think": False,
         "stream": False,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system or SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": note,
@@ -2828,9 +3001,19 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
     out.mkdir(parents=True, exist_ok=True)
     (out / "facts.json").write_text(json.dumps(facts, indent=2) + "\n")
     write_tsv(out, requests, responses, facts["unanswered"])
-    write_charts(out, charts)
+
+    def finish_charts(use_model: bool) -> None:
+        charts["interest_stakes"] = choose_interest_stakes(
+            charts,
+            base_url=args.ollama,
+            model=args.model,
+            timeout=args.timeout,
+            use_model=use_model,
+        )
+        write_charts(out, charts)
 
     if args.no_ai:
+        finish_charts(False)
         (out / "summary.md").write_text(computed)
         log(f"wrote {out / 'summary.md'}")
         return out, True
@@ -2843,10 +3026,12 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
             timeout=args.timeout,
         )
     except SystemExit as exc:
+        finish_charts(True)
         (out / "summary.md").write_text(computed)
         log(str(exc))
         log(f"Ollama did not write the note. The counted report is {out / 'summary.md'}")
         return out, False
+    finish_charts(True)
     cleaned = splice_table(clean_model_markdown(raw), unanswered_table(facts["unanswered"]))
     (out / "summary.computed.md").write_text(computed)
     (out / "summary.md").write_text(cleaned)

@@ -13,13 +13,19 @@ The dump has the packets. It does not line those trends up.
 
 ## Solution
 
-This tool counts the capture and draws the trends on one time axis. The time charts share a crosshair. A stake marks the same second on every chart, so opcode mix, response time, missing replies, TCP loss, and body size can be read together. Python owns every number. A local Qwen model writes the note from those counts, including the next questions.
+One run writes two things, side by side in the output folder.
+
+**The note, `summary.md`.** A local Qwen model writes this from the counts: what the capture did, the slow tail, the missing replies, and the next questions. `--no-ai` skips the model and writes the counted note instead. A model run also keeps that counted text as `summary.computed.md`.
+
+**The chart page, `charts.json` and `index.html`.** `charts.json` is the analysis: one-, five-, and ten-second buckets, percentiles, opcodes, body size, TCP loss, client connections, and the points of interest. `index.html` draws that file. The time charts share a crosshair. A stake marks the same second on every chart, so opcode mix, response time, missing replies, TCP loss, and body size can be read together. Open the folder with a local web server. A `file://` page cannot read `charts.json`.
+
+Python owns every number in both. The model does not invent the counts.
 
 ![From dump to note](images/pipeline.svg)
 
 ![What an unmatched packet means](images/edges.svg)
 
-The match key is `tcp.stream` plus `couchbase.opaque`. The in-flight window is the longest matched round trip: a response at the open of the file, and a request at the close, are the capture cutting through calls already on the wire. Unmatched rows farther inside the file are counted with the TCP gaps when a pcap is available.
+The match key is `tcp.stream` plus `couchbase.opaque`. Opaque is the client’s semi-transaction number: the request and its reply carry the same value, and the same opaque on another stream is a different call. Common display filters for a document, one opaque, an opcode, a status, a large body, and TCP loss are in [CB_WIRESHARK.md](CB_WIRESHARK.md). The in-flight window is the longest matched round trip: a response at the open of the file, and a request at the close, are the capture cutting through calls already on the wire. Unmatched rows farther inside the file are counted with the TCP gaps when a pcap is available.
 
 ### Calls by opcode and response time
 
@@ -31,13 +37,13 @@ Each color is one Couchbase command. Bar height is how many of that command ran 
 
 ![Lost responses beside TCP holes](images/no_response_vs_tcp_packet_loss.png)
 
-The bars are Couchbase operations: matched calls, requests whose reply is missing, and replies whose request is missing. TCP loss and retries use the packet axis. Read it for the correlation: a lost response beside a TCP hole means the reply was probably never in the recording. Retries stay near zero when the sender did not resend, which fits packets missing from the capture.
+The bars are Couchbase operations: matched calls, requests whose reply is missing, and replies whose request is missing. Dashed lines split TCP loss by direction. Loss toward the client is a hole in the reply path. Loss toward the server is a hole in the request path. A lost response beside loss toward the client means the reply was probably never in the recording.
 
 ### Total body length
 
 ![Largest request and reply body each second](images/json_size_in_out.png)
 
-Each bar is the largest Couchbase body in that second. Body length is extras, key, and value. Into Couchbase is the request. Out of Couchbase is the reply. A high bar means a lot of document data moved in or out during that second. A 1 Gbit NIC can carry about 125 MB/s (125,000,000 bytes). A 10 Gbit NIC can carry about 1,250 MB/s (1,250,000,000 bytes). Read it against the p99 line for the same second: the bytes and the slow calls either land together or they do not.
+Bars are the largest Couchbase body in that second, one document in and one document out. Dashed lines add every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC can carry about 125 MB/s (125,000,000 bytes). A 10 Gbit NIC can carry about 1,250 MB/s (1,250,000,000 bytes). The points-of-interest table puts median, p99, the top opcode, those byte totals, and both loss directions on the same second.
 
 ## Getting Started
 
@@ -55,7 +61,7 @@ cd orphan-report
 python3 -m http.server
 ```
 
-Open `http://127.0.0.1:8000/`. Add the local model by dropping `--no-ai` once Ollama is listening. The virtual-machine section and the Docker section below have the full install steps.
+Open `http://127.0.0.1:8000/`. Add the local model by dropping `--no-ai` once Ollama is listening. The virtual-machine section and the Docker section below have the full install steps. To jump from a slow row back to Wireshark, use the stream and opaque with the filters in [CB_WIRESHARK.md](CB_WIRESHARK.md).
 
 ## Config
 
@@ -180,6 +186,10 @@ python3 -m pytest -q
 
 `python3 analyze_capture.py --self-test` runs that same suite. In Docker, `docker compose run --rm test` runs it inside the image. The tests use small fixtures. They do not read a pcap and they do not call Ollama.
 
+## Wireshark filters
+
+[CB_WIRESHARK.md](CB_WIRESHARK.md) lists the display filters for a document id, one request and its reply, opcodes, status, large bodies, and TCP loss on port 11210. It walks through tracing a request that never got a response, including the false positives at the end of the file. It also explains `couchbase && tcp.time_delta > 0.05` and how to add that gap as a column in the packet list.
+
 ## Release Notes
 
 [RELEASE_NOTES.md](RELEASE_NOTES.md)
@@ -197,6 +207,8 @@ python3 -m pytest -q
 **A `.tsv` next to a pcap was ignored.** When both are in the folder, the pcap is used. `--from-tsv` keeps the spreadsheet files. Collection document ids are `couchbase.key.logical_key`. An export of `couchbase.key` is often empty.
 
 **The client IP chart is one slice.** Every request in that capture came from one address. The **IP : port** tab splits that client by source port.
+
+**Find that call in Wireshark.** The slow-call table has the TCP stream and the opaque. [CB_WIRESHARK.md](CB_WIRESHARK.md) has the filter, plus filters for a document id such as `couchbase.key.logical_key == "invoice:12345"`.
 
 ## License
 

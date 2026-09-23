@@ -1,5 +1,20 @@
 # Release notes
 
+## 0.3.0
+
+Correlations on one second, and a Wireshark sheet for tracing a missing reply.
+
+- The local model picks points of interest from the counted spikes and the page draws those stakes when it opens. **Points of interest** lists them as `pi:1`, `pi:2`, and so on. The chart flag reads `Stake 1(pi:1)`. Remove stake clears the lines. Set Stake puts that row back.
+- Each interest row shows that second’s median, p99, top opcode, bytes in, bytes out, loss toward the client, loss toward the server, and lost responses.
+- Total body length keeps bars for the largest request and the largest reply. Dashed lines add every document byte in that second. Those lines start hidden.
+- TCP loss is split into loss toward the client (reply path) and loss toward the server (request path). The Matched bars on the lost-response chart start hidden.
+- The IP : port tab sorts connections by unanswered percent.
+- Hiding a legend series on one chart leaves the same name visible on the other charts. The crosshair still lines up.
+- The slow-call table shows TCP stream and `couchbase.opaque`, the semi-transaction number shared by the request and its reply.
+- The glossary sits at the bottom of the page.
+- [CB_WIRESHARK.md](CB_WIRESHARK.md) lists document, opaque, opcode, status, body, and TCP-loss filters. It explains `couchbase && tcp.time_delta > 0.05` and how to add that gap as a column. It walks through tracing a request with no response, and warns that requests still in flight at the end of the file are false positives.
+- The README describes the two outputs of a run: `summary.md`, and `charts.json` with `index.html`.
+
 ## 0.2.0
 
 The project is now `cb_wireshark_analyzer`. Chart page, body size, and a fuller note for the local model.

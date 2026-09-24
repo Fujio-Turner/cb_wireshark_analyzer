@@ -241,6 +241,11 @@ OPCODES = {
 
 # KV only. tcp.port is either side, so a reply leaving 11210 stays in.
 KV_PORT = "11210"
+KV_PORTS = {"11210", "11207"}
+# DCP is the in-cluster replication stream. Meta commands are XDCR.
+_CLUSTER_OPCODES = {f"0x{code:02x}" for code in range(0x50, 0x68)} | {
+    "0xa0", "0xa1", "0xa2", "0xa3", "0xa4", "0xa5", "0xa8",
+}
 
 
 PACKET_TYPE_ORDER = (
@@ -468,6 +473,37 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 def log(message: str) -> None:
     print(message, file=sys.stderr)
+
+
+def traffic_role(sport: str, dport: str, opcode: str = "") -> str:
+    """Cluster is node-to-node or a replication command. SDK is an app port to KV."""
+    if str(sport or "") in KV_PORTS and str(dport or "") in KV_PORTS:
+        return "cluster"
+    if str(opcode or "").lower() in _CLUSTER_OPCODES:
+        return "cluster"
+    return "sdk"
+
+
+def cluster_endpoints(requests: list[dict]) -> set[str]:
+    """Ephemeral ports that carried a cluster command. The reply comes back from the KV port."""
+    ends: set[str] = set()
+    for msg in requests:
+        if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "") != "cluster":
+            continue
+        for port in (str(msg.get("sport") or ""), str(msg.get("dport") or "")):
+            if port and port not in KV_PORTS:
+                ends.add(port)
+    return ends
+
+
+def flow_role(sport: str, dport: str, cluster_ends: set[str]) -> str:
+    sport, dport = str(sport or ""), str(dport or "")
+    if sport in KV_PORTS and dport in KV_PORTS:
+        return "cluster"
+    other = dport if sport in KV_PORTS else sport if dport in KV_PORTS else ""
+    if other and other in cluster_ends:
+        return "cluster"
+    return "sdk"
 
 
 def opcode_name(opcode: str, learned: dict[str, str] | None = None) -> str:
@@ -978,13 +1014,13 @@ def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter,
             if on_kv_port(message.get("sport", ""), message.get("dport", "")):
                 _keep_client_message(message, requests, responses, magics)
     if redo:
-        log(f"re-reading {len(redo)} frames whose Couchbase columns did not line up")
-        for start in range(0, len(redo), 40):
-            chunk = redo[start : start + 40]
-            display = " || ".join(f"frame.number=={number}" for number in chunk)
-            for message in _iter_ek_messages(pcap, tshark, display):
-                if on_kv_port(message.get("sport", ""), message.get("dport", "")):
-                    _keep_client_message(message, requests, responses, magics)
+        log(f"re-reading {len(redo)} frames whose Couchbase columns did not line up, in one pass")
+        wanted = set(redo)
+        for message in _iter_ek_messages(pcap, tshark, f"tcp.port == {KV_PORT} && couchbase"):
+            if str(message.get("frame") or "") not in wanted:
+                continue
+            if on_kv_port(message.get("sport", ""), message.get("dport", "")):
+                _keep_client_message(message, requests, responses, magics)
     if not requests and not responses:
         raise SystemExit(f"No Couchbase client requests or responses in {pcap}")
     return requests, responses, magics, loss_events, packet_types
@@ -1159,9 +1195,11 @@ def build_charts(
             int(resp.get("body") or 0),
             req.get("opaque") or "",
             str(req.get("stream") or ""),
+            traffic_role(req.get("sport") or "", req.get("dport") or "", req.get("opcode") or ""),
         ))
 
     portset = set(ports)
+    ends = cluster_endpoints(requests)
     timed_loss = []
     for event in loss_events:
         if portset and event["sport"] not in portset and event["dport"] not in portset:
@@ -1187,6 +1225,14 @@ def build_charts(
         ack_n = [0] * count
         opcode_n: list[Counter] = [Counter() for _ in range(count)]
         samples: list[list[float]] = [[] for _ in range(count)]
+        sdk_requests_n = [0] * count
+        cluster_requests_n = [0] * count
+        sdk_unanswered_n = [0] * count
+        cluster_unanswered_n = [0] * count
+        sdk_retrans_n = [0] * count
+        cluster_retrans_n = [0] * count
+        sdk_samples: list[list[float]] = [[] for _ in range(count)]
+        cluster_samples: list[list[float]] = [[] for _ in range(count)]
         body_in_max = [0] * count
         body_out_max = [0] * count
         body_in_sum = [0] * count
@@ -1206,17 +1252,30 @@ def build_charts(
             index = _bucket_index(msg["time"], width, count)
             requests_n[index] += 1
             opcode_n[index][opcode_name(msg.get("opcode") or "")] += 1
+            if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "") == "cluster":
+                cluster_requests_n[index] += 1
+            else:
+                sdk_requests_n[index] += 1
             note_body(msg, body_in_max, body_in_sum)
         for _req, resp in paired["matched"]:
             note_body(resp, body_out_max, body_out_sum)
         for msg in paired["resp_only"]:
             note_body(msg, body_out_max, body_out_sum)
-        for when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream in matched_rtts:
+        for when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, role in matched_rtts:
             index = _bucket_index(when, width, count)
             matched_n[index] += 1
             samples[index].append(gap)
+            if role == "cluster":
+                cluster_samples[index].append(gap)
+            else:
+                sdk_samples[index].append(gap)
         for msg in paired["unanswered"]:
-            unanswered_n[_bucket_index(msg["time"], width, count)] += 1
+            index = _bucket_index(msg["time"], width, count)
+            unanswered_n[index] += 1
+            if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "") == "cluster":
+                cluster_unanswered_n[index] += 1
+            else:
+                sdk_unanswered_n[index] += 1
         for msg in paired["resp_only"]:
             resp_only_n[_bucket_index(msg["time"], width, count)] += 1
         for event in timed_loss:
@@ -1229,6 +1288,10 @@ def build_charts(
                     lost_c2s[index] += 1
             if event["retrans"]:
                 retrans_n[index] += 1
+                if flow_role(event.get("sport") or "", event.get("dport") or "", ends) == "cluster":
+                    cluster_retrans_n[index] += 1
+                else:
+                    sdk_retrans_n[index] += 1
             if event["ack"]:
                 ack_n[index] += 1
         rows = []
@@ -1243,6 +1306,14 @@ def build_charts(
                 "lost_c2s": lost_c2s[index],
                 "lost_s2c": lost_s2c[index],
                 "retrans": retrans_n[index],
+                "sdk_requests": sdk_requests_n[index],
+                "cluster_requests": cluster_requests_n[index],
+                "sdk_unanswered": sdk_unanswered_n[index],
+                "cluster_unanswered": cluster_unanswered_n[index],
+                "sdk_retrans": sdk_retrans_n[index],
+                "cluster_retrans": cluster_retrans_n[index],
+                "sdk_median": _rtt_summary(sdk_samples[index])["rtt_median"],
+                "cluster_median": _rtt_summary(cluster_samples[index])["rtt_median"],
                 "ack_lost": ack_n[index],
                 "opcodes": dict(opcode_n[index]),
                 "body_in_max": body_in_max[index],
@@ -1270,9 +1341,13 @@ def build_charts(
         by_opcode[opcode][0] += 1
         conn = by_conn.get((ip, port))
         if conn is None:
-            conn = [0, 0, str(msg.get("stream") or "")]
+            conn = [0, 0, str(msg.get("stream") or ""), 0, 0]
             by_conn[(ip, port)] = conn
         conn[0] += 1
+        if traffic_role(port, msg.get("dport") or "", opcode) == "cluster":
+            conn[4] += 1
+        else:
+            conn[3] += 1
         key = msg.get("key") or ""
         if key:
             by_key[key] += 1
@@ -1282,13 +1357,13 @@ def build_charts(
             conn[1] += 1
             if key:
                 key_unanswered[key] += 1
-    for _when, gap, _key, opcode, _body_in, _body_out, _opaque, _stream in matched_rtts:
+    for _when, gap, _key, opcode, _body_in, _body_out, _opaque, _stream, _role in matched_rtts:
         opcode_rtts[opcode].append(gap)
 
     ranked_calls = sorted(
         (
-            (when, gap, key, body_in, body_out, opaque, stream)
-            for when, gap, key, _opcode, body_in, body_out, opaque, stream in matched_rtts
+            (when, gap, key, body_in, body_out, opaque, stream, role)
+            for when, gap, key, _opcode, body_in, body_out, opaque, stream, role in matched_rtts
             if key
         ),
         key=lambda item: (-item[1], item[0]),
@@ -1301,10 +1376,11 @@ def build_charts(
             "body_bytes": max(body_in, body_out),
             "opaque": opaque,
             "stream": stream,
+            "role": role,
         }
-        for when, gap, key, body_in, body_out, opaque, stream in ranked_calls[:10]
+        for when, gap, key, body_in, body_out, opaque, stream, role in ranked_calls[:10]
     ]
-    all_rtts = [gap for _when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream in matched_rtts]
+    all_rtts = [gap for _when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, _role in matched_rtts]
     overall = _rtt_summary(all_rtts)
     all_ms = [gap * 1000 for gap in all_rtts]
     return {
@@ -1331,9 +1407,11 @@ def build_charts(
                 "requests": slot[0],
                 "unanswered": slot[1],
                 "unanswered_pct": round(100 * slot[1] / slot[0], 1) if slot[0] else 0,
+                "role": _connection_role(slot),
             }
             for (ip, port), slot in sorted(by_conn.items(), key=lambda item: item[1][0], reverse=True)
         ],
+        "traffic": _traffic_summary(requests, paired, loss_events),
         "by_opcode": [
             {
                 "opcode": opcode,
@@ -1343,6 +1421,7 @@ def build_charts(
                 "median_ms": (summary := _rtt_summary(opcode_rtts[opcode]))["rtt_median"],
                 "p99_ms": summary["rtt_p99"],
                 "description": opcode_description(opcode),
+                "role": "cluster" if str(opcode or "").lower() in _CLUSTER_OPCODES else "sdk",
             }
             for opcode, counts in sorted(by_opcode.items(), key=lambda item: item[1][0], reverse=True)
         ],
@@ -1387,6 +1466,51 @@ def _spread_rows(rows: list[dict], limit: int) -> list[dict]:
         picked.append(rows[index])
         last_index = index
     return picked
+
+
+def _connection_role(slot: list) -> str:
+    sdk = slot[3] if len(slot) > 3 else 0
+    cluster = slot[4] if len(slot) > 4 else 0
+    if cluster and not sdk:
+        return "cluster"
+    if sdk and not cluster:
+        return "sdk"
+    if cluster and sdk:
+        return "mixed"
+    return "sdk"
+
+
+def _traffic_summary(requests: list[dict], paired: dict, loss_events: list[dict]) -> dict:
+    """SDK is an application port to KV. Cluster is node-to-node or replication."""
+    rows = {
+        "sdk": {"requests": 0, "unanswered": 0, "matched": 0, "retrans": 0, "lost": 0},
+        "cluster": {"requests": 0, "unanswered": 0, "matched": 0, "retrans": 0, "lost": 0},
+    }
+    unanswered = {id(msg) for msg in paired["unanswered"]}
+    role_rtts: dict[str, list[float]] = {"sdk": [], "cluster": []}
+    for msg in requests:
+        role = traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "")
+        rows[role]["requests"] += 1
+        if id(msg) in unanswered:
+            rows[role]["unanswered"] += 1
+    for req, resp in paired["matched"]:
+        if resp["time"] < req["time"]:
+            continue
+        role = traffic_role(req.get("sport") or "", req.get("dport") or "", req.get("opcode") or "")
+        rows[role]["matched"] += 1
+        role_rtts[role].append(resp["time"] - req["time"])
+    cluster_ends = cluster_endpoints(requests)
+    for event in loss_events:
+        role = flow_role(event.get("sport") or "", event.get("dport") or "", cluster_ends)
+        if event.get("retrans"):
+            rows[role]["retrans"] += 1
+        if event.get("lost"):
+            rows[role]["lost"] += 1
+    for role, samples in role_rtts.items():
+        summary = _rtt_summary(samples)
+        rows[role]["median_ms"] = summary["rtt_median"]
+        rows[role]["p99_ms"] = summary["rtt_p99"]
+    return rows
 
 
 def _client_rows(
@@ -1439,6 +1563,7 @@ def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_sta
             "key": msg.get("key") or "",
             "status": msg.get("status") or "",
             "at_edge": edge,
+            "role": traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or ""),
         })
     interior = [row for row in rows if not row["at_edge"]]
     edge = [row for row in rows if row["at_edge"]]
@@ -1998,6 +2123,19 @@ def render_summary(facts: dict) -> str:
         f"The other **{edge['interior_unanswered']}** unanswered requests and "
         f"**{edge['interior_responses_without_request']}** unmatched responses sit further inside the file."
     )
+    traffic = facts.get("traffic") or {}
+    cluster = traffic.get("cluster") or {}
+    sdk = traffic.get("sdk") or {}
+    if cluster.get("requests") or sdk.get("requests"):
+        lines.append("")
+        lines.append(
+            f"Cluster (node-to-node, DCP, and replication meta): **{cluster.get('requests', 0)}** requests, "
+            f"**{cluster.get('unanswered', 0)}** without a reply, median {fmt_ms((cluster.get('median_ms') or 0) / 1000) if cluster.get('median_ms') is not None else 'n/a'}, "
+            f"**{cluster.get('retrans', 0)}** retransmissions. "
+            f"SDK (an application port to 11210): **{sdk.get('requests', 0)}** requests, "
+            f"**{sdk.get('unanswered', 0)}** without a reply, median {fmt_ms((sdk.get('median_ms') or 0) / 1000) if sdk.get('median_ms') is not None else 'n/a'}, "
+            f"**{sdk.get('retrans', 0)}** retransmissions."
+        )
     lines.append("")
     lines.append("## What was captured")
     lines.append("")
@@ -2388,6 +2526,23 @@ def _body_peaks(charts: dict) -> tuple[int, int | None, int, int | None, int]:
 def next_questions(facts: dict, charts: dict | None = None) -> list[dict]:
     """Questions a support engineer can ask from counts already in hand."""
     steps: list[dict] = []
+    traffic = (charts or {}).get("traffic") or {}
+    cluster = traffic.get("cluster") or {}
+    sdk = traffic.get("sdk") or {}
+    if cluster.get("requests") and sdk.get("requests"):
+        steps.append(
+            {
+                "title": "Separate cluster replication from application calls",
+                "text": (
+                    f"Cluster: {cluster['requests']} requests, {cluster['unanswered']} without a reply, "
+                    f"median {cluster.get('median_ms')} ms, {cluster.get('retrans')} retransmissions. "
+                    f"SDK: {sdk['requests']} requests, {sdk['unanswered']} without a reply, "
+                    f"median {sdk.get('median_ms')} ms, {sdk.get('retrans')} retransmissions. "
+                    "DCP and meta replication are cluster. An application port to 11210 is SDK. "
+                    "Do not read the cluster missing-reply count as application timeouts."
+                ),
+            }
+        )
     counts = facts["counts"]
     edge = facts["edge"]
     streams = facts.get("streams") or []
@@ -2594,6 +2749,18 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
         f"Requests with an empty document key: {counts['empty_keys']}",
         f"Response messages: {counts['response_messages']}",
         f"Matched: {counts['matched']}",
+    ]
+    traffic = (charts or {}).get("traffic") or {}
+    if traffic:
+        lines.append(
+            "Cluster vs SDK: "
+            + ", ".join(
+                f"{role} requests {row.get('requests')} unanswered {row.get('unanswered')} "
+                f"median_ms {row.get('median_ms')} retrans {row.get('retrans')}"
+                for role, row in traffic.items()
+            )
+        )
+    lines.extend([
         f"Unanswered requests: {counts['unanswered_requests']}",
         f"Unique unanswered keys: {counts['unique_unanswered_keys']}",
         f"Responses with no request: {counts['responses_without_request']}",
@@ -2607,7 +2774,7 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
         f"Interior responses with no request: {edge['interior_responses_without_request']}",
         "",
         "Magic counts:",
-    ]
+    ])
     for row in facts["magics"]:
         lines.append(f"- {row['magic']} {row['role']}: {row['messages']}")
     lines.append("")
@@ -3384,6 +3551,7 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
         capture_end,
         packet_types,
     )
+    facts["traffic"] = charts.get("traffic") or {}
     facts["next_steps"] = next_questions(facts, charts)
     charts["next_steps"] = facts["next_steps"]
     computed = render_summary(facts)

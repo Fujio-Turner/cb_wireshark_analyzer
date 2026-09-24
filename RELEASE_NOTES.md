@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.7.0
+
+Cluster replication and application calls are counted apart, so a missing reply or a retransmission can be blamed on the side that caused it.
+
+- **Cluster** is node port 11210 or 11207 talking to another node port, or a DCP or replication-meta command (Set with Meta, Get Meta, Delete with Meta). **SDK** is an application port talking to 11210. A reply packet stays with the same flow.
+- **Cluster** sits above **Client fleet**. It has the replication commands, the node connections, and a time chart of SDK requests, cluster requests, missing replies, and retransmissions. That chart shares the crosshair with the other time charts.
+- **Client fleet** and **Look up a client** are application addresses only. Look up is a search box, not a menu of every address. Click a row in the fleet table to open that client.
+- The tiles show an SDK median and a cluster median. The missing-call sample, the ten slowest calls, and the opcode list are marked `sdk` or `cluster`. The counted note and the first next question state both sides.
+
 ## 0.6.0
 
 Clients at fleet scale, a formatted report, and a note that can go to your own API.

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Match Couchbase requests and responses in a Wireshark dump.
 
-The script counts. A local Ollama model (config.json, default qwen3.8:27b-mlx)
-writes the note from those counts. Pass --no-ai to keep the counted note only.
+The script counts. A model writes the note from those counts. The default is a
+local Ollama server (config.json, qwen3.8:27b-mlx). --provider openai sends the
+same brief to an OpenAI-compatible chat API. Pass --no-ai to keep the counted
+note only.
 Pass --dry-run to print the plan without writing files or calling the model.
 
 Input is a pcap/pcapng, a tshark field export (.tsv or .csv), or a directory
@@ -25,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -33,6 +36,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DEFAULT_OLLAMA = "http://127.0.0.1:11434"
 DEFAULT_MODEL = "qwen3.8:27b-mlx"
+_LOCAL_API_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 DEFAULT_TIMEOUT = 600
 TABLE_TOKEN = "{{UNANSWERED_TABLE}}"
 
@@ -1136,10 +1140,16 @@ def build_charts(
 ) -> dict:
     """Aggregates for the chart page at 1, 5, and 10 second buckets."""
     matched_rtts: list[tuple] = []
+    ip_rtts: dict[str, list[float]] = defaultdict(list)
+    ip_over_100: Counter = Counter()
     for req, resp in paired["matched"]:
         gap = resp["time"] - req["time"]
         if gap < 0:
             continue
+        client_ip = req.get("src") or "(unknown)"
+        ip_rtts[client_ip].append(gap)
+        if gap >= 0.1:
+            ip_over_100[client_ip] += 1
         matched_rtts.append((
             req["time"],
             gap,
@@ -1312,6 +1322,7 @@ def build_charts(
             {"ip": ip, "requests": counts[0], "unanswered": counts[1]}
             for ip, counts in sorted(by_ip.items(), key=lambda item: item[1][0], reverse=True)
         ],
+        "clients": _client_rows(by_ip, by_conn, ip_rtts, ip_over_100),
         "by_connection": [
             {
                 "ip": ip,
@@ -1376,6 +1387,35 @@ def _spread_rows(rows: list[dict], limit: int) -> list[dict]:
         picked.append(rows[index])
         last_index = index
     return picked
+
+
+def _client_rows(
+    by_ip: dict[str, list[int]],
+    by_conn: dict[tuple[str, str], list],
+    ip_rtts: dict[str, list[float]],
+    ip_over_100: Counter,
+) -> list[dict]:
+    """One row per client address. Ports stay on by_connection; this row is the machine."""
+    connections: Counter = Counter()
+    for ip, _port in by_conn:
+        connections[ip] += 1
+    rows = []
+    for ip, counts in by_ip.items():
+        requests, unanswered = counts
+        summary = _rtt_summary(ip_rtts.get(ip) or [])
+        rows.append({
+            "ip": ip,
+            "requests": requests,
+            "unanswered": unanswered,
+            "unanswered_pct": round(100 * unanswered / requests, 1) if requests else 0,
+            "connections": connections[ip],
+            "matched": summary["rtt_n"],
+            "median_ms": summary["rtt_median"],
+            "p99_ms": summary["rtt_p99"],
+            "over_100": ip_over_100[ip],
+        })
+    rows.sort(key=lambda row: (row["unanswered"], row["requests"]), reverse=True)
+    return rows
 
 
 def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_start: bool) -> list[dict]:
@@ -2498,9 +2538,20 @@ def chart_digest(charts: dict) -> list[str]:
         f"Messages at or over 1 MB: {large}. "
         "Total body length is extras + key + value."
     )
-    lines.append("Requester IPs:")
-    for row in charts.get("by_requester_ip") or []:
-        lines.append(f"- {row['ip']}: {row['requests']} requests, {row['unanswered']} unanswered")
+    client_rows = charts.get("clients") or charts.get("by_requester_ip") or []
+    lines.append(f"Clients: {len(client_rows)} addresses.")
+    lines.append("Clients with the most unanswered requests:")
+    worst_clients = sorted(
+        client_rows,
+        key=lambda row: (row.get("unanswered") or 0, row.get("requests") or 0),
+        reverse=True,
+    )[:8]
+    for row in worst_clients:
+        lines.append(
+            f"- {row.get('ip')}: {row.get('requests')} requests, {row.get('unanswered')} unanswered"
+            + (f", {row.get('unanswered_pct')}%" if row.get("unanswered_pct") is not None else "")
+            + (f", median {row.get('median_ms')} ms" if row.get("median_ms") is not None else "")
+        )
     lines.append("Busiest client connections:")
     for row in (charts.get("by_connection") or [])[:8]:
         lines.append(
@@ -2833,6 +2884,8 @@ def choose_interest_stakes(
     model: str,
     timeout: int,
     use_model: bool,
+    provider: str = "ollama",
+    api_key: str = "",
 ) -> list[dict]:
     candidates = interest_candidates(charts)
     if not candidates or not use_model:
@@ -2841,12 +2894,14 @@ def choose_interest_stakes(
     for item in candidates:
         lines.append(f"- {item['seconds']}s {item['title']}: {item['why']}")
     try:
-        raw = call_ollama(
+        raw = call_model(
             "\n".join(lines),
+            provider=provider,
             base_url=base_url,
             model=model,
             timeout=min(int(timeout), 180),
             system=INTEREST_SYSTEM,
+            api_key=api_key,
         )
         picked = parse_interest_stakes(raw, candidates)
         log(f"model marked {len(picked)} points of interest")
@@ -2854,6 +2909,116 @@ def choose_interest_stakes(
     except (SystemExit, ValueError, json.JSONDecodeError, KeyError, TypeError) as exc:
         log(f"Interest stakes fell back to the counted seconds: {exc}")
         return _fallback_interest(candidates)
+
+
+def chat_completions_url(base_url: str) -> str:
+    base = base_url.rstrip("/")
+    if base.endswith("/chat/completions"):
+        return base
+    return base + "/chat/completions"
+
+
+def api_host_is_local(base_url: str) -> bool:
+    host = (urllib.parse.urlparse(base_url).hostname or "").lower()
+    return host in _LOCAL_API_HOSTS
+
+
+def message_text(body: dict, provider: str) -> str:
+    if provider == "openai":
+        choices = body.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            return ""
+        content = (choices[0].get("message") or {}).get("content") or ""
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    parts.append(str(part.get("text") or ""))
+            return "".join(parts)
+        return str(content)
+    message = body.get("message") or {}
+    return str(message.get("content") or body.get("response") or "")
+
+
+def model_request(
+    note: str,
+    *,
+    provider: str,
+    base_url: str,
+    model: str,
+    system: str | None,
+    api_key: str,
+) -> tuple[str, dict, dict]:
+    messages = [
+        {"role": "system", "content": system or SYSTEM_PROMPT},
+        {"role": "user", "content": note},
+    ]
+    headers = {"Content-Type": "application/json"}
+    if provider == "openai":
+        payload = {"model": model, "temperature": 0.2, "max_tokens": 8192, "messages": messages}
+        if api_key:
+            headers["Authorization"] = "Bearer " + api_key
+        return chat_completions_url(base_url), payload, headers
+    payload = {
+        "model": model,
+        "think": False,
+        "stream": False,
+        "messages": messages,
+        "options": {"temperature": 0.2, "num_predict": 8192},
+    }
+    return base_url.rstrip("/") + "/api/chat", payload, headers
+
+
+def call_model(
+    note: str,
+    *,
+    provider: str,
+    base_url: str,
+    model: str,
+    timeout: int,
+    system: str | None = None,
+    api_key: str = "",
+) -> str:
+    if provider == "openai":
+        if not base_url or not model:
+            raise SystemExit(
+                "An OpenAI-compatible note needs ai.base_url and ai.model, "
+                "or --api-base and --model. The API key stays in AI_API_KEY or OPENAI_API_KEY."
+            )
+        if not api_key and not api_host_is_local(base_url):
+            raise SystemExit(
+                "Set AI_API_KEY or OPENAI_API_KEY for that API. Do not put the key in config.json."
+            )
+    elif not base_url or not model:
+        raise SystemExit("The Ollama note needs a base URL and a model.")
+    url, payload, headers = model_request(
+        note,
+        provider=provider,
+        base_url=base_url,
+        model=model,
+        system=system,
+        api_key=api_key,
+    )
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    log(f"asking {model} at {base_url} ({provider})")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:1500]
+        raise SystemExit(f"The model API returned {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"Could not reach the model API at {base_url}: {exc.reason}") from exc
+    content = message_text(body, provider)
+    if not content.strip():
+        raise SystemExit(
+            "The model returned an empty note. If it spent the reply on hidden thinking, "
+            "confirm the model accepts think:false, or raise --timeout."
+        )
+    return content
 
 
 def call_ollama(
@@ -2864,44 +3029,14 @@ def call_ollama(
     timeout: int,
     system: str | None = None,
 ) -> str:
-    url = base_url.rstrip("/") + "/api/chat"
-    payload = {
-        "model": model,
-        "think": False,
-        "stream": False,
-        "messages": [
-            {"role": "system", "content": system or SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": note,
-            },
-        ],
-        "options": {"temperature": 0.2, "num_predict": 8192},
-    }
-    data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    return call_model(
+        note,
+        provider="ollama",
+        base_url=base_url,
+        model=model,
+        timeout=timeout,
+        system=system,
     )
-    log(f"asking {model} at {base_url}")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:1500]
-        raise SystemExit(f"Ollama returned {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise SystemExit(f"Could not reach Ollama at {base_url}: {exc.reason}") from exc
-    message = body.get("message") or {}
-    content = message.get("content") or body.get("response") or ""
-    if not str(content).strip():
-        raise SystemExit(
-            "The model returned an empty note. If it spent the reply on hidden thinking, "
-            "confirm the model accepts think:false, or raise --timeout."
-        )
-    return str(content)
 
 
 def write_tsv(path: Path, requests: list[dict], responses: list[dict], unanswered: list[dict]) -> None:
@@ -3070,12 +3205,34 @@ def apply_config(args: argparse.Namespace) -> argparse.Namespace:
     ollama = cfg.get("ollama") or {}
     if not isinstance(ollama, dict):
         ollama = {}
-    if args.model is None:
-        args.model = ollama.get("model") or DEFAULT_MODEL
+    ai = cfg.get("ai") or {}
+    if not isinstance(ai, dict):
+        ai = {}
     if args.ollama is None:
         args.ollama = os.environ.get("OLLAMA_BASE_URL") or ollama.get("base_url") or DEFAULT_OLLAMA
-    if args.timeout is None:
-        args.timeout = int(ollama.get("timeout_seconds") or DEFAULT_TIMEOUT)
+    if args.provider is None:
+        args.provider = (os.environ.get("AI_PROVIDER") or str(ai.get("provider") or "ollama")).strip().lower()
+    if args.provider in {"openai", "openai-compatible", "chat"}:
+        args.provider = "openai"
+    else:
+        args.provider = "ollama"
+    if args.provider == "openai":
+        if args.model is None:
+            args.model = (os.environ.get("AI_MODEL") or str(ai.get("model") or "")).strip()
+        if args.api_base is None:
+            args.api_base = (os.environ.get("AI_BASE_URL") or str(ai.get("base_url") or "")).strip()
+        args.api_key = (os.environ.get("AI_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
+        if args.timeout is None:
+            args.timeout = int(ai.get("timeout_seconds") or ollama.get("timeout_seconds") or DEFAULT_TIMEOUT)
+    else:
+        if args.model is None:
+            args.model = ollama.get("model") or DEFAULT_MODEL
+        if args.api_base:
+            args.ollama = args.api_base
+        args.api_base = args.ollama
+        args.api_key = ""
+        if args.timeout is None:
+            args.timeout = int(ollama.get("timeout_seconds") or DEFAULT_TIMEOUT)
     if not args.tshark:
         from_env = (os.environ.get("TSHARK") or "").strip()
         from_file = str(cfg.get("tshark") or "").strip()
@@ -3095,11 +3252,7 @@ def project_version() -> str:
     return match.group(1)
 
 
-def chart_page() -> str:
-    template = ROOT / "web" / "index.html"
-    if not template.is_file():
-        raise SystemExit(f"Chart page is missing: {template}")
-    page = template.read_text()
+def stamp_version(page: str, label: str) -> str:
     stamped, count = re.subn(
         r'(<span class="version" id="app-version">)[^<]*(</span>)',
         rf"\1v{project_version()}\2",
@@ -3107,13 +3260,28 @@ def chart_page() -> str:
         count=1,
     )
     if count != 1:
-        raise SystemExit("chart page is missing the version slot")
+        raise SystemExit(f"{label} is missing the version slot")
     return stamped
+
+
+def chart_page() -> str:
+    template = ROOT / "web" / "index.html"
+    if not template.is_file():
+        raise SystemExit(f"Chart page is missing: {template}")
+    return stamp_version(template.read_text(), "chart page")
+
+
+def report_page() -> str:
+    template = ROOT / "web" / "summary.html"
+    if not template.is_file():
+        raise SystemExit(f"Report page is missing: {template}")
+    return stamp_version(template.read_text(), "report page")
 
 
 def write_charts(out: Path, charts: dict) -> None:
     (out / "charts.json").write_text(json.dumps(charts, separators=(",", ":")))
     (out / "index.html").write_text(chart_page())
+    (out / "summary.html").write_text(report_page())
     original = ROOT / "web" / "index.original.html"
     if not original.is_file():
         raise SystemExit(f"Previous chart page is missing: {original}")
@@ -3132,7 +3300,7 @@ def write_charts(out: Path, charts: dict) -> None:
 
 def print_dry_run(out: Path, args: argparse.Namespace, facts: dict) -> None:
     counts = facts["counts"]
-    files = ["facts.json", "charts.json", "index.html", "index.original.html", "vendor/echarts.min.js", "orphans.tsv", "reqs.pdus.tsv", "resps.tsv", "summary.md"]
+    files = ["facts.json", "charts.json", "index.html", "summary.html", "index.original.html", "vendor/echarts.min.js", "orphans.tsv", "reqs.pdus.tsv", "resps.tsv", "summary.md"]
     if not args.no_ai:
         files.append("summary.computed.md")
     print("dry-run")
@@ -3144,7 +3312,9 @@ def print_dry_run(out: Path, args: argparse.Namespace, facts: dict) -> None:
     if args.no_ai:
         print("model: skipped (--no-ai)")
     else:
-        print(f"model: would call {args.model} at {args.ollama}")
+        print(f"model: would call {args.model} at {args.api_base}")
+        if args.provider == "openai":
+            print("model api: OpenAI chat completions")
     print(
         f"unanswered {counts['unanswered_requests']}, "
         f"responses without a request {counts['responses_without_request']}, "
@@ -3224,10 +3394,12 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
     def finish_charts(use_model: bool) -> None:
         charts["interest_stakes"] = choose_interest_stakes(
             charts,
-            base_url=args.ollama,
+            base_url=args.api_base,
             model=args.model,
             timeout=args.timeout,
             use_model=use_model,
+            provider=args.provider,
+            api_key=args.api_key,
         )
         write_charts(out, charts)
 
@@ -3238,17 +3410,19 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
         return out, True
 
     try:
-        raw = call_ollama(
+        raw = call_model(
             facts_brief(facts, charts),
-            base_url=args.ollama,
+            provider=args.provider,
+            base_url=args.api_base,
             model=args.model,
             timeout=args.timeout,
+            api_key=args.api_key,
         )
     except SystemExit as exc:
         finish_charts(True)
         (out / "summary.md").write_text(computed)
         log(str(exc))
-        log(f"Ollama did not write the note. The counted report is {out / 'summary.md'}")
+        log(f"The model did not write the note. The counted report is {out / 'summary.md'}")
         return out, False
     finish_charts(True)
     cleaned = splice_table(clean_model_markdown(raw), unanswered_table(facts["unanswered"]))
@@ -3284,7 +3458,7 @@ def self_test() -> int:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Count unanswered Couchbase ops in a Wireshark dump and write a note with a local Qwen model."
+        description="Count unanswered Couchbase ops in a Wireshark dump and write a note with a local or remote model."
     )
     parser.add_argument(
         "path",
@@ -3300,10 +3474,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="read the tsv even when a pcap is in the same folder",
     )
     parser.add_argument("-o", "--out", help="output directory (default: orphan-report next to the input)")
-    parser.add_argument("--model", default=None, help=f"Ollama model (default from config.json, else {DEFAULT_MODEL})")
+    parser.add_argument("--model", default=None, help=f"Model name (default from config.json, else {DEFAULT_MODEL} for Ollama)")
     parser.add_argument("--ollama", default=None, help=f"Ollama base URL (default from config.json, else {DEFAULT_OLLAMA})")
+    parser.add_argument(
+        "--provider",
+        default=None,
+        choices=["ollama", "openai"],
+        help="ollama talks to a local Ollama server. openai posts to an OpenAI-compatible /chat/completions API",
+    )
+    parser.add_argument(
+        "--api-base",
+        default=None,
+        help="Base URL for --provider openai, before /chat/completions. Also overrides the Ollama URL when --provider ollama",
+    )
     parser.add_argument("--timeout", type=int, default=None, help="seconds to wait for the model (default from config.json)")
-    parser.add_argument("--no-ai", action="store_true", help="write the counted note and skip Ollama")
+    parser.add_argument("--no-ai", action="store_true", help="write the counted note and skip the model")
     parser.add_argument(
         "--dry-run",
         action="store_true",

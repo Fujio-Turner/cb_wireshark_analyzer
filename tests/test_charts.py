@@ -77,6 +77,13 @@ def test_buckets_percentiles_and_top_keys():
     assert charts["buckets"]["1"][0]["rtt_n"] == 2
     assert charts["by_requester_ip"][0]["ip"] == "10.0.0.2"
     assert charts["by_requester_ip"][0]["requests"] == 3
+    clients = {row["ip"]: row for row in charts["clients"]}
+    assert clients["10.0.0.2"]["unanswered"] == 1
+    assert clients["10.0.0.2"]["unanswered_pct"] == 33.3
+    assert clients["10.0.0.2"]["connections"] == 1
+    assert clients["10.0.0.2"]["matched"] == 2
+    assert clients["10.0.0.2"]["median_ms"] is not None
+    assert clients["10.0.0.8"]["unanswered"] == 0
     assert charts["by_connection"][0]["port"] == "4000"
     assert sum(row["requests"] for row in charts["by_connection"]) == 4
     assert charts["top_requested"][0] == {"key": "widget::hot", "count": 2, "unanswered": 0}

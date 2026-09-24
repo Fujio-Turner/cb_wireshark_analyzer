@@ -58,6 +58,24 @@
     }
     .jump a:hover,
     .jump a.on { background: #f6f3ee; color: #1c2430; border-color: #f6f3ee; }
+    .bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px 18px;
+    }
+    .files {
+      margin-left: auto;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+    }
+    .files a {
+      color: #c5d0d6;
+      font-size: 13px;
+      text-decoration: none;
+    }
+    .files a:hover { color: #fff; text-decoration: underline; }
     header h1 {
       margin: 0;
       font: 22px/1.2 Georgia, "Iowan Old Style", serif;
@@ -112,6 +130,20 @@
       text-decoration: none;
     }
     .chips a:hover { border-color: var(--teal); }
+    .report-button {
+      display: inline-block;
+      margin: 0 4px 14px;
+      padding: 12px 18px;
+      border-radius: 10px;
+      background: #1c2430;
+      color: #f6f3ee;
+      font-size: 16px;
+      font-weight: 650;
+      text-decoration: none;
+    }
+    .report-button:hover { background: var(--teal); }
+    .client-label { color: var(--ink); font-size: 14px; }
+    .client-label select { margin-left: 8px; }
     .stack { display: grid; gap: 14px; }
     .group, .stack, .grid, .tables, .card, .chart-wrap, .chart { min-width: 0; }
     .chart { overflow: hidden; }
@@ -204,15 +236,10 @@
     }
     #lightbox .expand { display: block; }
     .tables { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
-    #interest, #conn-rate { overflow-x: auto; }
-    #conn-rate { margin-top: 8px; }
+    #interest { overflow-x: auto; }
     @media (max-width: 800px) { .tables { grid-template-columns: 1fr; } }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    #top-asked, #top-slow, #interest, #gaps, #opcodes-seen, #conn-rate {
-      max-width: 100%;
-      overflow-x: auto;
-    }
-    #top-asked, #top-slow, #interest, #gaps, #opcodes-seen, #conn-rate {
+    #top-asked, #top-slow, #interest, #gaps, #opcodes-seen {
       max-width: 100%;
       overflow-x: auto;
     }
@@ -402,18 +429,26 @@
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         cb_wireshark_analyzer
       </a>
-      <span class="version" id="app-version">v0.5.0</span>
+      <span class="version" id="app-version">v0.6.0</span>
     </div>
     </div>
-    <nav class="jump" aria-label="On this page">
-      <a href="#timings">Timings</a>
-      <a href="#operations">Operations</a>
-      <a href="#packets-group">Packets</a>
-      <a href="#documents">Documents</a>
-      <a href="#marks">Marks</a>
-      <a href="#questions">Questions</a>
-      <a href="#glossary">Glossary</a>
-    </nav>
+    <div class="bar">
+      <nav class="jump" id="sections" aria-label="On this page">
+        <a href="#timings">Timings</a>
+        <a href="#operations">Operations</a>
+        <a href="#packets-group">Packets</a>
+        <a href="#clients">Clients</a>
+        <a href="#documents">Documents</a>
+        <a href="#marks">Marks</a>
+        <a href="#questions">Report</a>
+        <a href="#glossary">Glossary</a>
+      </nav>
+      <nav class="files" aria-label="Report files">
+        <a href="summary.html">summary.md</a>
+        <a id="link-computed" href="summary.html?note=summary.computed.md" hidden>summary.computed.md</a>
+        <a href="charts.json" target="_blank" rel="noopener noreferrer">charts.json</a>
+      </nav>
+    </div>
   </header>
   <aside class="dock">
     <label><button type="button" class="term" data-tip="How wide each point on the time charts is. One second shows more detail. Five and ten seconds smooth a long capture.">Time bucket</button>
@@ -513,11 +548,10 @@
     <section class="group" id="packets-group">
       <div class="group-head">
         <h2 class="group-title">Packets</h2>
-        <p>What was on port 11210, which replies are missing, and which client sent the calls.</p>
+        <p>What was on port 11210, and which replies are missing. Who sent the calls is under Clients.</p>
         <nav class="chips" aria-label="Packets">
           <a href="#packets">Packets on port 11210</a>
           <a href="#issues">Lost responses</a>
-          <a href="#ips">Client IP</a>
           <a href="#gaps">Missing calls</a>
         </nav>
       </div>
@@ -527,23 +561,11 @@
           <p class="note">Each bar is one packet on port 11210, counted once. Couchbase requests are shades of blue. Couchbase responses are shades of green. Each command keeps its own shade. TCP packets are greys. Lost segments, retransmissions, and ack-lost are reds. TCP data segment and TCP ACK start hidden so the Couchbase bars are readable. Click either name in the legend to show it. TCP data segment is payload with no Couchbase header, usually the rest of a value that did not fit in the first segment. TCP ACK has no payload.</p>
           <div id="packets" class="chart"></div>
         </section>
-        <div class="grid two">
-          <section class="card">
-            <h2><button type="button" class="term" data-tip="A request is in the file and its reply is not. The recording may have stopped first, or the reply packet was never captured.">Lost responses</button>, retries, and TCP loss</h2>
-            <p class="note">Bars on the left are Couchbase operations. The right axis counts packets. Dashed lines split <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply.">loss toward the client</button> from <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request.">loss toward the server</button>. Retries are on that same axis.</p>
-            <div id="issues" class="chart"></div>
-          </section>
-          <section class="card">
-            <div class="tabs" id="ip-tabs">
-              <button type="button" class="tab on" data-ip-tab="ip">Client IP</button>
-              <button type="button" class="tab" data-ip-tab="port">IP : port</button>
-            </div>
-            <h2 id="ip-title">Requests by client IP</h2>
-            <p class="note" id="ip-note"></p>
-            <div id="ips" class="chart"></div>
-            <div id="conn-rate"></div>
-          </section>
-        </div>
+        <section class="card">
+          <h2><button type="button" class="term" data-tip="A request is in the file and its reply is not. The recording may have stopped first, or the reply packet was never captured.">Lost responses</button>, retries, and TCP loss</h2>
+          <p class="note">Bars on the left are Couchbase operations. The right axis counts packets. Dashed lines split <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply.">loss toward the client</button> from <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request.">loss toward the server</button>. Retries are on that same axis.</p>
+          <div id="issues" class="chart"></div>
+        </section>
         <section class="card">
           <div class="tabs" id="gap-tabs">
             <button type="button" class="tab on" data-gap-tab="request">Requests missing a response</button>
@@ -551,6 +573,47 @@
           </div>
           <p class="note" id="gap-note"></p>
           <div id="gaps"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="group" id="clients">
+      <div class="group-head">
+        <h2 class="group-title">Clients</h2>
+        <p>The machines that sent the requests. The fleet first, then one address.</p>
+        <nav class="chips" aria-label="Clients">
+          <a href="#client-fleet">Fleet</a>
+          <a href="#client-share">Missing replies</a>
+          <a href="#client-rate">Unanswered percent</a>
+          <a href="#client-one">One client</a>
+        </nav>
+      </div>
+      <div class="stack">
+        <section class="card">
+          <h2>Client fleet</h2>
+          <p class="note" id="client-fleet"></p>
+          <div class="grid two">
+            <div>
+              <p class="note" id="client-share-note"></p>
+              <div id="client-share" class="chart"></div>
+            </div>
+            <div>
+              <p class="note" id="client-rate-note"></p>
+              <div id="client-rate" class="chart"></div>
+            </div>
+          </div>
+          <div id="client-trouble"></div>
+        </section>
+        <section class="card">
+          <h2 id="client-one">One client</h2>
+          <p class="note">Pick an address. The pie is that client's connections, eight with the most missing replies and one slice for the rest. The table under it is the first 12.</p>
+          <p class="note"><label class="client-label">Client
+            <select id="client-pick"></select>
+          </label></p>
+          <p class="note" id="client-detail"></p>
+          <p class="note" id="client-port-note"></p>
+          <div id="client-port-share" class="chart"></div>
+          <div id="client-ports"></div>
         </section>
       </div>
     </section>
@@ -604,9 +667,10 @@
 
     <section class="group" id="questions">
       <div class="group-head">
-        <h2 class="group-title">Questions</h2>
-        <p>What the counts suggest looking at next.</p>
+        <h2 class="group-title">Report / Questions</h2>
+        <p>The written note, then what the counts suggest looking at next.</p>
       </div>
+      <a class="report-button" href="summary.html">Open the report</a>
       <section class="card glossary" id="next-steps">
         <h2>Next questions / steps</h2>
         <ol id="next-list"></ol>
@@ -633,6 +697,7 @@
           <a href="#total-body-length">Total body length</a>
           <a href="#tcp-loss">TCP loss</a>
           <a href="#retry">Retry</a>
+          <a href="#data-source">Data source</a>
         </nav>
       </div>
       <section class="card glossary">
@@ -676,11 +741,15 @@
           <li><a href="#rtt">Round trip</a> follows the typical call and the slow tail across the capture. The crosshair is the same moment on every time chart.</li>
           <li><a href="#range">Latency range</a> shows the spread in each bucket. The thick part is median to p90. The thin line is the fastest call to the slowest.</li>
           <li><a href="#issues">Lost responses, retries, and TCP loss</a> shows missing Couchbase replies next to holes and resent TCP data. Loss toward the client lines up with a missing reply. Loss toward the server lines up with a reply whose request is missing.</li>
-          <li><a href="#ips">Requests by client IP</a> is which machine sent the operations. <a href="#opcodes">p99 by opcode</a> is which kind of operation has the slow tail.</li>
+          <li><a href="#clients">Clients</a> is which machines sent the operations, as a fleet and one address at a time. <a href="#opcodes">p99 by opcode</a> is which kind of operation has the slow tail.</li>
           <li><a href="#packets">Packets on port 11210</a> is a bar for each Couchbase command, split into request and response, plus lost segments, retransmissions, ack-lost, TCP data segments, and TCP ACKs.</li>
           <li><a href="#body">Total body length</a> uses bars for the largest request and the largest reply, and dashed lines for every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC carries about 125 MB/s, and a 10 Gbit NIC about 1,250 MB/s.</li>
           <li>The tables are the <a href="#top-asked">busiest document ids</a>, and the <a href="#top-slow">ten slowest matched calls</a>. Set Stake on a slow call marks that second on the time charts, including the body-length chart.</li>
         </ol>
+      </section>
+      <section class="card glossary" id="data-source">
+        <h2>Data source</h2>
+        <p class="note">The charts and tables on this page are drawn from <a href="charts.json" target="_blank" rel="noopener noreferrer">charts.json</a>. Python writes that file before a model runs. tshark reads the packets whose source or destination is TCP port 11210. A call is one TCP stream plus the Couchbase opaque. The file holds the capture length, the server address, one-, five-, and ten-second buckets, percentiles, opcodes, body sizes, TCP loss in each direction, client connections, the busiest document ids, the ten slowest calls, a sample of missing requests and replies with the full counts, the points of interest, and the next questions. When a model runs, it writes <code>summary.md</code> from these counts. It does not change this file. <code>facts.json</code> beside it is the same counts in the shape the note uses.</p>
       </section>
     </section>
   </main>
@@ -691,7 +760,7 @@
     const charts = {};
     const timeChartIds = ["mix", "rtt", "tail", "range", "issues", "body"];
     const STAKE_SERIES = "__stake";
-    let ipTab = "ip";
+    let clientPick = "";
     let gapTab = "request";
     const hiddenPacketBars = new Set(["TCP data segment", "TCP ACK"]);
     let data = null;
@@ -1167,76 +1236,222 @@
       }
     }
 
-    function drawClients() {
-      const ips = data.by_requester_ip || [];
-      const connections = data.by_connection || [];
-      const title = document.getElementById("ip-title");
-      const note = document.getElementById("ip-note");
-      let rows;
-      if (ipTab === "port") {
-        title.textContent = "Requests by IP and port";
-        note.textContent = "Each slice is one client connection. The table is sorted by unanswered percent, so the connection that drops the most replies is first.";
-        const ranked = connections.slice().sort((a, b) => {
-          const rateA = a.requests ? a.unanswered / a.requests : 0;
-          const rateB = b.requests ? b.unanswered / b.requests : 0;
-          if (rateB !== rateA) return rateB - rateA;
-          return (b.unanswered || 0) - (a.unanswered || 0);
-        });
-        table("conn-rate", ["Connection", "Requests", "Lost responses", "Unanswered %"], ranked.map((row) => {
-          const pct = row.unanswered_pct != null ? row.unanswered_pct : (row.requests ? Math.round(1000 * row.unanswered / row.requests) / 10 : 0);
-          return [escapeHtml(row.ip + ":" + row.port), row.requests, row.unanswered, pct + "%"];
-        }));
-        rows = connections.map((row) => ({
-          name: row.ip + ":" + row.port,
-          value: row.requests,
-          unanswered: row.unanswered,
-          detail: row.ip + ":" + row.port + ", stream " + row.stream
-        }));
+    function clientRows() {
+      if (data.clients && data.clients.length) return data.clients;
+      const connections = {};
+      (data.by_connection || []).forEach((row) => {
+        connections[row.ip] = (connections[row.ip] || 0) + 1;
+      });
+      return (data.by_requester_ip || []).map((row) => ({
+        ip: row.ip,
+        requests: row.requests,
+        unanswered: row.unanswered,
+        unanswered_pct: row.requests ? Math.round(1000 * row.unanswered / row.requests) / 10 : 0,
+        connections: connections[row.ip] || 0,
+        matched: null,
+        median_ms: null,
+        p99_ms: null,
+        over_100: null
+      }));
+    }
+
+    function clientPct(row) {
+      if (row.unanswered_pct != null) return row.unanswered_pct;
+      return row.requests ? Math.round(1000 * row.unanswered / row.requests) / 10 : 0;
+    }
+
+    function drawClientFleet() {
+      const fleet = document.getElementById("client-fleet");
+      const trouble = document.getElementById("client-trouble");
+      const pick = document.getElementById("client-pick");
+      if (!fleet || !trouble || !pick) return;
+      const clients = clientRows();
+      const requests = clients.reduce((sum, row) => sum + (row.requests || 0), 0);
+      const unanswered = clients.reduce((sum, row) => sum + (row.unanswered || 0), 0);
+      const connections = clients.reduce((sum, row) => sum + (row.connections || 0), 0);
+      const fleetPct = requests ? Math.round(1000 * unanswered / requests) / 10 : 0;
+      if (!clients.length) {
+        fleet.textContent = "No client addresses in this capture.";
+        trouble.innerHTML = "";
+        pick.innerHTML = "";
+        return;
+      }
+      if (clients.length === 1) {
+        const only = clients[0];
+        fleet.textContent = "One client, " + only.ip + ", sent every request: " + only.requests + " requests, " + only.unanswered + " missing replies (" + clientPct(only) + "%), across " + (only.connections || 0) + " connections.";
       } else {
-        title.textContent = "Requests by client IP";
-        const only = ips.length === 1 ? ips[0] : null;
-        note.textContent = only
-          ? "Every request came from " + only.ip + " (" + only.requests + " requests, " + only.unanswered + " lost responses). IP : port splits that client by source port."
-          : "Each slice is a client IP that sent Couchbase requests.";
-        rows = ips.map((row) => ({
-          name: row.ip,
-          value: row.requests,
-          unanswered: row.unanswered,
-          detail: row.ip
-        }));
-        const connBox = document.getElementById("conn-rate");
-        if (connBox) connBox.innerHTML = "";
+        const rich = clients.filter((row) => row.requests >= 5);
+        const pool = rich.length ? rich : clients;
+        const above = pool.filter((row) => row.unanswered > 0 && clientPct(row) > fleetPct);
+        const aboveRequests = above.reduce((sum, row) => sum + row.requests, 0);
+        const aboveMisses = above.reduce((sum, row) => sum + row.unanswered, 0);
+        const shareClients = Math.round(1000 * above.length / clients.length) / 10;
+        const shareRequests = requests ? Math.round(1000 * aboveRequests / requests) / 10 : 0;
+        const shareMisses = unanswered ? Math.round(1000 * aboveMisses / unanswered) / 10 : 0;
+        const bar = rich.length ? " A client counts here when it sent at least 5 requests." : "";
+        fleet.textContent = clients.length + " clients opened " + connections + " connections and sent " + requests + " requests. " + unanswered + " replies are missing (" + fleetPct + "%). " + above.length + " of " + clients.length + " clients (" + shareClients + "%) are above that rate." + bar + " Those clients sent " + shareRequests + "% of the requests and hold " + shareMisses + "% of the missing replies.";
       }
-      const top = rows.slice(0, 12);
-      const rest = rows.slice(12);
+      const ranked = clients.slice().sort((a, b) => (b.unanswered || 0) - (a.unanswered || 0) || (b.requests || 0) - (a.requests || 0));
+      const rich = clients.filter((row) => row.requests >= 5);
+      const pool = rich.length ? rich : clients;
+      const above = clients.length === 1 ? [] : pool.filter((row) => row.unanswered > 0 && clientPct(row) > fleetPct);
+      const focus = (above.length ? above : ranked).slice().sort((a, b) => (b.unanswered || 0) - (a.unanswered || 0)).slice(0, 12);
+      if (above.length > focus.length) {
+        fleet.textContent += " Showing 12 of " + above.length + " clients above the fleet rate, the ones with the most missing replies.";
+      } else if (!above.length && clients.length > 1) {
+        fleet.textContent += " No client is above the fleet rate. The table is the ones with the most missing replies.";
+      }
+      table("client-trouble", ["Client", "Requests", "Lost responses", "Unanswered %", "Connections", "Median ms", "p99 ms"], focus.map((row) => [
+        escapeHtml(row.ip),
+        row.requests,
+        row.unanswered,
+        clientPct(row) + "%",
+        row.connections || 0,
+        row.median_ms == null ? "—" : row.median_ms,
+        row.p99_ms == null ? "—" : row.p99_ms
+      ]));
+      const previous = clientPick || pick.value;
+      pick.innerHTML = ranked.map((row) => '<option value="' + escapeHtml(row.ip) + '">' + escapeHtml(row.ip) + "</option>").join("");
+      pick.value = ranked.some((row) => row.ip === previous) ? previous : ranked[0].ip;
+      clientPick = pick.value;
+      drawClientCharts(clients);
+      drawOneClient();
+    }
+
+    function chartSlices(rows, nameOf, valueOf, limit) {
+      const cap = limit || 8;
+      const ranked = rows.filter((row) => valueOf(row) > 0).sort((a, b) => valueOf(b) - valueOf(a));
+      const top = ranked.slice(0, cap);
+      const rest = ranked.slice(cap);
+      const slices = top.map((row) => ({ name: nameOf(row), value: valueOf(row) }));
       if (rest.length) {
-        top.push({
-          name: "other",
-          value: rest.reduce((sum, row) => sum + row.value, 0),
-          unanswered: rest.reduce((sum, row) => sum + (row.unanswered || 0), 0),
-          detail: rest.length + " more"
-        });
+        const hidden = rest.reduce((sum, row) => sum + valueOf(row), 0);
+        if (hidden > 0) slices.push({ name: "other (" + rest.length + ")", value: hidden });
       }
-      charts.ips.setOption({
+      return slices;
+    }
+
+    function pieWithLegend(slices) {
+      return {
         color: palette,
-        tooltip: {
-          trigger: "item",
-          formatter: (item) => {
-            const row = item.data || {};
-            const requests = item.value || 0;
-            const missed = row.unanswered || 0;
-            const pct = requests ? Math.round(1000 * missed / requests) / 10 : 0;
-            return (row.detail || item.name) + "<br/>" + requests + " requests (" + item.percent + "%)<br/>" + missed + " lost responses (" + pct + "%)";
-          }
+        tooltip: { trigger: "item", formatter: (item) => item.name + "<br/>" + item.value + " (" + item.percent + "%)" },
+        legend: {
+          type: "scroll",
+          orient: "vertical",
+          right: 0,
+          top: 12,
+          bottom: 12,
+          textStyle: { fontSize: 11, width: 150, overflow: "truncate" }
         },
         series: [{
           type: "pie",
-          radius: ["38%", "68%"],
-          data: top,
-          label: { formatter: "{b}\n{c}", fontSize: 11 },
-          labelLayout: { hideOverlap: true }
+          radius: ["46%", "72%"],
+          center: ["34%", "50%"],
+          data: slices,
+          label: { show: false },
+          labelLine: { show: false }
+        }]
+      };
+    }
+
+    const clientBands = [
+      ["0%", (pct) => pct === 0, "#b7c0c7"],
+      [">0–1%", (pct) => pct > 0 && pct <= 1, "#8aa0ad"],
+      ["1–5%", (pct) => pct > 1 && pct <= 5, "#1a5276"],
+      ["5–10%", (pct) => pct > 5 && pct <= 10, "#1a5276"],
+      ["10–25%", (pct) => pct > 10 && pct <= 25, "#c45c26"],
+      ["25%+", (pct) => pct > 25, "#c0392b"]
+    ];
+
+    function drawClientCharts(clients) {
+      const shareNote = document.getElementById("client-share-note");
+      const rateNote = document.getElementById("client-rate-note");
+      if (!charts["client-share"] || !charts["client-rate"]) return;
+      const misses = clients.reduce((sum, row) => sum + (row.unanswered || 0), 0);
+      const shareValue = (row) => misses ? (row.unanswered || 0) : (row.requests || 0);
+      const slices = chartSlices(clients, (row) => row.ip, shareValue, 8);
+      if (shareNote) {
+        shareNote.textContent = misses
+          ? "Missing replies by client. Eight clients with the most, then every other client in one slice. The legend names them. The chart stays this size for thousands of clients."
+          : "No missing replies. Slices are requests. Eight clients with the most, then every other client in one slice.";
+      }
+      charts["client-share"].setOption(pieWithLegend(slices), true);
+      const rich = clients.filter((row) => row.requests >= 5);
+      const counted = rich.length ? rich : clients;
+      const bandRows = clientBands.map(([label, test, color]) => ({
+        label,
+        color,
+        count: counted.filter((row) => test(clientPct(row))).length
+      }));
+      if (rateNote) {
+        rateNote.textContent = (rich.length ? "Clients with at least 5 requests" : "Every client") + " in each unanswered-percent band. Six bars, whether there are 10 clients or 10,000.";
+      }
+      charts["client-rate"].setOption({
+        tooltip: {
+          trigger: "axis",
+          axisPointer: { type: "shadow" },
+          formatter: (items) => {
+            const item = items[0];
+            const share = counted.length ? Math.round(1000 * item.value / counted.length) / 10 : 0;
+            return item.name + "<br/>" + item.value + " clients (" + share + "%)";
+          }
+        },
+        grid: { left: 16, right: 24, top: 16, bottom: 28, containLabel: true },
+        xAxis: { type: "category", data: bandRows.map((row) => row.label) },
+        yAxis: { type: "value", name: "clients", minInterval: 1 },
+        series: [{
+          type: "bar",
+          data: bandRows.map((row) => ({ value: row.count, itemStyle: { color: row.color } })),
+          barMaxWidth: 42
         }]
       }, true);
+      charts["client-share"].resize();
+      charts["client-rate"].resize();
+    }
+
+    function drawPortChart(ip, ports) {
+      const note = document.getElementById("client-port-note");
+      if (!charts["client-port-share"]) return;
+      const misses = ports.reduce((sum, row) => sum + (row.unanswered || 0), 0);
+      const slices = chartSlices(ports, (row) => row.ip + ":" + row.port, (row) => misses ? (row.unanswered || 0) : (row.requests || 0), 8);
+      if (note) {
+        note.textContent = misses
+          ? "Missing replies on this client's connections. Eight ports with the most, then the other ports in one slice."
+          : "No missing replies on this client. Slices are requests by connection.";
+      }
+      charts["client-port-share"].setOption(pieWithLegend(slices), true);
+      charts["client-port-share"].resize();
+    }
+
+    function drawOneClient() {
+      const detail = document.getElementById("client-detail");
+      const pick = document.getElementById("client-pick");
+      if (!detail || !pick) return;
+      const ip = pick.value;
+      const row = clientRows().find((item) => item.ip === ip);
+      if (!row) {
+        detail.textContent = "";
+        table("client-ports", ["Connection", "Requests", "Lost responses", "Unanswered %"], []);
+        return;
+      }
+      const slow = row.over_100 == null ? "" : " " + row.over_100 + " matched calls were 100 ms or slower.";
+      const pace = row.median_ms == null ? "" : " Median " + row.median_ms + " ms, p99 " + (row.p99_ms == null ? "—" : row.p99_ms + " ms.");
+      detail.textContent = row.ip + " sent " + row.requests + " requests. " + row.unanswered + " replies are missing (" + clientPct(row) + "%)." + pace + slow;
+      const ports = (data.by_connection || []).filter((item) => item.ip === ip).sort((a, b) => {
+        const rateA = a.requests ? a.unanswered / a.requests : 0;
+        const rateB = b.requests ? b.unanswered / b.requests : 0;
+        if (rateB !== rateA) return rateB - rateA;
+        return (b.unanswered || 0) - (a.unanswered || 0);
+      });
+      const shown = ports.slice(0, 12);
+      if (ports.length > shown.length) {
+        detail.textContent += " Showing 12 of " + ports.length + " connections.";
+      }
+      drawPortChart(ip, ports);
+      table("client-ports", ["Connection", "Stream", "Requests", "Lost responses", "Unanswered %"], shown.map((item) => {
+        const pct = item.unanswered_pct != null ? item.unanswered_pct : (item.requests ? Math.round(1000 * item.unanswered / item.requests) / 10 : 0);
+        return [escapeHtml(item.ip + ":" + item.port), escapeHtml(item.stream), item.requests, item.unanswered, pct + "%"];
+      }));
     }
 
     function bucketAt(seconds) {
@@ -1443,7 +1658,7 @@
     }
 
     function drawFixed() {
-      drawClients();
+      drawClientFleet();
       drawPacketTypes();
       drawGaps();
       const ops = (data.by_opcode || []).filter((row) => row.p99_ms != null);
@@ -1535,19 +1750,17 @@
     }
 
     function boot() {
-      ["spread", "mix", "rtt", "tail", "range", "issues", "body", "ips", "opcodes", "packets"].forEach((id) => {
+      ["spread", "mix", "rtt", "tail", "range", "issues", "body", "opcodes", "packets", "client-share", "client-rate", "client-port-share"].forEach((id) => {
         charts[id] = echarts.init(document.getElementById(id));
       });
       echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body]);
-      document.querySelectorAll("[data-ip-tab]").forEach((button) => {
-        button.addEventListener("click", () => {
-          ipTab = button.dataset.ipTab;
-          document.querySelectorAll("[data-ip-tab]").forEach((item) => {
-            item.classList.toggle("on", item === button);
-          });
-          drawClients();
+      const clientSelect = document.getElementById("client-pick");
+      if (clientSelect) {
+        clientSelect.addEventListener("change", () => {
+          clientPick = clientSelect.value;
+          drawOneClient();
         });
-      });
+      }
       document.querySelectorAll("[data-gap-tab]").forEach((button) => {
         button.addEventListener("click", () => {
           gapTab = button.dataset.gapTab;
@@ -1682,7 +1895,7 @@
 
     function markSection() {
       const groups = [...document.querySelectorAll("main .group")];
-      const links = [...document.querySelectorAll(".jump a")];
+      const links = [...document.querySelectorAll("#sections a")];
       const line = window.scrollY + 150;
       let current = groups[0];
       groups.forEach((group) => {
@@ -1694,6 +1907,11 @@
     }
     window.addEventListener("scroll", markSection, { passive: true });
     markSection();
+    fetch("summary.computed.md", { method: "HEAD", cache: "no-store" })
+      .then((response) => {
+        if (response.ok) document.getElementById("link-computed").hidden = false;
+      })
+      .catch(() => {});
 
     fetch("charts.json", { cache: "no-store" })
       .then((response) => {

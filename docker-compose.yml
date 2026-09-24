@@ -7,7 +7,7 @@
 services:
   analyze:
     build: .
-    image: cb_wireshark_analyzer:0.5.0
+    image: cb_wireshark_analyzer:0.6.0
     volumes:
       - ${CAPTURE_DIR:-./captures}:/captures:ro
       - ${OUT_DIR:-./orphan-report}:/out
@@ -15,8 +15,13 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
 
   test:
     build: .
-    image: cb_wireshark_analyzer:0.5.0
+    image: cb_wireshark_analyzer:0.6.0
     entrypoint: ["python3", "-m", "pytest", "-q"]

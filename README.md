@@ -61,7 +61,7 @@ cd orphan-report
 python3 -m http.server
 ```
 
-Open `http://127.0.0.1:8000/`. Drop `--no-ai` to add the note. With the default config that calls Ollama. To send the same brief to your own API, set `ai.provider` to `openai` as shown below. The virtual-machine section and the Docker section have the full install steps. To jump from a slow row back to Wireshark, use the stream and opaque with the filters in [CB_WIRESHARK.md](CB_WIRESHARK.md).
+Open `http://127.0.0.1:8000/`. Drop `--no-ai` to add the note. With the default config that calls Ollama. To send the same brief to your own API, set `ai.provider` to `openai` as shown below. The virtual-machine section and the Docker section have the full install steps. To record a capture on the Couchbase node, follow [CB_TCPDUMP.md](CB_TCPDUMP.md). To jump from a slow row back to Wireshark, use the stream and opaque with the filters in [CB_WIRESHARK.md](CB_WIRESHARK.md).
 
 ## Config
 
@@ -212,7 +212,7 @@ python3 -m pytest -q
 
 ## Wireshark filters
 
-[CB_WIRESHARK.md](CB_WIRESHARK.md) lists the display filters for a document id, one request and its reply, opcodes, status, large bodies, and TCP loss on port 11210. It walks through tracing a request that never got a response, including the false positives at the end of the file. It also explains `couchbase && tcp.time_delta > 0.05`, how to add that gap as a column, and why a durability level that waits for disk slows the reply.
+[CB_TCPDUMP.md](CB_TCPDUMP.md) is how to record the pcap on the Couchbase node. [CB_WIRESHARK.md](CB_WIRESHARK.md) lists the display filters for a document id, one request and its reply, opcodes, status, large bodies, and TCP loss on port 11210. It walks through tracing a request that never got a response, including the false positives at the end of the file. It also explains `couchbase && tcp.time_delta > 0.05`, how to add that gap as a column, and why a durability level that waits for disk slows the reply.
 
 ## Release Notes
 

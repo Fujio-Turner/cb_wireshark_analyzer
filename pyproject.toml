@@ -1,6 +1,6 @@
 [project]
 name = "cb_wireshark_analyzer"
-version = "0.4.0"
+version = "0.5.0"
 description = "Read a Couchbase Wireshark dump, line up trends across the capture, and write a note with a local Qwen model."
 requires-python = ">=3.11"
 license = "Apache-2.0"

@@ -17,7 +17,7 @@ One run writes two things, side by side in the output folder.
 
 **The note, `summary.md`.** A local Qwen model writes this from the counts: what the capture did, the slow tail, the missing replies, and the next questions. `--no-ai` skips the model and writes the counted note instead. A model run also keeps that counted text as `summary.computed.md`.
 
-**The chart page, `charts.json` and `index.html`.** `charts.json` is the analysis: one-, five-, and ten-second buckets, percentiles, opcodes, body size, TCP loss, client connections, and the points of interest. `index.html` draws that file. The heading names the Couchbase server. The time charts share a crosshair. A stake marks the same second on every chart, so opcode mix, response time, missing replies, TCP loss, and body size can be read together. Packets on port 11210 are bars by command, request, and response. A copy icon next to a document id or an opaque puts the Wireshark filter on the clipboard. Open the folder with a local web server. A `file://` page cannot read `charts.json`.
+**The chart page, `charts.json` and `index.html`.** `charts.json` is the analysis: one-, five-, and ten-second buckets, percentiles, opcodes, body size, TCP loss, client connections, and the points of interest. `index.html` draws that file. The heading names the Couchbase server. A bar under the title jumps to Timings, Operations, Packets, Documents, Marks, Questions, and Glossary. Chips under each heading jump to that chart, and a dotted word jumps to its glossary entry. The time charts share a crosshair. A stake marks the same second on every chart, so opcode mix, response time, missing replies, TCP loss, and body size can be read together. Packets on port 11210 are bars by command, request, and response. A copy icon next to a document id or an opaque puts the Wireshark filter on the clipboard. Open the folder with a local web server. A `file://` page cannot read `charts.json`. The previous single-column page is `index.original.html`.
 
 Python owns every number in both. The model does not invent the counts. Only packets from or to TCP port 11210 are counted. That is `tcp.port == 11210`, both directions. A capture limited to `dst port 11210` has the requests and not the replies.
 
@@ -142,9 +142,9 @@ docker compose run --rm analyze /captures/your.pcap -o /out
 
 ## Charts
 
-Every run writes `charts.json` and `index.html` next to the note. The page opens with latency tiles: median, p90, p95, p99, max, and how many matched calls were at least 100 ms or 250 ms. A side panel switches the time bucket (1, 5, or 10 seconds) and switches every numeric axis between linear and log. The time charts share one crosshair. Double-click drops a stake on that second. The stake stays when a legend series is hidden. Each chart has an expand control that opens it on a black transparent overlay and keeps the current zoom and stakes.
+Every run writes `charts.json` and `index.html` next to the note. The page is grouped. **Timings** opens with latency tiles: median, p90, p95, p99, max, and how many matched calls were at least 100 ms or 250 ms. **Operations** is opcode mix and p99. **Packets** is the port-11210 bars, lost responses, client IP, and the missing-call tabs. **Documents** is body length and the ten-id tables. **Marks** is the points of interest. **Questions** and **Glossary** follow. On a wide window, related charts sit side by side. A side panel switches the time bucket (1, 5, or 10 seconds) and switches every numeric axis between linear and log. The time charts share one crosshair. Double-click drops a stake on that second. The stake stays when a legend series is hidden. Each chart has an expand control that opens it on a black transparent overlay and keeps the current zoom and stakes.
 
-The ten slowest matched calls are listed with the response time, the second the request was sent, and the body size. **Set Stake** marks that second on the other charts, which is how a single slow call is placed back into the trend. The bottom of the page is **Next questions / steps**, written from the same counts as the note.
+The ten slowest matched calls are listed with the response time, the second the request was sent, and the body size. **Set Stake** marks that second on the other charts, which is how a single slow call is placed back into the trend. Requests with no response, and responses with no request, each show up to ten rows spaced across the capture rather than the first ten. The tab label is the full count. Every unanswered request is in `orphans.tsv`. **Next questions / steps** is written from the same counts as the note.
 
 The same page also has the latency histogram, round-trip percentiles, a chart of median and p99 with dashed TCP-loss and retry lines, a min-to-max candle, p99 by opcode, and the client chart. Client IP is the first tab. IP and source port is the second.
 
@@ -172,7 +172,8 @@ python3 analyze_capture.py --dry-run /path/to/capture.pcap
 | `summary.computed.md` | The counted note. Written on a model run, next to the model text. |
 | `facts.json` | The counts the note is built from. |
 | `charts.json` | One-, five-, and ten-second aggregates for the chart page. |
-| `index.html` | ECharts page. Open it from a local server so it can read `charts.json`. |
+| `index.html` | ECharts page, grouped with a section bar. Open it from a local server so it can read `charts.json`. |
+| `index.original.html` | The previous single-column chart page. |
 | `orphans.tsv` | Unanswered requests, one per row, with the document key. |
 | `reqs.pdus.tsv` | One client request per row. Column J is the logical key. |
 | `resps.tsv` | One client response per row. |

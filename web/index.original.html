@@ -23,41 +23,19 @@
       color: var(--ink);
       font: 15px/1.45 ui-sans-serif, Helvetica, sans-serif;
     }
-    html { scroll-behavior: smooth; }
     header {
       position: sticky;
       top: 0;
       z-index: 2;
       display: flex;
-      flex-direction: column;
-      align-items: stretch;
-      gap: 10px;
-      padding: 12px 22px 10px;
-      background: #1c2430;
-      color: #f6f3ee;
-    }
-    .head-row {
-      display: flex;
       flex-wrap: wrap;
       gap: 12px 24px;
       align-items: center;
       justify-content: space-between;
-    }
-    .jump {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
-    .jump a {
-      padding: 4px 10px;
-      border: 1px solid #3d4c5c;
-      border-radius: 999px;
+      padding: 14px 22px;
+      background: #1c2430;
       color: #f6f3ee;
-      font-size: 13px;
-      text-decoration: none;
     }
-    .jump a:hover,
-    .jump a.on { background: #f6f3ee; color: #1c2430; border-color: #f6f3ee; }
     header h1 {
       margin: 0;
       font: 22px/1.2 Georgia, "Iowan Old Style", serif;
@@ -93,36 +71,9 @@
       font: inherit;
     }
     main { max-width: none; margin: 0 180px 0 0; padding: 18px 8px 40px 16px; }
-    .layout-note { margin: 0 4px 8px; color: var(--muted); font-size: 13px; }
-    .layout-note a { color: var(--teal); }
-    .group { margin-top: 22px; scroll-margin-top: 118px; }
-    .group-head { margin: 0 4px 10px; }
-    .group-title {
-      margin: 0;
-      font: 22px/1.2 Georgia, "Iowan Old Style", serif;
-      font-weight: normal;
-    }
-    .group-head p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
-    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-    .chips a {
-      padding: 3px 8px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      background: #fff;
-      color: var(--teal);
-      font-size: 12px;
-      text-decoration: none;
-    }
-    .chips a:hover { border-color: var(--teal); }
-    .stack { display: grid; gap: 14px; }
-    .group, .stack, .grid, .tables, .card, .chart-wrap, .chart { min-width: 0; }
-    .chart { overflow: hidden; }
-    .chart, .card, .glossary dt { scroll-margin-top: 168px; }
     .grid { display: grid; gap: 14px; }
     .grid.two { grid-template-columns: 1fr 1fr; }
-    @media (max-width: 1100px) {
-      .grid.two, .tables { grid-template-columns: 1fr; }
-    }
+    @media (max-width: 800px) { .grid.two { grid-template-columns: 1fr; } }
     .card {
       position: relative;
       background: var(--card);
@@ -210,14 +161,6 @@
     #conn-rate { margin-top: 8px; }
     @media (max-width: 800px) { .tables { grid-template-columns: 1fr; } }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    #top-asked, #top-slow, #interest, #gaps, #opcodes-seen, #conn-rate {
-      max-width: 100%;
-      overflow-x: auto;
-    }
-    #top-asked, #top-slow, #interest, #gaps, #opcodes-seen, #conn-rate {
-      max-width: 100%;
-      overflow-x: auto;
-    }
     th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
     th { color: var(--muted); font-weight: 600; }
     td.key { word-break: break-all; }
@@ -339,7 +282,6 @@
     .glossary dt { margin-top: 10px; font-weight: 600; }
     .glossary dd { margin: 2px 0 0; color: var(--muted); }
     .glossary ol { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
-    .glossary a { color: var(--teal); }
     .glossary li { margin: 6px 0; }
     .dock {
       position: fixed;
@@ -377,13 +319,11 @@
     .dock .hint { margin: 0; color: #c5d0d6; font-size: 12px; }
     @media (max-width: 760px) {
       main { margin: 0; padding: 18px 16px 40px; }
-      .group { scroll-margin-top: 230px; }
-      .chart, .card, .glossary dt { scroll-margin-top: 280px; }
       #lightbox { padding: 52px 12px 12px; }
       #lightbox-close { top: 6px; right: 8px; }
       .dock {
-        position: static;
-        top: auto;
+        position: sticky;
+        top: 8px;
         right: auto;
         transform: none;
         width: auto;
@@ -394,7 +334,6 @@
 </head>
 <body>
   <header>
-    <div class="head-row">
     <div>
       <h1>Couchbase capture</h1>
       <p id="subtitle">Loading charts.json</p>
@@ -404,18 +343,8 @@
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         cb_wireshark_analyzer
       </a>
-      <span class="version" id="app-version">v0.5.0</span>
+      <span class="version" id="app-version">v0.4.0</span>
     </div>
-    </div>
-    <nav class="jump" aria-label="On this page">
-      <a href="#timings">Timings</a>
-      <a href="#operations">Operations</a>
-      <a href="#packets-group">Packets</a>
-      <a href="#documents">Documents</a>
-      <a href="#marks">Marks</a>
-      <a href="#questions">Questions</a>
-      <a href="#glossary">Glossary</a>
-    </nav>
   </header>
   <aside class="dock">
     <label><button type="button" class="term" data-tip="How wide each point on the time charts is. One second shows more detail. Five and ten seconds smooth a long capture.">Time bucket</button>
@@ -442,252 +371,145 @@
   </div>
   <main>
     <p id="status"></p>
-    <p class="layout-note">Sections stay in the bar above. A chip jumps to that chart. A dotted word jumps to its glossary entry. The previous layout is <a href="index.original.html">index.original.html</a>.</p>
-
-    <section class="group" id="timings">
-      <div class="group-head">
-        <h2 class="group-title">Timings</h2>
-        <p>How long calls took, from the typical call to the slow tail.</p>
-        <nav class="chips" aria-label="Timings">
-          <a href="#spread">How long calls took</a>
-          <a href="#rtt">Round trip</a>
-          <a href="#tail">Median, p99, TCP loss</a>
-          <a href="#range">Latency range</a>
-        </nav>
-      </div>
-      <div class="stack">
-        <section class="tiles" id="tiles"></section>
-        <div class="grid two">
-          <section class="card">
-            <h2>How long calls took</h2>
-            <p class="note">The horizontal axis is <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">response time</button>, split into <button type="button" class="term" data-tip="A slice of response time, such as 30–40 ms. A call that took 33 ms is counted in 30–40. The last band is 1000 ms or slower.">latency bands</button> in milliseconds. Left is fast. Right is slow. The vertical axis is how many <button type="button" class="term" data-tip="A request whose reply is also in this capture. They are paired by TCP connection and the Couchbase opaque id.">matched calls</button> finished in that band. A taller bar means more calls landed there.</p>
-            <div id="spread" class="chart"></div>
-          </section>
-          <section class="card">
-            <h2>Round trip</h2>
-            <p class="note"><button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">Response time</button> of <button type="button" class="term" data-tip="A request whose reply is also in this capture. They are paired by TCP connection and the Couchbase opaque id.">matched calls</button>. <button type="button" class="term" data-tip="The middle call. Half were faster, half were slower.">Median</button> is typical. <button type="button" class="term" data-tip="90 percent of matched calls were this fast or faster.">p90</button>, <button type="button" class="term" data-tip="95 percent of matched calls were this fast or faster.">p95</button>, and <button type="button" class="term" data-tip="99 percent of matched calls were this fast or faster. This is the slow end.">p99</button> show the slow tail.</p>
-            <div id="rtt" class="chart"></div>
-          </section>
-          <section class="card">
-            <h2>Median, p99, TCP loss, and retries</h2>
-            <p class="note">The left axis is milliseconds. <button type="button" class="term" data-tip="The middle call. Half were faster, half were slower.">Median</button> and <button type="button" class="term" data-tip="99 percent of matched calls in that bucket were this fast or faster. This is the slow end.">p99</button> are solid. The right axis counts packets. <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply, so the request can be left without a response.">Loss toward the client</button> and <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request, so a reply can arrive with no request in the file.">loss toward the server</button> are dashed, with <button type="button" class="term" data-tip="The sender transmitted the same TCP data again.">retries</button>.</p>
-            <div id="tail" class="chart"></div>
-          </section>
-          <section class="card">
-            <h2>Latency range</h2>
-            <p class="note">The thick part of each candle runs from the <button type="button" class="term" data-tip="The middle call in that bucket. Half were faster, half were slower.">median</button> to <button type="button" class="term" data-tip="90 percent of matched calls in that bucket were this fast or faster.">p90</button>. The thin line runs from the fastest call to the slowest.</p>
-            <div id="range" class="chart"></div>
-          </section>
-        </div>
-      </div>
-    </section>
-
-    <section class="group" id="operations">
-      <div class="group-head">
-        <h2 class="group-title">Operations</h2>
-        <p>Which Couchbase command ran, and which commands are slow.</p>
-        <nav class="chips" aria-label="Operations">
-          <a href="#mix">Calls by opcode</a>
-          <a href="#opcodes">p99 by opcode</a>
-          <a href="#opcodes-seen">Opcode list</a>
-        </nav>
-      </div>
-      <div class="stack">
-        <div class="grid two">
-          <section class="card">
-            <h2>Calls by opcode and response time</h2>
-            <p class="note">Each color is one <button type="button" class="term" data-tip="The kind of Couchbase operation, such as Get or Set.">opcode</button>. Bar height is how many of that kind ran in the <button type="button" class="term" data-tip="How wide each point on the time charts is. One second shows more detail. Five and ten seconds smooth a long capture.">time bucket</button>. The lines are <button type="button" class="term" data-tip="The middle matched call. Half of the calls in that bucket were faster, and half were slower.">median</button> and <button type="button" class="term" data-tip="99 percent of matched calls in that bucket were this fast or faster. This is the slow end.">p99</button> response time.</p>
-            <div id="mix" class="chart"></div>
-          </section>
-          <section class="card">
-            <h2>p99 by opcode</h2>
-            <p class="note">99th percentile of calls that got a response. Request count is in the tooltip.</p>
-            <div id="opcodes" class="chart"></div>
-          </section>
-        </div>
-        <section class="card">
-          <h2>Opcodes in this capture</h2>
-          <p class="note">The hex code and what each command does. The chart popup shows the command name and the count.</p>
-          <div id="opcodes-seen"></div>
-        </section>
-      </div>
-    </section>
-
-    <section class="group" id="packets-group">
-      <div class="group-head">
-        <h2 class="group-title">Packets</h2>
-        <p>What was on port 11210, which replies are missing, and which client sent the calls.</p>
-        <nav class="chips" aria-label="Packets">
-          <a href="#packets">Packets on port 11210</a>
-          <a href="#issues">Lost responses</a>
-          <a href="#ips">Client IP</a>
-          <a href="#gaps">Missing calls</a>
-        </nav>
-      </div>
-      <div class="stack">
-        <section class="card">
-          <h2>Packets on port 11210</h2>
-          <p class="note">Each bar is one packet on port 11210, counted once. Couchbase requests are shades of blue. Couchbase responses are shades of green. Each command keeps its own shade. TCP packets are greys. Lost segments, retransmissions, and ack-lost are reds. TCP data segment and TCP ACK start hidden so the Couchbase bars are readable. Click either name in the legend to show it. TCP data segment is payload with no Couchbase header, usually the rest of a value that did not fit in the first segment. TCP ACK has no payload.</p>
-          <div id="packets" class="chart"></div>
-        </section>
-        <div class="grid two">
-          <section class="card">
-            <h2><button type="button" class="term" data-tip="A request is in the file and its reply is not. The recording may have stopped first, or the reply packet was never captured.">Lost responses</button>, retries, and TCP loss</h2>
-            <p class="note">Bars on the left are Couchbase operations. The right axis counts packets. Dashed lines split <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply.">loss toward the client</button> from <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request.">loss toward the server</button>. Retries are on that same axis.</p>
-            <div id="issues" class="chart"></div>
-          </section>
-          <section class="card">
-            <div class="tabs" id="ip-tabs">
-              <button type="button" class="tab on" data-ip-tab="ip">Client IP</button>
-              <button type="button" class="tab" data-ip-tab="port">IP : port</button>
-            </div>
-            <h2 id="ip-title">Requests by client IP</h2>
-            <p class="note" id="ip-note"></p>
-            <div id="ips" class="chart"></div>
-            <div id="conn-rate"></div>
-          </section>
-        </div>
-        <section class="card">
-          <div class="tabs" id="gap-tabs">
-            <button type="button" class="tab on" data-gap-tab="request">Requests missing a response</button>
-            <button type="button" class="tab" data-gap-tab="response">Responses missing a request</button>
-          </div>
-          <p class="note" id="gap-note"></p>
-          <div id="gaps"></div>
-        </section>
-      </div>
-    </section>
-
-    <section class="group" id="documents">
-      <div class="group-head">
-        <h2 class="group-title">Documents</h2>
-        <p>How big the calls were, which document ids were busiest, and which were slowest.</p>
-        <nav class="chips" aria-label="Documents">
-          <a href="#body">Total body length</a>
-          <a href="#top-asked">Most requested</a>
-          <a href="#top-slow">Slowest</a>
-        </nav>
-      </div>
-      <div class="stack">
-        <section class="card">
-          <h2>Total body length</h2>
-          <p class="note">The horizontal axis is the same seconds as the other time charts. The vertical axis is bytes. Bars are the largest <button type="button" class="term" data-tip="Bytes of extras, key, and value in one Couchbase packet. Wireshark labels this Total Body Length.">total body length</button> in that second: one document into Couchbase, and one document out. Dashed lines add every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC can carry about 125 MB/s. A 10 Gbit NIC can carry about 1,250 MB/s.</p>
-          <div id="body" class="chart"></div>
-        </section>
-        <div class="tables">
-          <section class="card">
-            <h2>Ten most requested document ids</h2>
-            <div id="top-asked"></div>
-          </section>
-          <section class="card">
-            <h2>Ten slowest document ids</h2>
-            <p class="note">Each row is one matched call. <button type="button" class="term" data-tip="The client’s semi-transaction number. The request and its reply carry the same opaque. The same number on another TCP stream is a different call.">Opaque</button> is how that request is tied to its response, together with the TCP stream. <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">Time ms</button> is how long that call took. <button type="button" class="term" data-tip="Seconds from the start of the capture, when the request was sent. Set Stake marks this moment on the time charts.">Seconds</button> is when it was sent. <button type="button" class="term" data-tip="The larger of the request and reply total body lengths for this call, in bytes. Extras, key, and value.">Body bytes</button> is how big that call was. Set Stake draws that moment. Clicking it again does not add another line.</p>
-            <div id="top-slow"></div>
-          </section>
-        </div>
-      </div>
-    </section>
-
-    <section class="group" id="marks">
-      <div class="group-head">
-        <h2 class="group-title">Marks</h2>
-        <p>Points of interest, and the seconds you mark with a stake. Double-click a time chart, or use Set Stake. Remove stake is in the side panel.</p>
-        <nav class="chips" aria-label="Marks">
-          <a href="#interest">Points of interest</a>
-        </nav>
-      </div>
-      <div class="stack">
-        <section class="card">
-          <h2>Points of interest</h2>
-          <p class="note">The model picked these seconds. The other columns are the counted values in that second. Bytes in and bytes out are every document body added together. Toward the client is a hole in the reply direction. Toward the server is a hole in the request direction. Remove stake clears every line. Set Stake puts that one back.</p>
-          <div id="interest"></div>
-        </section>
-      </div>
-    </section>
-
-    <section class="group" id="questions">
-      <div class="group-head">
-        <h2 class="group-title">Questions</h2>
-        <p>What the counts suggest looking at next.</p>
-      </div>
-      <section class="card glossary" id="next-steps">
-        <h2>Next questions / steps</h2>
-        <ol id="next-list"></ol>
+    <section class="tiles" id="tiles"></section>
+    <div class="grid">
+      <section class="card">
+        <h2>How long calls took</h2>
+        <p class="note">The horizontal axis is <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">response time</button>, split into <button type="button" class="term" data-tip="A slice of response time, such as 30–40 ms. A call that took 33 ms is counted in 30–40. The last band is 1000 ms or slower.">latency bands</button> in milliseconds. Left is fast. Right is slow. The vertical axis is how many <button type="button" class="term" data-tip="A request whose reply is also in this capture. They are paired by TCP connection and the Couchbase opaque id.">matched calls</button> finished in that band. A taller bar means more calls landed there.</p>
+        <div id="spread" class="chart"></div>
       </section>
-    </section>
-
-    <section class="group" id="glossary">
-      <div class="group-head">
-        <h2 class="group-title">Glossary</h2>
-        <p>Every dotted word on the page lands on one of these. Chart names jump back to that chart.</p>
-        <nav class="chips" aria-label="Glossary words">
-          <a href="#matched-call">Matched call</a>
-          <a href="#opaque">Opaque</a>
-          <a href="#stream">Stream</a>
-          <a href="#left">Left</a>
-          <a href="#where">Where</a>
-          <a href="#lost-response">Lost response</a>
-          <a href="#response-without-request">Response without request</a>
-          <a href="#response-time">Response time</a>
-          <a href="#latency-band">Latency band</a>
-          <a href="#percentiles">Median, p90, p95, p99</a>
-          <a href="#opcode">Opcode</a>
-          <a href="#document-id">Document id</a>
-          <a href="#total-body-length">Total body length</a>
-          <a href="#tcp-loss">TCP loss</a>
-          <a href="#retry">Retry</a>
-        </nav>
-      </div>
-      <section class="card glossary">
-        <h2>What the words mean</h2>
-        <dl>
-          <dt id="matched-call">Matched call</dt>
-          <dd>A request and its reply are both in this capture. They share a TCP stream and the same opaque, the client’s semi-transaction number for that one call.</dd>
-          <dt id="opaque">Opaque</dt>
-          <dd>The semi-transaction number on a Couchbase request. The matching response repeats it. In Wireshark, filter <code>tcp.stream</code> and <code>couchbase.opaque</code> together to see that pair. The same opaque on a different stream is a different call.</dd>
-          <dt id="stream">Stream</dt>
-          <dd>The TCP connection number Wireshark assigns. Opaque is only unique inside one stream. The same opaque on stream 0 and stream 1 is two calls.</dd>
-          <dt id="left">Left</dt>
-          <dd>Seconds of capture still remaining after this packet. A small Left means the file was about to end. A request with a large Left had time for a reply to appear.</dd>
-          <dt id="where">Where</dt>
-          <dd>Inside means the packet is outside the in-flight window at the open or the close of the file. End of file means the request is still inside the longest completed round trip of the close, so a missing reply can be the capture stopping. Start of file means the reply is inside that window of the opening, so the request may have been sent before recording started.</dd>
-          <dt id="lost-response">Lost response</dt>
-          <dd>The request is in the file and the reply is not. That happens when the recording stops while the call is still open, or when the reply packet was never captured.</dd>
-          <dt id="response-without-request">Response without request</dt>
-          <dd>The reply is in the file and the request is not. The request was usually sent before the recording started.</dd>
-          <dt id="response-time">Response time</dt>
-          <dd>Milliseconds from the request packet to the matching reply. Only matched calls have one.</dd>
-          <dt id="latency-band">Latency band</dt>
-          <dd>A slice of response time, such as 30–40 ms. The histogram counts how many matched calls finished in each slice.</dd>
-          <dt id="percentiles">Median, p90, p95, p99</dt>
-          <dd>The median is the middle call. p90 means 90 percent of matched calls were that fast or faster. p99 is the slow end: only 1 percent were slower.</dd>
-          <dt id="opcode">Opcode</dt>
-          <dd>The kind of Couchbase operation, such as Get or Set. The opcode table lists the hex code and what each command in this capture does.</dd>
-          <dt id="document-id">Document id</dt>
-          <dd>The Couchbase key the operation named.</dd>
-          <dt id="total-body-length">Total body length</dt>
-          <dd>Bytes of extras, key, and value in one Couchbase packet. Into Couchbase is the request. Out of Couchbase is the reply. 1 MB is 1,048,576 bytes.</dd>
-          <dt id="tcp-loss">TCP loss</dt>
-          <dd>A hole in the recorded TCP byte stream. Toward the client means the server’s packets are missing, often the reply. Toward the server means the client’s packets are missing, often the request.</dd>
-          <dt id="retry">Retry</dt>
-          <dd>The sender transmitted the same TCP data again.</dd>
-        </dl>
-        <h2>What each chart is for</h2>
-        <ol>
-          <li><a href="#spread">How long calls took</a> shows whether slowness is a few calls or the usual case. A tall bar on the right is a slow tail.</li>
-          <li><a href="#mix">Calls by opcode and response time</a> lines up a burst of one operation, such as Get, with the median and p99 in that same moment.</li>
-          <li><a href="#rtt">Round trip</a> follows the typical call and the slow tail across the capture. The crosshair is the same moment on every time chart.</li>
-          <li><a href="#range">Latency range</a> shows the spread in each bucket. The thick part is median to p90. The thin line is the fastest call to the slowest.</li>
-          <li><a href="#issues">Lost responses, retries, and TCP loss</a> shows missing Couchbase replies next to holes and resent TCP data. Loss toward the client lines up with a missing reply. Loss toward the server lines up with a reply whose request is missing.</li>
-          <li><a href="#ips">Requests by client IP</a> is which machine sent the operations. <a href="#opcodes">p99 by opcode</a> is which kind of operation has the slow tail.</li>
-          <li><a href="#packets">Packets on port 11210</a> is a bar for each Couchbase command, split into request and response, plus lost segments, retransmissions, ack-lost, TCP data segments, and TCP ACKs.</li>
-          <li><a href="#body">Total body length</a> uses bars for the largest request and the largest reply, and dashed lines for every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC carries about 125 MB/s, and a 10 Gbit NIC about 1,250 MB/s.</li>
-          <li>The tables are the <a href="#top-asked">busiest document ids</a>, and the <a href="#top-slow">ten slowest matched calls</a>. Set Stake on a slow call marks that second on the time charts, including the body-length chart.</li>
-        </ol>
+      <section class="card">
+        <h2>Calls by opcode and response time</h2>
+        <p class="note">Each color is one <button type="button" class="term" data-tip="The kind of Couchbase operation, such as Get or Set.">opcode</button>. Bar height is how many of that kind ran in the <button type="button" class="term" data-tip="How wide each point on the time charts is. One second shows more detail. Five and ten seconds smooth a long capture.">time bucket</button>. The lines are <button type="button" class="term" data-tip="The middle matched call. Half of the calls in that bucket were faster, and half were slower.">median</button> and <button type="button" class="term" data-tip="99 percent of matched calls in that bucket were this fast or faster. This is the slow end.">p99</button> response time.</p>
+        <div id="mix" class="chart"></div>
       </section>
+      <section class="card">
+        <h2>Round trip</h2>
+        <p class="note"><button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">Response time</button> of <button type="button" class="term" data-tip="A request whose reply is also in this capture. They are paired by TCP connection and the Couchbase opaque id.">matched calls</button>. <button type="button" class="term" data-tip="The middle call. Half were faster, half were slower.">Median</button> is typical. <button type="button" class="term" data-tip="90 percent of matched calls were this fast or faster.">p90</button>, <button type="button" class="term" data-tip="95 percent of matched calls were this fast or faster.">p95</button>, and <button type="button" class="term" data-tip="99 percent of matched calls were this fast or faster. This is the slow end.">p99</button> show the slow tail.</p>
+        <div id="rtt" class="chart"></div>
+      </section>
+      <section class="card">
+        <h2>Median, p99, TCP loss, and retries</h2>
+        <p class="note">The left axis is milliseconds. <button type="button" class="term" data-tip="The middle call. Half were faster, half were slower.">Median</button> and <button type="button" class="term" data-tip="99 percent of matched calls in that bucket were this fast or faster. This is the slow end.">p99</button> are solid. The right axis counts packets. <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply, so the request can be left without a response.">Loss toward the client</button> and <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request, so a reply can arrive with no request in the file.">loss toward the server</button> are dashed, with <button type="button" class="term" data-tip="The sender transmitted the same TCP data again.">retries</button>.</p>
+        <div id="tail" class="chart"></div>
+      </section>
+      <section class="card">
+        <h2>Latency range</h2>
+        <p class="note">The thick part of each candle runs from the <button type="button" class="term" data-tip="The middle call in that bucket. Half were faster, half were slower.">median</button> to <button type="button" class="term" data-tip="90 percent of matched calls in that bucket were this fast or faster.">p90</button>. The thin line runs from the fastest call to the slowest.</p>
+        <div id="range" class="chart"></div>
+      </section>
+      <section class="card">
+        <h2><button type="button" class="term" data-tip="A request is in the file and its reply is not. The recording may have stopped first, or the reply packet was never captured.">Lost responses</button>, retries, and TCP loss</h2>
+        <p class="note">Bars on the left are Couchbase operations. The right axis counts packets. Dashed lines split <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply.">loss toward the client</button> from <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request.">loss toward the server</button>. Retries are on that same axis.</p>
+        <div id="issues" class="chart"></div>
+      </section>
+      <section class="card">
+        <h2>Total body length</h2>
+        <p class="note">The horizontal axis is the same seconds as the other time charts. The vertical axis is bytes. Bars are the largest <button type="button" class="term" data-tip="Bytes of extras, key, and value in one Couchbase packet. Wireshark labels this Total Body Length.">total body length</button> in that second: one document into Couchbase, and one document out. Dashed lines add every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC can carry about 125 MB/s. A 10 Gbit NIC can carry about 1,250 MB/s.</p>
+        <div id="body" class="chart"></div>
+      </section>
+    </div>
+    <section class="card" style="margin-top: 14px;">
+      <h2>Packets on port 11210</h2>
+      <p class="note">Each bar is one packet on port 11210, counted once. Couchbase requests are shades of blue. Couchbase responses are shades of green. Each command keeps its own shade. TCP packets are greys. Lost segments, retransmissions, and ack-lost are reds. TCP data segment and TCP ACK start hidden so the Couchbase bars are readable. Click either name in the legend to show it. TCP data segment is payload with no Couchbase header, usually the rest of a value that did not fit in the first segment. TCP ACK has no payload.</p>
+      <div id="packets" class="chart"></div>
+    </section>
+    <div class="grid two" style="margin-top: 14px;">
+      <section class="card">
+        <div class="tabs" id="ip-tabs">
+          <button type="button" class="tab on" data-ip-tab="ip">Client IP</button>
+          <button type="button" class="tab" data-ip-tab="port">IP : port</button>
+        </div>
+        <h2 id="ip-title">Requests by client IP</h2>
+        <p class="note" id="ip-note"></p>
+        <div id="ips" class="chart"></div>
+        <div id="conn-rate"></div>
+      </section>
+      <section class="card">
+        <h2>p99 by opcode</h2>
+        <p class="note">99th percentile of calls that got a response. Request count is in the tooltip.</p>
+        <div id="opcodes" class="chart"></div>
+      </section>
+    </div>
+    <div class="tables">
+      <section class="card">
+        <h2>Ten most requested document ids</h2>
+        <div id="top-asked"></div>
+      </section>
+      <section class="card">
+        <h2>Ten slowest document ids</h2>
+        <p class="note">Each row is one matched call. <button type="button" class="term" data-tip="The client’s semi-transaction number. The request and its reply carry the same opaque. The same number on another TCP stream is a different call.">Opaque</button> is how that request is tied to its response, together with the TCP stream. <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">Time ms</button> is how long that call took. <button type="button" class="term" data-tip="Seconds from the start of the capture, when the request was sent. Set Stake marks this moment on the time charts.">Seconds</button> is when it was sent. <button type="button" class="term" data-tip="The larger of the request and reply total body lengths for this call, in bytes. Extras, key, and value.">Body bytes</button> is how big that call was. Set Stake draws that moment. Clicking it again does not add another line.</p>
+        <div id="top-slow"></div>
+      </section>
+    </div>
+    <section class="card">
+      <div class="tabs" id="gap-tabs">
+        <button type="button" class="tab on" data-gap-tab="request">Requests missing a response</button>
+        <button type="button" class="tab" data-gap-tab="response">Responses missing a request</button>
+      </div>
+      <p class="note" id="gap-note"></p>
+      <div id="gaps"></div>
+    </section>
+    <section class="card">
+      <h2>Points of interest</h2>
+      <p class="note">The model picked these seconds. The other columns are the counted values in that second. Bytes in and bytes out are every document body added together. Toward the client is a hole in the reply direction. Toward the server is a hole in the request direction. Remove stake clears every line. Set Stake puts that one back.</p>
+      <div id="interest"></div>
+    </section>
+    <section class="card glossary" id="next-steps">
+      <h2>Next questions / steps</h2>
+      <ol id="next-list"></ol>
+    </section>
+    <section class="card glossary">
+      <h2>What the words mean</h2>
+      <dl>
+        <dt>Matched call</dt>
+        <dd>A request and its reply are both in this capture. They share a TCP stream and the same opaque, the client’s semi-transaction number for that one call.</dd>
+        <dt>Opaque</dt>
+        <dd>The semi-transaction number on a Couchbase request. The matching response repeats it. In Wireshark, filter <code>tcp.stream</code> and <code>couchbase.opaque</code> together to see that pair. The same opaque on a different stream is a different call.</dd>
+        <dt>Stream</dt>
+        <dd>The TCP connection number Wireshark assigns. Opaque is only unique inside one stream. The same opaque on stream 0 and stream 1 is two calls.</dd>
+        <dt>Left</dt>
+        <dd>Seconds of capture still remaining after this packet. A small Left means the file was about to end. A request with a large Left had time for a reply to appear.</dd>
+        <dt>Where</dt>
+        <dd>Inside means the packet is outside the in-flight window at the open or the close of the file. End of file means the request is still inside the longest completed round trip of the close, so a missing reply can be the capture stopping. Start of file means the reply is inside that window of the opening, so the request may have been sent before recording started.</dd>
+        <dt>Lost response</dt>
+        <dd>The request is in the file and the reply is not. That happens when the recording stops while the call is still open, or when the reply packet was never captured.</dd>
+        <dt>Response without request</dt>
+        <dd>The reply is in the file and the request is not. The request was usually sent before the recording started.</dd>
+        <dt>Response time</dt>
+        <dd>Milliseconds from the request packet to the matching reply. Only matched calls have one.</dd>
+        <dt>Latency band</dt>
+        <dd>A slice of response time, such as 30–40 ms. The histogram counts how many matched calls finished in each slice.</dd>
+        <dt>Median, p90, p95, p99</dt>
+        <dd>The median is the middle call. p90 means 90 percent of matched calls were that fast or faster. p99 is the slow end: only 1 percent were slower.</dd>
+        <dt>Opcode</dt>
+        <dd>The kind of Couchbase operation, such as Get or Set. The opcode table at the bottom lists the hex code and what each command in this capture does.</dd>
+        <dt>Document id</dt>
+        <dd>The Couchbase key the operation named.</dd>
+        <dt>Total body length</dt>
+        <dd>Bytes of extras, key, and value in one Couchbase packet. Into Couchbase is the request. Out of Couchbase is the reply. 1 MB is 1,048,576 bytes.</dd>
+        <dt>TCP loss</dt>
+        <dd>A hole in the recorded TCP byte stream. Toward the client means the server’s packets are missing, often the reply. Toward the server means the client’s packets are missing, often the request.</dd>
+        <dt>Retry</dt>
+        <dd>The sender transmitted the same TCP data again.</dd>
+      </dl>
+      <h2>What each chart is for</h2>
+      <ol>
+        <li>How long calls took shows whether slowness is a few calls or the usual case. A tall bar on the right is a slow tail.</li>
+        <li>Calls by opcode and response time lines up a burst of one operation, such as Get, with the median and p99 in that same moment.</li>
+        <li>Round trip follows the typical call and the slow tail across the capture. The crosshair is the same moment on every time chart.</li>
+        <li>Latency range shows the spread in each bucket. The thick part is median to p90. The thin line is the fastest call to the slowest.</li>
+        <li>Lost responses, retries, and TCP loss shows missing Couchbase replies next to holes and resent TCP data. Loss toward the client lines up with a missing reply. Loss toward the server lines up with a reply whose request is missing.</li>
+        <li>Requests by client IP is which machine sent the operations. p99 by opcode is which kind of operation has the slow tail.</li>
+        <li>Packets on port 11210 is a bar for each Couchbase command, split into request and response, plus lost segments, retransmissions, ack-lost, TCP data segments, and TCP ACKs.</li>
+        <li>Total body length uses bars for the largest request and the largest reply, and dashed lines for every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC carries about 125 MB/s, and a 10 Gbit NIC about 1,250 MB/s.</li>
+        <li>The tables are the busiest document ids, and the ten slowest matched calls. Set Stake on a slow call marks that second on the time charts, including the body-length chart.</li>
+      </ol>
+      <h2>Opcodes in this capture</h2>
+      <p class="note">The hex code and what each command does. The chart popup shows the command name and the count.</p>
+      <div id="opcodes-seen"></div>
     </section>
   </main>
-
   <script>
     const palette = ["#c45c26", "#24576e", "#1c2430", "#6e8b74", "#d4a017", "#8c4a6f", "#3d6b8c", "#a35b3a"];
     const stakeColors = ["#1a8cff", "#ff8a00", "#22a06b", "#c45c26", "#7a5cff", "#d4a017", "#e23b6a", "#14919b"];
@@ -1646,57 +1468,6 @@
       drawFixed();
       drawTime();
     }
-
-    const glossaryJump = {
-      "response time": "response-time",
-      "latency bands": "latency-band",
-      "latency band": "latency-band",
-      "matched calls": "matched-call",
-      "matched call": "matched-call",
-      "opcode": "opcode",
-      "median": "percentiles",
-      "p90": "percentiles",
-      "p95": "percentiles",
-      "p99": "percentiles",
-      "loss toward the client": "tcp-loss",
-      "loss toward the server": "tcp-loss",
-      "retries": "retry",
-      "retry": "retry",
-      "total body length": "total-body-length",
-      "lost responses": "lost-response",
-      "opaque": "opaque",
-      "time ms": "response-time",
-      "body bytes": "total-body-length",
-      "stream": "stream",
-      "left": "left",
-      "where": "where",
-      "document id": "document-id"
-    };
-
-    document.addEventListener("click", (event) => {
-      const term = event.target.closest(".term");
-      if (!term) return;
-      const id = glossaryJump[term.textContent.trim().toLowerCase()];
-      if (!id || !document.getElementById(id)) return;
-      event.preventDefault();
-      history.replaceState(null, "", "#" + id);
-      document.getElementById(id).scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-
-    function markSection() {
-      const groups = [...document.querySelectorAll("main .group")];
-      const links = [...document.querySelectorAll(".jump a")];
-      const line = window.scrollY + 150;
-      let current = groups[0];
-      groups.forEach((group) => {
-        if (group.offsetTop <= line) current = group;
-      });
-      links.forEach((link) => {
-        link.classList.toggle("on", !!current && link.getAttribute("href") === "#" + current.id);
-      });
-    }
-    window.addEventListener("scroll", markSection, { passive: true });
-    markSection();
 
     fetch("charts.json", { cache: "no-store" })
       .then((response) => {

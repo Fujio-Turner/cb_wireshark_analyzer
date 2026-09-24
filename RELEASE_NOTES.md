@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.5.0
+
+The chart page is grouped, and the missing-call tables are spaced across the capture.
+
+- A bar under the title jumps to **Timings**, **Operations**, **Packets**, **Documents**, **Marks**, **Questions**, and **Glossary**. Chips under each heading jump to that chart. A dotted word jumps to its glossary entry.
+- Related charts sit side by side on a wide window, so the page is shorter. On a narrow window they stack, and wide tables scroll inside the card.
+- Requests with no response, and responses with no request, show up to ten rows spaced from the earliest to the latest. They are not the first ten. The tab label is still the full count. The page does not list every missing call. Every unanswered request is in `orphans.tsv`.
+- The previous single-column page is kept as `index.original.html`, in the repo and in each report folder.
+
 ## 0.4.0
 
 What is on port 11210, and a copy icon that pastes the Wireshark filter.

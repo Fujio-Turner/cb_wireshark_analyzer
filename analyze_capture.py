@@ -1358,8 +1358,33 @@ def _in_flight_window(matched_rtts: list[tuple]) -> float:
     return max(gaps) if gaps else 1.0
 
 
+def _spread_rows(rows: list[dict], limit: int) -> list[dict]:
+    """Rows spaced from the earliest to the latest. The list stays in time order."""
+    if limit <= 0 or not rows:
+        return []
+    if len(rows) <= limit:
+        return list(rows)
+    if limit == 1:
+        return [rows[len(rows) // 2]]
+    picked = []
+    last_index = -1
+    span = len(rows) - 1
+    for step in range(limit):
+        index = round(step * span / (limit - 1))
+        if index == last_index:
+            continue
+        picked.append(rows[index])
+        last_index = index
+    return picked
+
+
 def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_start: bool) -> list[dict]:
-    """Ten missing calls. Interior rows come first. Edge rows are the file cutting a call off."""
+    """Up to ten missing calls, spaced across the file.
+
+    Interior rows are preferred. Edge rows fill in only when fewer than ten
+    calls sit away from the open or the close. A long list is not copied into
+    the page.
+    """
     rows = []
     for msg in messages:
         seconds = round(float(msg["time"]), 3)
@@ -1379,7 +1404,11 @@ def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_sta
     edge = [row for row in rows if row["at_edge"]]
     interior.sort(key=lambda row: row["seconds"])
     edge.sort(key=lambda row: row["seconds"])
-    return (interior + edge)[:10]
+    chosen = _spread_rows(interior, 10)
+    if len(chosen) < 10:
+        chosen.extend(_spread_rows(edge, 10 - len(chosen)))
+    chosen.sort(key=lambda row: row["seconds"])
+    return chosen
 
 
 def gap_counts(unanswered: list[dict], loss: dict) -> dict[str, int]:
@@ -3085,6 +3114,10 @@ def chart_page() -> str:
 def write_charts(out: Path, charts: dict) -> None:
     (out / "charts.json").write_text(json.dumps(charts, separators=(",", ":")))
     (out / "index.html").write_text(chart_page())
+    original = ROOT / "web" / "index.original.html"
+    if not original.is_file():
+        raise SystemExit(f"Previous chart page is missing: {original}")
+    shutil.copyfile(original, out / "index.original.html")
     vendor_src = ROOT / "web" / "vendor"
     library = vendor_src / "echarts.min.js"
     if not library.is_file():
@@ -3099,7 +3132,7 @@ def write_charts(out: Path, charts: dict) -> None:
 
 def print_dry_run(out: Path, args: argparse.Namespace, facts: dict) -> None:
     counts = facts["counts"]
-    files = ["facts.json", "charts.json", "index.html", "vendor/echarts.min.js", "orphans.tsv", "reqs.pdus.tsv", "resps.tsv", "summary.md"]
+    files = ["facts.json", "charts.json", "index.html", "index.original.html", "vendor/echarts.min.js", "orphans.tsv", "reqs.pdus.tsv", "resps.tsv", "summary.md"]
     if not args.no_ai:
         files.append("summary.computed.md")
     print("dry-run")

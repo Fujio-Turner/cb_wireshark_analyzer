@@ -1,5 +1,17 @@
 # Release notes
 
+## 0.4.0
+
+What is on port 11210, and a copy icon that pastes the Wireshark filter.
+
+- The count keeps packets whose source or destination is TCP port 11210. A capture filter of `dst port 11210` still drops the replies, so that file has requests and no round trips.
+- **Packets on port 11210** is a vertical bar. Each Couchbase command is its own bar, split into a request (blue) and a response (green). TCP packets are greys. Lost segments, retransmissions, and ack-lost segments are reds. TCP data segment and TCP ACK start hidden. The legend turns one bar back on at a time, including when the axis is log.
+- Under the ten-row tables, two tabs list requests with no response and responses with no request. The tab label is the full count. The rows are a sample of ten. **Inside**, **End of file**, and **Start of file** say whether the missing half is in the middle of the capture or at the edge.
+- A copy icon beside a document id copies `couchbase && couchbase.key.logical_key == "…"`. Beside an opaque it copies `couchbase && couchbase.opaque == 0x…`. A toast in the top right confirms the copy.
+- The note, `charts.json`, and the page title name the Couchbase server. The title is `Couchbase capture: hostname (ip)` when reverse DNS returns a name, and the IP when it does not.
+- The upper right of the page links to the GitHub repo and shows the version from `pyproject.toml`.
+- [CB_WIRESHARK.md](CB_WIRESHARK.md) now says server duration is on the response, durability is on the request, and a reply with no request later in the file means the capture lost the request. Disk durability (`0x02` and `0x03`) is a common cause of a slow write.
+
 ## 0.3.0
 
 Correlations on one second, and a Wireshark sheet for tracing a missing reply.

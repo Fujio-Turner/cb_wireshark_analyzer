@@ -1,6 +1,12 @@
 # Couchbase Wireshark filters
 
-Paste these into the Wireshark display-filter bar. Combine them with `&&`. Couchbase KV is TCP port **11210**.
+Paste these into the Wireshark display-filter bar. Combine them with `&&`. The analyzer keeps only Couchbase KV: packets whose source or destination port is **11210**.
+
+```text
+tcp.port == 11210
+```
+
+`tcp.port` is either side. A request has destination 11210. The reply has source 11210. A capture filter of `dst port 11210` keeps the requests and drops the replies, so the report can show no round trips. Use `port 11210` when recording if you want both directions.
 
 The chart page’s slow-call table gives the `tcp.stream` and `couchbase.opaque` for each slow row. Those two fields together are one call.
 
@@ -179,15 +185,50 @@ Loss toward the client is a hole in packets the server sent, often the reply. Lo
 tcp.stream == 0 && tcp.analysis.lost_segment
 ```
 
-## Server time on a flex frame
+## Server time is on the response
 
-When the packet carries a server duration extra:
+`couchbase.flex_frame.frame.duration` is **Server Recv->Send duration**. It is a response flex frame. Select the response row (magic `0x18` or `0x81`, source port 11210). Under **Flexible Frame** the frame id says **Server Recv->Send duration**. Wireshark 4.6.8 prints that value in microseconds. A value of about 56 μs means the server spent a tiny fraction of a millisecond between receiving the request and sending the reply.
 
 ```text
-couchbase.flex_frame.frame.duration > 0.05
+couchbase.flex_frame.frame.duration > 1000
 ```
 
-Wireshark shows that field in seconds. If the values on your build look like large integers, they are microseconds, and `50000` is about 50 ms.
+That keeps responses where the server itself took more than about 1 ms. The packet-list **Delta time** is a different number: it is the gap from the previous packet on the connection, which includes the network. A 33 ms delta next to a 56 μs server duration means the time was spent outside the server’s receive-to-send window.
+
+## Durability is on the request
+
+The durability level is not on the response. The response flex frames are the server duration, the vBucket UUID, and the mutation sequence number. **Durability Requirement** is a flex frame on the request, the packet whose source is the client.
+
+The [Couchbase display-filter reference](https://www.wireshark.org/docs/dfref/c/couchbase.html) lists:
+
+| Field | What it is | Type | Wireshark versions |
+|---|---|---|---|
+| `couchbase.flex_frame.frame.durability_req` | Durability Requirement | Unsigned 8-bit | 3.0.0 to 4.6.8 |
+| `couchbase.flex_frame.frame.durability_timeout` | Durability Timeout | Unsigned 16-bit | 3.0.0 to 3.0.14 |
+
+On a pair such as opaque `0x002aa15f`, frame 16 is the Set request (`0x80`, client to port 11210) and frame 17 is the Set response with flexible framing extras (`0x18`). Open frame 16 to see if the client asked for durability. Frame 17 will not have **Durability Requirement**. If the request tree has no **Durability Requirement** line, this call did not ask the server to wait for disk. Extras that only show **Flags** and **Expiration** are a normal Set.
+
+Find the requests that did ask for it:
+
+```text
+(couchbase.magic == 0x80 || couchbase.magic == 0x08) && couchbase.flex_frame.frame.durability_req
+```
+
+| Value | Name | What the server waits for |
+|---|---|---|
+| `0x01` | Majority | The write is in memory on a majority of nodes. No disk wait. |
+| `0x02` | Majority and persist on master | Majority in memory, and the active node has written it to disk. |
+| `0x03` | Persist to majority | The write is on disk on a majority of nodes. |
+
+`0x02` and `0x03` are the slow ones. The response cannot leave until the disk has the write. A busy disk turns a call that would have finished in a few milliseconds into tens or hundreds of milliseconds, even when the document is small. That shows up as a high p99 on Set, Add, or Replace, and as a large delta on the response.
+
+```text
+(couchbase.magic == 0x80 || couchbase.magic == 0x08) && (couchbase.flex_frame.frame.durability_req == 0x02 || couchbase.flex_frame.frame.durability_req == 0x03)
+```
+
+To see the level on every row, select a request that has the field, right-click **Durability Requirement**, and choose **Apply as Column**. The response rows stay blank in that column, which is how you can tell you are looking at the right side of the call.
+
+`couchbase.flex_frame.frame.durability_timeout` is the client’s limit on that wait, in milliseconds. Wireshark only had it from 3.0.0 through 3.0.14. Wireshark 4.6.8 does not, so the filter will not resolve on a current install. On those old builds it is also on the request. A timeout of a few seconds means the client was willing to sit on the disk wait for that long.
 
 ## Examples
 
@@ -208,3 +249,27 @@ Slow-looking sets with a large body:
 ```text
 couchbase.opcode == 0x01 && couchbase.total_bodylength >= 1048576 && (couchbase.magic == 0x80 || couchbase.magic == 0x08)
 ```
+
+## A reply with no request, later in the file
+
+A reply at the opening of the capture, with no request in front of it, is the recording starting in the middle of a call. The request was sent before the first packet.
+
+A reply later in the file, still with no request, is a different case. Couchbase did answer. The request was on the wire. The capture kept the reply and lost the request packet.
+
+The request and the reply travel in opposite directions. A hole in the client-to-server direction removes the request from the file. The reply comes back server-to-client and can still be recorded. In Wireshark that reply is a response magic (`0x81` or `0x18`) whose `tcp.stream` and `couchbase.opaque` never appear on a request. The chart page lists those rows under **Responses missing a request**, and marks **Start of file** only for the ones inside the opening in-flight window. **Inside** means the reply is later than that window.
+
+The same opaque on a request that appears after that reply is a new call. Pairing does not attach the earlier reply to the later request, so the reply stays a reply with no request.
+
+To look at one of them, take the stream and opaque from that table:
+
+```text
+tcp.stream == 0 && couchbase.opaque == 0x00ab12cd
+```
+
+You should see the response and no request. Then look for the hole on that stream:
+
+```text
+tcp.stream == 0 && tcp.analysis.lost_segment
+```
+
+A lost segment toward the server, around the same time as the reply, is the missing request. Few retransmissions next to many of those holes means the sender did not put the packet on the wire again, and the recorder did not have another copy to save.

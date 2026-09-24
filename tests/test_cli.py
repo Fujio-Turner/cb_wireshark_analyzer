@@ -88,6 +88,8 @@ def test_no_ai_writes_the_counted_note(tmp_path):
     assert (out / "index.html").is_file()
     page = (out / "index.html").read_text()
     assert "vendor/echarts.min.js" in page
+    assert "https://github.com/Fujio-Turner/cb_wireshark_analyzer" in page
+    assert f">v{ac.project_version()}<" in page
     assert "jsdelivr" not in page
     assert (out / "vendor" / "echarts.min.js").is_file()
     assert "matched" in (out / "summary.md").read_text()

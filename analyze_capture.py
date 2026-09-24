@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import statistics
 import subprocess
 import sys
@@ -233,6 +234,59 @@ OPCODES = {
     0xFD: 'EWOULDBLOCK Control',
     0xFE: 'Get Error Map',
 }
+
+# KV only. tcp.port is either side, so a reply leaving 11210 stays in.
+KV_PORT = "11210"
+
+
+PACKET_TYPE_ORDER = (
+    "Couchbase",
+    "Lost segment",
+    "Retransmission",
+    "Ack lost segment",
+    "Other",
+)
+
+
+def packet_kind(
+    has_couchbase: bool,
+    lost: bool,
+    retrans: bool,
+    ack: bool,
+    opcode: str = "",
+    is_response: bool = False,
+    tcp_len: int = 0,
+) -> str:
+    """One bar per packet. An error flag wins. Couchbase is split by command and direction."""
+    if lost:
+        return "Lost segment"
+    if retrans:
+        return "Retransmission"
+    if ack:
+        return "Ack lost segment"
+    if has_couchbase:
+        side = "response" if is_response else "request"
+        return f"{opcode or 'Couchbase'} {side}"
+    if tcp_len <= 0:
+        return "TCP ACK"
+    return "TCP data segment"
+
+
+def on_kv_port(sport: str, dport: str) -> bool:
+    return str(sport) == KV_PORT or str(dport) == KV_PORT
+
+
+def _keep_kv(messages: list[dict]) -> list[dict]:
+    kept = []
+    for msg in messages:
+        sport = msg.get("sport") or ""
+        dport = msg.get("dport") or ""
+        if not sport and not dport:
+            kept.append(msg)
+        elif on_kv_port(sport, dport):
+            kept.append(msg)
+    return kept
+
 
 # Plain descriptions for the commands people meet on port 11210.
 # Names stay as Wireshark prints them. The chart tooltips show these sentences.
@@ -679,6 +733,7 @@ _FIELD_COLUMNS = (
     "tcp.analysis.lost_segment",
     "tcp.analysis.retransmission",
     "tcp.analysis.ack_lost_segment",
+    "tcp.len",
 )
 # Couchbase columns, then the three frame-level TCP flags. Flags are not repeated per message.
 _PREFIX_COLUMNS = 7
@@ -848,8 +903,8 @@ def _iter_ek_messages(pcap: Path, tshark: str, display: str):
                 yield message
 
 
-def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter, list[dict]]:
-    """One fields pass for Couchbase messages and TCP gap flags.
+def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter, list[dict], Counter]:
+    """One fields pass for every packet on port 11210.
 
     JSON is only for the rare frame whose Couchbase columns do not line up.
     """
@@ -859,7 +914,7 @@ def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter,
         "-r",
         str(pcap),
         "-Y",
-        "couchbase || tcp.analysis.lost_segment || tcp.analysis.retransmission || tcp.analysis.ack_lost_segment",
+        f"tcp.port == {KV_PORT}",
         "-T",
         "fields",
     ]
@@ -875,34 +930,97 @@ def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter,
             "separator=\t",
         )
     )
-    log(f"reading Couchbase messages from {pcap.name}")
+    log(f"reading port {KV_PORT} packets from {pcap.name}")
     requests: list[dict] = []
     responses: list[dict] = []
     magics: Counter = Counter()
     loss_events: list[dict] = []
+    packet_types: Counter = Counter()
     redo: list[str] = []
     for line in iter_tshark(cmd):
         if not line:
             continue
         messages, bad_frame, loss = messages_from_field_line(line)
-        if loss:
+        cols = line.split("\t")
+        tcp_len_at = _PREFIX_COLUMNS + _CB_COLUMNS + _FLAG_COLUMNS
+        tcp_len = 0
+        if len(cols) > tcp_len_at and cols[tcp_len_at]:
+            try:
+                tcp_len = int(cols[tcp_len_at])
+            except ValueError:
+                tcp_len = 0
+        opcode = ""
+        is_response = False
+        if messages:
+            opcode = opcode_name(messages[0].get("opcode") or "")
+            is_response = messages[0].get("magic") in CLIENT_RES_MAGIC
+        kind = packet_kind(
+            bool(messages) or bad_frame is not None,
+            bool(loss and loss.get("lost")),
+            bool(loss and loss.get("retrans")),
+            bool(loss and loss.get("ack")),
+            opcode,
+            is_response,
+            tcp_len,
+        )
+        packet_types[kind] += 1
+        if loss and on_kv_port(loss.get("sport", ""), loss.get("dport", "")):
             loss_events.append(loss)
         if bad_frame is not None:
             if bad_frame:
                 redo.append(bad_frame)
             continue
         for message in messages:
-            _keep_client_message(message, requests, responses, magics)
+            if on_kv_port(message.get("sport", ""), message.get("dport", "")):
+                _keep_client_message(message, requests, responses, magics)
     if redo:
         log(f"re-reading {len(redo)} frames whose Couchbase columns did not line up")
         for start in range(0, len(redo), 40):
             chunk = redo[start : start + 40]
             display = " || ".join(f"frame.number=={number}" for number in chunk)
             for message in _iter_ek_messages(pcap, tshark, display):
-                _keep_client_message(message, requests, responses, magics)
+                if on_kv_port(message.get("sport", ""), message.get("dport", "")):
+                    _keep_client_message(message, requests, responses, magics)
     if not requests and not responses:
         raise SystemExit(f"No Couchbase client requests or responses in {pcap}")
-    return requests, responses, magics, loss_events
+    return requests, responses, magics, loss_events, packet_types
+
+
+def lookup_host(ip: str) -> str:
+    """Reverse DNS for a Couchbase address. Empty when the name is unknown."""
+    if not ip:
+        return ""
+    previous = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(0.4)
+        name = socket.getfqdn(ip)
+    except OSError:
+        return ""
+    finally:
+        socket.setdefaulttimeout(previous)
+    if not name or name == ip:
+        return ""
+    return name
+
+
+def couchbase_server(requests: list[dict]) -> dict:
+    ranked = Counter(
+        (msg.get("dst") or "", str(msg.get("dport") or "")) for msg in requests
+    ).most_common(1)
+    if not ranked or not ranked[0][0][0]:
+        return {}
+    ip, port = ranked[0][0]
+    host = lookup_host(ip)
+    return {"ip": ip, "port": port, "host": host or ip}
+
+
+def server_label(server: dict | None) -> str:
+    server = server or {}
+    host = server.get("host") or ""
+    ip = server.get("ip") or ""
+    if host and ip and host != ip:
+        return f"{host} ({ip})"
+    return host or ip
 
 
 def couchbase_ports(requests: list[dict]) -> list[str]:
@@ -1014,6 +1132,7 @@ def build_charts(
     loss_events: list[dict],
     ports: list[str],
     capture_end: float,
+    packet_types: Counter | None = None,
 ) -> dict:
     """Aggregates for the chart page at 1, 5, and 10 second buckets."""
     matched_rtts: list[tuple] = []
@@ -1221,7 +1340,46 @@ def build_charts(
             for key, count in by_key.most_common(10)
         ],
         "top_slowest": slowest,
+        "missing_response": _ten_gaps(paired["unanswered"], capture_end, _in_flight_window(matched_rtts), at_start=False),
+        "missing_response_total": len(paired["unanswered"]),
+        "missing_request": _ten_gaps(paired["resp_only"], capture_end, _in_flight_window(matched_rtts), at_start=True),
+        "missing_request_total": len(paired["resp_only"]),
+        "server": couchbase_server(requests),
+        "packet_types": [
+            {"name": name, "count": int(count)}
+            for name, count in (packet_types or Counter()).most_common()
+            if count
+        ],
     }
+
+
+def _in_flight_window(matched_rtts: list[tuple]) -> float:
+    gaps = [gap for _when, gap, *_rest in matched_rtts if gap >= 0]
+    return max(gaps) if gaps else 1.0
+
+
+def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_start: bool) -> list[dict]:
+    """Ten missing calls. Interior rows come first. Edge rows are the file cutting a call off."""
+    rows = []
+    for msg in messages:
+        seconds = round(float(msg["time"]), 3)
+        left = round(capture_end - float(msg["time"]), 3)
+        edge = seconds <= window if at_start else left <= window
+        rows.append({
+            "seconds": seconds,
+            "seconds_left": left,
+            "stream": str(msg.get("stream") or ""),
+            "opaque": msg.get("opaque") or "",
+            "opcode": opcode_name(msg.get("opcode") or ""),
+            "key": msg.get("key") or "",
+            "status": msg.get("status") or "",
+            "at_edge": edge,
+        })
+    interior = [row for row in rows if not row["at_edge"]]
+    edge = [row for row in rows if row["at_edge"]]
+    interior.sort(key=lambda row: row["seconds"])
+    edge.sort(key=lambda row: row["seconds"])
+    return (interior + edge)[:10]
 
 
 def gap_counts(unanswered: list[dict], loss: dict) -> dict[str, int]:
@@ -1403,6 +1561,7 @@ def load_table(path: Path) -> tuple[list[dict], list[dict], int]:
 
 def load_tsv_pair(reqs_path: Path, resps_path: Path | None) -> tuple[list[dict], list[dict], int]:
     reqs, resps, joined = load_table(reqs_path)
+    reqs, resps = _keep_kv(reqs), _keep_kv(resps)
     if resps_path is not None:
         extra_reqs, extra_resps, extra_joined = load_table(resps_path)
         # A response file can be mislabeled; keep whichever side it actually holds.
@@ -1591,7 +1750,6 @@ def build_facts(
             )
 
     client = Counter((msg["src"], msg["sport"]) for msg in requests).most_common(1)
-    server = Counter((msg["dst"], msg["dport"]) for msg in requests).most_common(1)
     ports = couchbase_ports(requests)
 
     tcp = None
@@ -1625,7 +1783,7 @@ def build_facts(
         "capture_seconds": capture_end,
         "packet_count": packet_count,
         "client": {"ip": client[0][0][0], "port": client[0][0][1]} if client else {},
-        "server": {"ip": server[0][0][0], "port": server[0][0][1]} if server else {},
+        "server": couchbase_server(requests),
         "couchbase_ports": ports,
         "counts": {
             "request_messages": len(requests),
@@ -1704,7 +1862,8 @@ def _endpoint_phrase(facts: dict) -> str:
     if not client or not server:
         return "The client and server addresses were not both in the export."
     return (
-        f"Client requests are from `{client['ip']}` to `{server['ip']}` port `{server['port']}`."
+        f"Couchbase is `{server_label(server)}` port `{server.get('port')}`. "
+        f"Client requests are from `{client['ip']}`."
     )
 
 
@@ -1741,6 +1900,10 @@ def render_summary(facts: dict) -> str:
     lines.append("# Orphaned Couchbase requests")
     lines.append("")
     lines.append(f"Source: `{facts['source']}`")
+    label = server_label(facts.get("server"))
+    if label:
+        lines.append("")
+        lines.append(f"Couchbase: `{label}` port `{facts['server'].get('port')}`.")
     if facts.get("pcap_files"):
         shown = ", ".join(f"`{name}`" for name in facts["pcap_files"])
         lines.append("")
@@ -2483,7 +2646,7 @@ Write GitHub-flavored markdown with these headings, in this order:
 ## All unanswered requests
 ## Next questions and steps
 
-The opening states the unanswered-request count, the unique key count, and the responses that have no request.
+The opening states the Couchbase host and IP, the unanswered-request count, the unique key count, and the responses that have no request.
 Then state the round trip and the in-flight window. Separate three groups: responses already on the wire when the file opened, requests still on the wire when the file closed, and the interior rows that had more than that window of capture left.
 When slow-call counts and body lengths are present, put them in the round-trip section. A short tail of calls over 100 ms, with a maximum well under a second, is not a server timeout.
 When lost-segment markers are present in both directions and retransmissions are rare, say the missing packets fit a recorder that did not see them. Do not call the whole unanswered set Couchbase timeouts.
@@ -2895,12 +3058,33 @@ def apply_config(args: argparse.Namespace) -> argparse.Namespace:
     return args
 
 
-def write_charts(out: Path, charts: dict) -> None:
-    (out / "charts.json").write_text(json.dumps(charts, separators=(",", ":")))
+def project_version() -> str:
+    text = (ROOT / "pyproject.toml").read_text()
+    match = re.search(r'(?m)^version = "([^"]+)"', text)
+    if not match:
+        raise SystemExit("pyproject.toml has no version")
+    return match.group(1)
+
+
+def chart_page() -> str:
     template = ROOT / "web" / "index.html"
     if not template.is_file():
         raise SystemExit(f"Chart page is missing: {template}")
-    (out / "index.html").write_text(template.read_text())
+    page = template.read_text()
+    stamped, count = re.subn(
+        r'(<span class="version" id="app-version">)[^<]*(</span>)',
+        rf"\1v{project_version()}\2",
+        page,
+        count=1,
+    )
+    if count != 1:
+        raise SystemExit("chart page is missing the version slot")
+    return stamped
+
+
+def write_charts(out: Path, charts: dict) -> None:
+    (out / "charts.json").write_text(json.dumps(charts, separators=(",", ":")))
+    (out / "index.html").write_text(chart_page())
     vendor_src = ROOT / "web" / "vendor"
     library = vendor_src / "echarts.min.js"
     if not library.is_file():
@@ -2947,13 +3131,14 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
     pcap_names: list[str] = []
     loss = None
     loss_events: list[dict] = []
+    packet_types: Counter | None = None
 
     if job["mode"] == "pcap":
         if not tshark:
             raise SystemExit("tshark is not on PATH and not in /Applications/Wireshark.app.")
         pcap = job["pcap"]
         pcap_names = [path.name for path in job.get("also") or [pcap]]
-        requests, responses, magics, loss_events = load_pcap(pcap, tshark)
+        requests, responses, magics, loss_events, packet_types = load_pcap(pcap, tshark)
         capinfos = find_capinfos(tshark)
         duration = None
         if capinfos:
@@ -2994,6 +3179,7 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
         loss_events,
         couchbase_ports(requests),
         capture_end,
+        packet_types,
     )
     facts["next_steps"] = next_questions(facts, charts)
     charts["next_steps"] = facts["next_steps"]

@@ -70,6 +70,19 @@ def test_buckets_percentiles_and_top_keys():
     assert charts["top_slowest"][0]["key"] == "widget::slow"
     assert charts["top_slowest"][0]["time_ms"] == 150.0
     assert charts["top_slowest"][0]["seconds"] == 1.2
+    assert charts["missing_response"][0]["key"] == "widget::gone"
+    assert charts["missing_response"][0]["at_edge"] is False
+    assert charts["missing_response_total"] == 1
+    assert charts["missing_request"] == []
+    assert charts["missing_request_total"] == 0
+    assert charts["server"]["ip"] == "10.0.0.3"
+    assert charts["server"]["port"] == "11210"
+    assert charts["server"]["host"]
+    typed = ac.build_charts(
+        requests, paired, loss, ["11210"], 2.0,
+        packet_types=ac.Counter({"Get request": 4, "TCP ACK": 2, "Lost segment": 1}),
+    )
+    assert [row["name"] for row in typed["packet_types"]] == ["Get request", "TCP ACK", "Lost segment"]
     assert charts["top_slowest"][0]["opaque"] == "0x3"
     assert charts["top_slowest"][0]["stream"] == "0"
     assert charts["top_slowest"][0]["body_bytes"] == 1048576

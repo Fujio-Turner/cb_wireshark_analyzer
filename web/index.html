@@ -42,6 +42,23 @@
       font-weight: normal;
     }
     header p { margin: 2px 0 0; color: #c5d0d6; font-size: 13px; }
+    .nav-corner {
+      margin-left: auto;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 2px;
+    }
+    .nav-corner .repo {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #f6f3ee;
+      font-size: 13px;
+      text-decoration: none;
+    }
+    .nav-corner .repo:hover { text-decoration: underline; }
+    .nav-corner .version { color: #c5d0d6; font-size: 12px; }
     .controls { display: flex; flex-wrap: wrap; gap: 14px 18px; align-items: center; }
     label { font-size: 13px; color: #e4b089; }
     select {
@@ -164,6 +181,42 @@
       border: 1px solid var(--line);
       cursor: default;
     }
+    .copy-filter {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-left: 4px;
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted);
+      cursor: pointer;
+      vertical-align: -4px;
+    }
+    .copy-filter:hover { color: var(--ink); background: var(--paper); }
+    .copy-filter svg { display: block; }
+    .copy-inline { white-space: nowrap; word-break: normal; }
+    #toast {
+      position: fixed;
+      z-index: 30;
+      top: 16px;
+      right: 16px;
+      max-width: 420px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: #1c2430;
+      color: #f6f3ee;
+      font-size: 13px;
+      line-height: 1.35;
+      word-break: break-all;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+    #toast.show { opacity: 1; }
     #status { margin: 12px 4px; color: var(--accent); }
     .tiles {
       display: grid;
@@ -285,6 +338,13 @@
       <h1>Couchbase capture</h1>
       <p id="subtitle">Loading charts.json</p>
     </div>
+    <div class="nav-corner">
+      <a class="repo" href="https://github.com/Fujio-Turner/cb_wireshark_analyzer" target="_blank" rel="noopener noreferrer">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+        cb_wireshark_analyzer
+      </a>
+      <span class="version" id="app-version">v0.4.0</span>
+    </div>
   </header>
   <aside class="dock">
     <label><button type="button" class="term" data-tip="How wide each point on the time charts is. One second shows more detail. Five and ten seconds smooth a long capture.">Time bucket</button>
@@ -304,6 +364,7 @@
     <button type="button" class="action quiet" id="remove-stake">Remove stake</button>
     <p class="hint">Double-click a time chart to drop a stake. Each new stake keeps the next color.</p>
   </aside>
+  <div id="toast" role="status"></div>
   <div id="lightbox" hidden>
     <button type="button" id="lightbox-close" aria-label="Close">×</button>
     <div id="lightbox-stage"></div>
@@ -348,6 +409,11 @@
         <div id="body" class="chart"></div>
       </section>
     </div>
+    <section class="card" style="margin-top: 14px;">
+      <h2>Packets on port 11210</h2>
+      <p class="note">Each bar is one packet on port 11210, counted once. Couchbase requests are shades of blue. Couchbase responses are shades of green. Each command keeps its own shade. TCP packets are greys. Lost segments, retransmissions, and ack-lost are reds. TCP data segment and TCP ACK start hidden so the Couchbase bars are readable. Click either name in the legend to show it. TCP data segment is payload with no Couchbase header, usually the rest of a value that did not fit in the first segment. TCP ACK has no payload.</p>
+      <div id="packets" class="chart"></div>
+    </section>
     <div class="grid two" style="margin-top: 14px;">
       <section class="card">
         <div class="tabs" id="ip-tabs">
@@ -377,6 +443,14 @@
       </section>
     </div>
     <section class="card">
+      <div class="tabs" id="gap-tabs">
+        <button type="button" class="tab on" data-gap-tab="request">Requests missing a response</button>
+        <button type="button" class="tab" data-gap-tab="response">Responses missing a request</button>
+      </div>
+      <p class="note" id="gap-note"></p>
+      <div id="gaps"></div>
+    </section>
+    <section class="card">
       <h2>Points of interest</h2>
       <p class="note">The model picked these seconds. The other columns are the counted values in that second. Bytes in and bytes out are every document body added together. Toward the client is a hole in the reply direction. Toward the server is a hole in the request direction. Remove stake clears every line. Set Stake puts that one back.</p>
       <div id="interest"></div>
@@ -392,6 +466,12 @@
         <dd>A request and its reply are both in this capture. They share a TCP stream and the same opaque, the client’s semi-transaction number for that one call.</dd>
         <dt>Opaque</dt>
         <dd>The semi-transaction number on a Couchbase request. The matching response repeats it. In Wireshark, filter <code>tcp.stream</code> and <code>couchbase.opaque</code> together to see that pair. The same opaque on a different stream is a different call.</dd>
+        <dt>Stream</dt>
+        <dd>The TCP connection number Wireshark assigns. Opaque is only unique inside one stream. The same opaque on stream 0 and stream 1 is two calls.</dd>
+        <dt>Left</dt>
+        <dd>Seconds of capture still remaining after this packet. A small Left means the file was about to end. A request with a large Left had time for a reply to appear.</dd>
+        <dt>Where</dt>
+        <dd>Inside means the packet is outside the in-flight window at the open or the close of the file. End of file means the request is still inside the longest completed round trip of the close, so a missing reply can be the capture stopping. Start of file means the reply is inside that window of the opening, so the request may have been sent before recording started.</dd>
         <dt>Lost response</dt>
         <dd>The request is in the file and the reply is not. That happens when the recording stops while the call is still open, or when the reply packet was never captured.</dd>
         <dt>Response without request</dt>
@@ -421,6 +501,7 @@
         <li>Latency range shows the spread in each bucket. The thick part is median to p90. The thin line is the fastest call to the slowest.</li>
         <li>Lost responses, retries, and TCP loss shows missing Couchbase replies next to holes and resent TCP data. Loss toward the client lines up with a missing reply. Loss toward the server lines up with a reply whose request is missing.</li>
         <li>Requests by client IP is which machine sent the operations. p99 by opcode is which kind of operation has the slow tail.</li>
+        <li>Packets on port 11210 is a bar for each Couchbase command, split into request and response, plus lost segments, retransmissions, ack-lost, TCP data segments, and TCP ACKs.</li>
         <li>Total body length uses bars for the largest request and the largest reply, and dashed lines for every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC carries about 125 MB/s, and a 10 Gbit NIC about 1,250 MB/s.</li>
         <li>The tables are the busiest document ids, and the ten slowest matched calls. Set Stake on a slow call marks that second on the time charts, including the body-length chart.</li>
       </ol>
@@ -436,6 +517,8 @@
     const timeChartIds = ["mix", "rtt", "tail", "range", "issues", "body"];
     const STAKE_SERIES = "__stake";
     let ipTab = "ip";
+    let gapTab = "request";
+    const hiddenPacketBars = new Set(["TCP data segment", "TCP ACK"]);
     let data = null;
     let stakes = [];
     let lightboxHome = null;
@@ -810,6 +893,105 @@
       return text;
     }
 
+    const packetSystemColors = {
+      "TCP data segment": "#4a5560",
+      "TCP ACK": "#b7c0c7"
+    };
+    const packetErrorColors = {
+      "Lost segment": "#c0392b",
+      "Retransmission": "#e74c3c",
+      "Ack lost segment": "#7b241c"
+    };
+    const packetRequestBlues = [
+      "#154360", "#1a5276", "#1f618d", "#2471a3", "#2e86c1",
+      "#5dade2", "#85c1e9", "#1b4f72", "#21618c", "#3498db"
+    ];
+    const packetResponseGreens = [
+      "#0e6655", "#117a65", "#148f77", "#17a589", "#1e8449",
+      "#27ae60", "#52be80", "#196f3d", "#239b56", "#7dcea0"
+    ];
+
+    const packetCommandOrder = [
+      "Set", "Get", "Get Locked", "Replace", "Get and Touch",
+      "Add", "Get Cluster Config", "Touch", "Couchbase"
+    ];
+
+    function packetShade(command, shades) {
+      const known = packetCommandOrder.indexOf(command);
+      if (known !== -1) return shades[known % shades.length];
+      let hash = 0;
+      for (let index = 0; index < command.length; index += 1) {
+        hash = (hash * 31 + command.charCodeAt(index)) >>> 0;
+      }
+      return shades[hash % shades.length];
+    }
+
+    function packetBarStyle(name) {
+      const response = / response$/.test(name);
+      const command = name.replace(/ (request|response)$/, "");
+      const system = packetSystemColors[name];
+      const error = packetErrorColors[name];
+      let color = system || error;
+      if (!color) color = packetShade(command, response ? packetResponseGreens : packetRequestBlues);
+      return { color: color, opacity: 1 };
+    }
+
+    function drawPacketTypes() {
+      const all = (data.packet_types || []).filter((row) => row.count);
+      const node = document.getElementById("packets");
+      if (!charts.packets || !node) return;
+      node.style.height = "460px";
+      charts.packets.resize();
+      const total = all.reduce((sum, row) => sum + row.count, 0);
+      const kind = scale() === "log" ? "log" : "value";
+      const selected = {};
+      all.forEach((row) => { selected[row.name] = !hiddenPacketBars.has(row.name); });
+      const names = all.map((row) => row.name);
+      charts.packets.setOption({
+        tooltip: {
+          trigger: "axis",
+          axisPointer: { type: "shadow" },
+          formatter: (items) => {
+            const item = (items || []).find((entry) => entry.value != null && entry.value !== "-");
+            if (!item) return "";
+            const pct = total ? (100 * item.value / total).toFixed(1) : "0";
+            return item.seriesName + "<br/>" + Number(item.value).toLocaleString() + " packets (" + pct + "%)";
+          }
+        },
+        legend: { type: "scroll", top: 0, data: names, selected: selected },
+        grid: { left: 56, right: 16, top: 48, bottom: 118 },
+        xAxis: {
+          type: "category",
+          data: names,
+          axisLabel: { rotate: 55, interval: 0, fontSize: 11 }
+        },
+        yAxis: { type: kind, name: "packets", min: kind === "log" ? 0.5 : null },
+        series: all.map((row, index) => ({
+          name: row.name,
+          type: "bar",
+          barGap: "-100%",
+          data: names.map((name, nameIndex) => (
+            nameIndex === index && !hiddenPacketBars.has(row.name) ? row.count : "-"
+          )),
+          itemStyle: packetBarStyle(row.name),
+          barMaxWidth: 36
+        }))
+      }, true);
+      if (!charts.packets.__packetLegend) {
+        charts.packets.__packetLegend = true;
+        charts.packets.on("legendselectchanged", (event) => {
+          if (charts.packets.__drawingPackets) return;
+          hiddenPacketBars.clear();
+          Object.keys(event.selected).forEach((name) => {
+            if (!event.selected[name]) hiddenPacketBars.add(name);
+          });
+          charts.packets.__drawingPackets = true;
+          drawPacketTypes();
+          charts.packets.__drawingPackets = false;
+        });
+      }
+    }
+
     function drawClients() {
       const ips = data.by_requester_ip || [];
       const connections = data.by_connection || [];
@@ -904,6 +1086,59 @@
       return best > 0 ? name : "—";
     }
 
+    function gapPlace(row, atStart) {
+      if (!row.at_edge) return "Inside";
+      return atStart ? "Start of file" : "End of file";
+    }
+
+    function gapTotal(name, rows) {
+      const total = data[name + "_total"];
+      return total == null ? (rows || []).length : total;
+    }
+
+    function drawGaps() {
+      const requests = data.missing_response || [];
+      const replies = data.missing_request || [];
+      const requestTab = document.querySelector("[data-gap-tab='request']");
+      const responseTab = document.querySelector("[data-gap-tab='response']");
+      if (requestTab) requestTab.textContent = "Requests missing a response (" + gapTotal("missing_response", requests) + ")";
+      if (responseTab) responseTab.textContent = "Responses missing a request (" + gapTotal("missing_request", replies) + ")";
+      const atStart = gapTab === "response";
+      const items = atStart ? replies : requests;
+      const total = atStart ? gapTotal("missing_request", replies) : gapTotal("missing_response", requests);
+      const note = document.getElementById("gap-note");
+      if (note) {
+        const sample = "The table is a sample of " + items.length + " out of " + total + ". Rows from inside the capture come first. ";
+        note.textContent = atStart
+          ? sample + "Start of file means the reply arrived inside the longest completed round trip of the opening, so the request may have been sent before recording started."
+          : sample + "End of file means the request is still inside the longest completed round trip of the close, so the reply may have been cut off. Those rows are false positives for a call Couchbase never answered.";
+      }
+      table(
+        "gaps",
+        [
+          "Seconds",
+          term("Left", "Seconds of capture still remaining after this packet. A small Left means the file was about to end."),
+          term("Stream", "The TCP connection number. Opaque is only unique inside this stream."),
+          "Opaque",
+          "Opcode",
+          "Document id",
+          term("Where", "Inside is away from the open and the close. End of file and Start of file are inside the in-flight window, so the missing half of the call may be the capture cutting it off."),
+          "Stake"
+        ],
+        items.map((row) => [
+          cellText(row.seconds),
+          cellText(row.seconds_left),
+          escapeHtml(cellText(row.stream)),
+          copyCell("opaque", row.opaque),
+          escapeHtml(cellText(row.opcode)),
+          copyCell("key", row.key),
+          gapPlace(row, atStart),
+          row.seconds == null ? "" : '<button type="button" class="set-stake" data-seconds="' + row.seconds + '">Set Stake</button>'
+        ])
+      );
+      markStakeButtons();
+    }
+
     function drawInterest() {
       const items = data.interest_stakes || [];
       table(
@@ -945,7 +1180,51 @@
       return String(value == null ? "" : value)
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;");
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function wiresharkFilter(kind, value) {
+      if (kind === "opaque") return "couchbase && couchbase.opaque == " + value;
+      return 'couchbase && couchbase.key.logical_key == "' + String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"') + '"';
+    }
+
+    const copyIcon = '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    function copyCell(kind, value) {
+      if (value == null || value === "" || value === "—") return "—";
+      const filter = wiresharkFilter(kind, value);
+      const button = '<button type="button" class="copy-filter" data-filter="' + escapeHtml(filter) + '" aria-label="Copy Wireshark filter" title="Copy Wireshark filter">' + copyIcon + "</button>";
+      const inline = kind === "opaque" ? " copy-inline" : "";
+      return '<span class="copy-pair' + inline + '">' + escapeHtml(value) + button + "</span>";
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById("toast");
+      if (!toast) return;
+      toast.textContent = message;
+      toast.classList.add("show");
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => toast.classList.remove("show"), 2400);
+    }
+
+    function copyFilter(filter) {
+      const done = () => showToast("Copied " + filter);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(filter).then(done).catch(() => copyFilterFallback(filter, done));
+        return;
+      }
+      copyFilterFallback(filter, done);
+    }
+
+    function copyFilterFallback(filter, done) {
+      const area = document.createElement("textarea");
+      area.value = filter;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+      done();
     }
 
     function cellText(value) {
@@ -988,6 +1267,8 @@
 
     function drawFixed() {
       drawClients();
+      drawPacketTypes();
+      drawGaps();
       const ops = (data.by_opcode || []).filter((row) => row.p99_ms != null);
       charts.opcodes.setOption({
         color: palette,
@@ -1014,7 +1295,7 @@
         yAxis: { type: yType(), name: "calls" },
         series: [{ type: "bar", data: bands.map((row) => yValue(row.count)), itemStyle: { color: "#24576e" } }]
       }, true);
-      table("top-asked", [term("Document id", "The Couchbase key the operation named."), "Requests", term("Lost responses", "Requests for that document whose replies are not in this file.")], (data.top_requested || []).map((row) => [row.key, row.count, row.unanswered]));
+      table("top-asked", [term("Document id", "The Couchbase key the operation named."), "Requests", term("Lost responses", "Requests for that document whose replies are not in this file.")], (data.top_requested || []).map((row) => [copyCell("key", row.key), row.count, row.unanswered]));
       table("top-slow", [
         term("Document id", "The Couchbase key the operation named."),
         term("Stream", "The TCP connection number. Opaque is only unique inside this stream."),
@@ -1024,9 +1305,9 @@
         term("Body bytes", "The larger of the request and reply total body lengths for this call. Extras, key, and value."),
         "Stake"
       ], (data.top_slowest || []).map((row) => [
-        row.key,
+        copyCell("key", row.key),
         cellText(row.stream),
-        cellText(row.opaque),
+        copyCell("opaque", row.opaque),
         cellText(row.time_ms),
         cellText(row.seconds),
         cellText(row.body_bytes),
@@ -1077,7 +1358,7 @@
     }
 
     function boot() {
-      ["spread", "mix", "rtt", "tail", "range", "issues", "body", "ips", "opcodes"].forEach((id) => {
+      ["spread", "mix", "rtt", "tail", "range", "issues", "body", "ips", "opcodes", "packets"].forEach((id) => {
         charts[id] = echarts.init(document.getElementById(id));
       });
       echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body]);
@@ -1088,6 +1369,15 @@
             item.classList.toggle("on", item === button);
           });
           drawClients();
+        });
+      });
+      document.querySelectorAll("[data-gap-tab]").forEach((button) => {
+        button.addEventListener("click", () => {
+          gapTab = button.dataset.gapTab;
+          document.querySelectorAll("[data-gap-tab]").forEach((item) => {
+            item.classList.toggle("on", item === button);
+          });
+          drawGaps();
         });
       });
       window.addEventListener("resize", () => Object.values(charts).forEach((chart) => chart.resize()));
@@ -1101,12 +1391,17 @@
           charts[id].dispatchAction({ type: "dataZoom", start: 0, end: 100 });
         });
       });
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest(".copy-filter");
+        if (!button) return;
+        copyFilter(button.dataset.filter || "");
+      });
       document.getElementById("remove-stake").addEventListener("click", () => {
         stakes = [];
         applyStakes();
         markStakeButtons();
       });
-      ["top-slow", "interest"].forEach((id) => {
+      ["top-slow", "interest", "gaps"].forEach((id) => {
         const box = document.getElementById(id);
         if (!box) return;
         box.addEventListener("click", (event) => {
@@ -1156,6 +1451,14 @@
       document.addEventListener("keydown", (event) => {
         if (event.key === "Escape") closeLightbox();
       });
+      const server = data.server || {};
+      const host = server.host || "";
+      const ip = server.ip || "";
+      const who = host && ip && host !== ip ? host + " (" + ip + ")" : (host || ip);
+      const heading = who ? "Couchbase capture: " + who : "Couchbase capture";
+      document.title = heading;
+      const title = document.querySelector("h1");
+      if (title) title.textContent = heading;
       const seconds = data.capture_seconds || 0;
       document.getElementById("bucket").value = seconds > 180 ? "10" : "1";
       (data.interest_stakes || []).forEach((item) => takeStake(item.seconds));

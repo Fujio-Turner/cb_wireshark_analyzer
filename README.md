@@ -17,9 +17,9 @@ One run writes two things, side by side in the output folder.
 
 **The note, `summary.md`.** A local Qwen model writes this from the counts: what the capture did, the slow tail, the missing replies, and the next questions. `--no-ai` skips the model and writes the counted note instead. A model run also keeps that counted text as `summary.computed.md`.
 
-**The chart page, `charts.json` and `index.html`.** `charts.json` is the analysis: one-, five-, and ten-second buckets, percentiles, opcodes, body size, TCP loss, client connections, and the points of interest. `index.html` draws that file. The time charts share a crosshair. A stake marks the same second on every chart, so opcode mix, response time, missing replies, TCP loss, and body size can be read together. Open the folder with a local web server. A `file://` page cannot read `charts.json`.
+**The chart page, `charts.json` and `index.html`.** `charts.json` is the analysis: one-, five-, and ten-second buckets, percentiles, opcodes, body size, TCP loss, client connections, and the points of interest. `index.html` draws that file. The heading names the Couchbase server. The time charts share a crosshair. A stake marks the same second on every chart, so opcode mix, response time, missing replies, TCP loss, and body size can be read together. Packets on port 11210 are bars by command, request, and response. A copy icon next to a document id or an opaque puts the Wireshark filter on the clipboard. Open the folder with a local web server. A `file://` page cannot read `charts.json`.
 
-Python owns every number in both. The model does not invent the counts.
+Python owns every number in both. The model does not invent the counts. Only packets from or to TCP port 11210 are counted. That is `tcp.port == 11210`, both directions. A capture limited to `dst port 11210` has the requests and not the replies.
 
 ![From dump to note](images/pipeline.svg)
 
@@ -188,7 +188,7 @@ python3 -m pytest -q
 
 ## Wireshark filters
 
-[CB_WIRESHARK.md](CB_WIRESHARK.md) lists the display filters for a document id, one request and its reply, opcodes, status, large bodies, and TCP loss on port 11210. It walks through tracing a request that never got a response, including the false positives at the end of the file. It also explains `couchbase && tcp.time_delta > 0.05` and how to add that gap as a column in the packet list.
+[CB_WIRESHARK.md](CB_WIRESHARK.md) lists the display filters for a document id, one request and its reply, opcodes, status, large bodies, and TCP loss on port 11210. It walks through tracing a request that never got a response, including the false positives at the end of the file. It also explains `couchbase && tcp.time_delta > 0.05`, how to add that gap as a column, and why a durability level that waits for disk slows the reply.
 
 ## Release Notes
 

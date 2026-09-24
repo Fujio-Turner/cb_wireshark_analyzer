@@ -85,6 +85,20 @@ def test_same_size_files_group_together_and_different_sizes_do_not(tmp_path):
     assert {path.name for path in bundled} == {"a.pcap", "b.pcap"}
 
 
+def test_packet_kind_splits_couchbase_and_tcp():
+    assert ac.packet_kind(True, True, False, False, "Get", False, 100) == "Lost segment"
+    assert ac.packet_kind(True, False, False, False, "Get", False, 100) == "Get request"
+    assert ac.packet_kind(True, False, False, False, "Set", True, 20) == "Set response"
+    assert ac.packet_kind(False, False, False, False, "", False, 0) == "TCP ACK"
+    assert ac.packet_kind(False, False, False, False, "", False, 1460) == "TCP data segment"
+
+
+def test_kv_port_is_either_side():
+    assert ac.on_kv_port("4000", "11210")
+    assert ac.on_kv_port("11210", "4000")
+    assert not ac.on_kv_port("80", "443")
+
+
 def test_gap_flags_share_the_couchbase_row_and_other_ports_drop():
     line = "\t".join(
         ["20", "4.0", "1", "10.0.0.3", "11210", "10.0.0.2", "4000", "0x18", "0x00", "0x3", "", "0x0", "24", "1", "", "1"]

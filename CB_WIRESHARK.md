@@ -6,7 +6,7 @@ Paste these into the Wireshark display-filter bar. Combine them with `&&`. The a
 tcp.port == 11210
 ```
 
-`tcp.port` is either side. A request has destination 11210. The reply has source 11210. A capture filter of `dst port 11210` keeps the requests and drops the replies, so the report can show no round trips. Use `port 11210` when recording if you want both directions.
+`tcp.port` is either side. A request has destination 11210. The reply has source 11210. A capture filter of `dst port 11210` keeps the requests and drops the replies, so the report can show no round trips. Use `port 11210` when recording if you want both directions. The tcpdump command, including the other Couchbase service ports, is in [CB_TCPDUMP.md](CB_TCPDUMP.md).
 
 The chart page’s slow-call table gives the `tcp.stream` and `couchbase.opaque` for each slow row. Those two fields together are one call.
 

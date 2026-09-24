@@ -1,5 +1,15 @@
 # Release notes
 
+## 0.6.0
+
+Clients at fleet scale, a formatted report, and a note that can go to your own API.
+
+- **Clients** is its own section. The pie is the eight clients with the most missing replies, then one slice for every other client. Names are in a legend. The bar counts clients in six unanswered-percent bands, so the chart stays the same size for thousands of clients. One address has its own port pie. The old Requests by client IP chart is gone.
+- **Report / Questions** opens `summary.html`, which formats `summary.md` in the same header and colors as the charts. `summary.computed.md` is a second tab when a model run wrote it. Next questions stay under the button.
+- The section pills stay on the left of the bar. On the right, plain links open the note and `charts.json`. The report page uses the same split: note tabs on the left, `charts.json` on the right.
+- Under **Glossary**, **Data source** links to `charts.json` and says what that file holds. Python writes it before a model runs.
+- The note can go to an OpenAI-compatible chat API as well as local Ollama. Set `ai.provider` to `openai`, or pass `--provider openai --api-base … --model …`. The key belongs in `AI_API_KEY` or `OPENAI_API_KEY`, not in `config.json`.
+
 ## 0.5.0
 
 The chart page is grouped, and the missing-call tables are spaced across the capture.

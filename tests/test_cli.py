@@ -86,12 +86,19 @@ def test_no_ai_writes_the_counted_note(tmp_path):
     assert (out / "facts.json").is_file()
     assert (out / "charts.json").is_file()
     assert (out / "index.html").is_file()
+    assert (out / "summary.html").is_file()
     assert (out / "index.original.html").is_file()
     page = (out / "index.html").read_text()
     assert "vendor/echarts.min.js" in page
     assert "https://github.com/Fujio-Turner/cb_wireshark_analyzer" in page
     assert f">v{ac.project_version()}<" in page
     assert 'id="timings"' in page
+    assert 'id="data-source"' in page
+    assert 'href="charts.json" target="_blank"' in page
+    assert 'href="summary.html"' in page
+    report = (out / "summary.html").read_text()
+    assert "summary.md" in report
+    assert 'id="note"' in report
     assert "jsdelivr" not in page
     assert (out / "vendor" / "echarts.min.js").is_file()
     assert "matched" in (out / "summary.md").read_text()
@@ -100,7 +107,100 @@ def test_no_ai_writes_the_counted_note(tmp_path):
     assert facts["counts"]["unanswered_requests"] == 0
 
 
+def test_openai_request_uses_chat_completions_and_leaves_the_key_out_of_the_body():
+    url, payload, headers = ac.model_request(
+        "counts",
+        provider="openai",
+        base_url="https://example.test/v1/",
+        model="remote-model",
+        system="Be brief.",
+        api_key="secret-value",
+    )
+    assert url == "https://example.test/v1/chat/completions"
+    assert payload["messages"][0]["content"] == "Be brief."
+    assert "secret-value" not in json.dumps(payload)
+    assert headers["Authorization"] == "Bearer secret-value"
+    text = ac.message_text(
+        {"choices": [{"message": {"content": [{"type": "text", "text": "hello "}, {"type": "text", "text": "there"}]}}]},
+        "openai",
+    )
+    assert text == "hello there"
+    ollama_url, ollama_payload, _headers = ac.model_request(
+        "counts",
+        provider="ollama",
+        base_url="http://127.0.0.1:11434/",
+        model="qwen",
+        system=None,
+        api_key="",
+    )
+    assert ollama_url == "http://127.0.0.1:11434/api/chat"
+    assert ollama_payload["think"] is False
+
+
+def test_remote_openai_requires_an_api_key():
+    try:
+        ac.call_model(
+            "hi",
+            provider="openai",
+            base_url="https://api.openai.com/v1",
+            model="remote-model",
+            timeout=1,
+            api_key="",
+        )
+    except SystemExit as exc:
+        assert "AI_API_KEY" in str(exc)
+    else:
+        raise AssertionError("a remote API without a key should stop")
+
+
+def test_openai_config_reads_the_key_from_the_environment(tmp_path, monkeypatch):
+    for name in ("OLLAMA_BASE_URL", "AI_PROVIDER", "AI_BASE_URL", "AI_MODEL", "AI_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    cfg = tmp_path / "config.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "ai": {
+                    "provider": "openai",
+                    "base_url": "https://example.test/v1",
+                    "model": "remote-model",
+                    "timeout_seconds": 30,
+                },
+                "ollama": {"model": "local-model", "base_url": "http://127.0.0.1:11434"},
+            }
+        )
+    )
+    monkeypatch.setenv("AI_API_KEY", "secret-value")
+    args = ac.parse_args(["--config", str(cfg), "--reqs", "reqs.tsv", "--from-tsv"])
+    ac.apply_config(args)
+    assert args.provider == "openai"
+    assert args.model == "remote-model"
+    assert args.api_base == "https://example.test/v1"
+    assert args.api_key == "secret-value"
+    assert args.timeout == 30
+    args = ac.parse_args(
+        [
+            "--config",
+            str(cfg),
+            "--reqs",
+            "reqs.tsv",
+            "--from-tsv",
+            "--provider",
+            "openai",
+            "--api-base",
+            "https://cli.test/v1",
+            "--model",
+            "cli-model",
+        ]
+    )
+    ac.apply_config(args)
+    assert args.model == "cli-model"
+    assert args.api_base == "https://cli.test/v1"
+
+
 def test_config_then_environment_then_cli(tmp_path, monkeypatch):
+    for name in ("AI_PROVIDER", "AI_BASE_URL", "AI_MODEL", "AI_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     cfg = tmp_path / "config.json"
     cfg.write_text(
         json.dumps(

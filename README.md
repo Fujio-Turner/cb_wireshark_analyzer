@@ -15,9 +15,9 @@ The dump has the packets. It does not line those trends up.
 
 One run writes two things, side by side in the output folder.
 
-**The note, `summary.md`.** A local Qwen model writes this from the counts: what the capture did, the slow tail, the missing replies, and the next questions. `--no-ai` skips the model and writes the counted note instead. A model run also keeps that counted text as `summary.computed.md`.
+**The note, `summary.md`.** A model writes this from the counts: what the capture did, the slow tail, the missing replies, and the next questions. The default is local Ollama with Qwen. The same brief can go to an OpenAI-compatible API instead. `--no-ai` skips the model and writes the counted note. A model run also keeps that counted text as `summary.computed.md`.
 
-**The chart page, `charts.json` and `index.html`.** `charts.json` is the analysis: one-, five-, and ten-second buckets, percentiles, opcodes, body size, TCP loss, client connections, and the points of interest. `index.html` draws that file. The heading names the Couchbase server. A bar under the title jumps to Timings, Operations, Packets, Documents, Marks, Questions, and Glossary. Chips under each heading jump to that chart, and a dotted word jumps to its glossary entry. The time charts share a crosshair. A stake marks the same second on every chart, so opcode mix, response time, missing replies, TCP loss, and body size can be read together. Packets on port 11210 are bars by command, request, and response. A copy icon next to a document id or an opaque puts the Wireshark filter on the clipboard. Open the folder with a local web server. A `file://` page cannot read `charts.json`. The previous single-column page is `index.original.html`.
+**The chart page, `charts.json` and `index.html`.** `charts.json` is the analysis: one-, five-, and ten-second buckets, percentiles, opcodes, body size, TCP loss, client connections, and the points of interest. `index.html` draws that file. The heading names the Couchbase server. A bar under the title jumps to Timings, Operations, Packets, Clients, Documents, Marks, Report, and Glossary. The section pills stay on the left. On the right of that same bar, plain links open `summary.md`, `summary.computed.md` when that file is present, and `charts.json`. **summary.md** opens `summary.html`, which formats the note in the same colors and type as the chart page. Chips under each heading jump to that chart, and a dotted word jumps to its glossary entry. The time charts share a crosshair. A stake marks the same second on every chart, so opcode mix, response time, missing replies, TCP loss, and body size can be read together. Packets on port 11210 are bars by command, request, and response. A copy icon next to a document id or an opaque puts the Wireshark filter on the clipboard. Open the folder with a local web server. A `file://` page cannot read `charts.json`. The previous single-column page is `index.original.html`.
 
 Python owns every number in both. The model does not invent the counts. Only packets from or to TCP port 11210 are counted. That is `tcp.port == 11210`, both directions. A capture limited to `dst port 11210` has the requests and not the replies.
 
@@ -47,7 +47,7 @@ Bars are the largest Couchbase body in that second, one document in and one docu
 
 ## Getting Started
 
-You need Python 3.11 or newer and tshark (from Wireshark). The chart page does not need a network. The model note needs Ollama already running.
+You need Python 3.11 or newer and tshark (from Wireshark). The chart page does not need a network. The model note needs either Ollama on this machine, or an OpenAI-compatible API you can reach from it.
 
 ```bash
 git clone https://github.com/Fujio-Turner/cb_wireshark_analyzer.git
@@ -61,7 +61,7 @@ cd orphan-report
 python3 -m http.server
 ```
 
-Open `http://127.0.0.1:8000/`. Add the local model by dropping `--no-ai` once Ollama is listening. The virtual-machine section and the Docker section below have the full install steps. To jump from a slow row back to Wireshark, use the stream and opaque with the filters in [CB_WIRESHARK.md](CB_WIRESHARK.md).
+Open `http://127.0.0.1:8000/`. Drop `--no-ai` to add the note. With the default config that calls Ollama. To send the same brief to your own API, set `ai.provider` to `openai` as shown below. The virtual-machine section and the Docker section have the full install steps. To jump from a slow row back to Wireshark, use the stream and opaque with the filters in [CB_WIRESHARK.md](CB_WIRESHARK.md).
 
 ## Config
 
@@ -80,6 +80,28 @@ Open `http://127.0.0.1:8000/`. Add the local model by dropping `--no-ai` once Ol
 ```
 
 An empty `tshark` or `output_dir` means "detect it" and "write `orphan-report/` next to the input". A flag on the command line wins over the environment, which wins over this file. `OLLAMA_BASE_URL` and `TSHARK` are the environment names. `qwen3.8-notes:latest` is the other local tag if you want it in `model`.
+
+The default model is Ollama on this machine. To send the counted brief to an API off the laptop, add an `ai` object. The service must accept `POST {base_url}/chat/completions` in the OpenAI chat shape. OpenAI, OpenRouter, and a company gateway that speaks that API all fit. Python still produces every number. The API only writes the note.
+
+```json
+{
+  "ai": {
+    "provider": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-4.1-mini",
+    "timeout_seconds": 600
+  }
+}
+```
+
+Put the key in the environment, not in `config.json`:
+
+```bash
+export AI_API_KEY="your key"
+python3 analyze_capture.py /path/to/capture.pcap -o ./orphan-report
+```
+
+`OPENAI_API_KEY` is accepted as well. `AI_PROVIDER`, `AI_BASE_URL`, and `AI_MODEL` override the file. The same switch on the command line is `--provider openai --api-base https://api.openai.com/v1 --model gpt-4.1-mini`. A local OpenAI-compatible server on `localhost` can omit the key. Any other host needs one.
 
 ## Run on a virtual machine
 
@@ -108,7 +130,7 @@ python3 analyze_capture.py /path/to/capture.pcap -o ./orphan-report
 python3 -m pytest -q
 ```
 
-Install Ollama on the VM if the note should be written there, or point `ollama.base_url` at a machine that already has `qwen3.8:27b-mlx`. `--dry-run` and `--no-ai` do not need the model.
+Install Ollama on the VM if the note should be written there, or point `ollama.base_url` at a machine that already has `qwen3.8:27b-mlx`. To use an API instead, set `ai.provider` to `openai` and export `AI_API_KEY`. `--dry-run` and `--no-ai` do not need the model.
 
 A `.tsv` or `.csv` field export works too. Request rows are 10 columns (frame, time, tcp.stream, source, source port, destination, destination port, opcode, opaque, key). Response rows are 6 (frame, time, tcp.stream, opcode, opaque, status). A header row that names those fields also works. When a pcap sits next to `reqs.tsv`, the pcap is used, because that export leaves `couchbase.key` empty on collections and can join several messages into one row. `--from-tsv` keeps the spreadsheet files.
 
@@ -138,15 +160,15 @@ docker compose run --rm analyze --no-ai /captures/your.pcap -o /out
 docker compose run --rm analyze /captures/your.pcap -o /out
 ```
 
-`CAPTURE_DIR` and `OUT_DIR` change the mounts. `OLLAMA_BASE_URL` changes where the container sends the note request. From a Linux VM, `host.docker.internal` is added by Compose (`host-gateway`). Start Ollama on the host before the last command.
+`CAPTURE_DIR` and `OUT_DIR` change the mounts. `OLLAMA_BASE_URL` changes where the container sends a local Ollama request. `AI_PROVIDER`, `AI_BASE_URL`, `AI_MODEL`, and `AI_API_KEY` send the note to an OpenAI-compatible API instead. From a Linux VM, `host.docker.internal` is added by Compose (`host-gateway`). Start Ollama on the host before the last command when you are not using that API.
 
 ## Charts
 
-Every run writes `charts.json` and `index.html` next to the note. The page is grouped. **Timings** opens with latency tiles: median, p90, p95, p99, max, and how many matched calls were at least 100 ms or 250 ms. **Operations** is opcode mix and p99. **Packets** is the port-11210 bars, lost responses, client IP, and the missing-call tabs. **Documents** is body length and the ten-id tables. **Marks** is the points of interest. **Questions** and **Glossary** follow. On a wide window, related charts sit side by side. A side panel switches the time bucket (1, 5, or 10 seconds) and switches every numeric axis between linear and log. The time charts share one crosshair. Double-click drops a stake on that second. The stake stays when a legend series is hidden. Each chart has an expand control that opens it on a black transparent overlay and keeps the current zoom and stakes.
+Every run writes `charts.json` and `index.html` next to the note. The page is grouped. **Timings** opens with latency tiles: median, p90, p95, p99, max, and how many matched calls were at least 100 ms or 250 ms. **Operations** is opcode mix and p99. **Packets** is the port-11210 bars, lost responses, and the missing-call tabs. **Clients** is the fleet and one address. The pie is the eight clients with the most missing replies, then one slice for every other client. The bar counts clients in six unanswered-percent bands, so it stays the same size for thousands of clients. One address and its connections are below that. **Documents** is body length and the ten-id tables. **Marks** is the points of interest. **Report / Questions** opens the formatted note and lists the next questions. **Glossary** follows. On a wide window, related charts sit side by side. A side panel switches the time bucket (1, 5, or 10 seconds) and switches every numeric axis between linear and log. The time charts share one crosshair. Double-click drops a stake on that second. The stake stays when a legend series is hidden. Each chart has an expand control that opens it on a black transparent overlay and keeps the current zoom and stakes.
 
 The ten slowest matched calls are listed with the response time, the second the request was sent, and the body size. **Set Stake** marks that second on the other charts, which is how a single slow call is placed back into the trend. Requests with no response, and responses with no request, each show up to ten rows spaced across the capture rather than the first ten. The tab label is the full count. Every unanswered request is in `orphans.tsv`. **Next questions / steps** is written from the same counts as the note.
 
-The same page also has the latency histogram, round-trip percentiles, a chart of median and p99 with dashed TCP-loss and retry lines, a min-to-max candle, p99 by opcode, and the client chart. Client IP is the first tab. IP and source port is the second.
+The same page also has the latency histogram, round-trip percentiles, a chart of median and p99 with dashed TCP-loss and retry lines, a min-to-max candle, and p99 by opcode. Client addresses are in **Clients**.
 
 From the report folder:
 
@@ -168,8 +190,9 @@ python3 analyze_capture.py --dry-run /path/to/capture.pcap
 
 | File | What it is |
 |---|---|
-| `summary.md` | The note. The model writes it unless `--no-ai` is set. |
-| `summary.computed.md` | The counted note. Written on a model run, next to the model text. |
+| `summary.md` | The note. The model writes it unless `--no-ai` is set. `summary.html` renders it. |
+| `summary.computed.md` | The counted note. Written on a model run, next to the model text. The report page shows it when the file is there. |
+| `summary.html` | The note, formatted with the same header and colors as the chart page. |
 | `facts.json` | The counts the note is built from. |
 | `charts.json` | One-, five-, and ten-second aggregates for the chart page. |
 | `index.html` | ECharts page, grouped with a section bar. Open it from a local server so it can read `charts.json`. |
@@ -201,13 +224,13 @@ python3 -m pytest -q
 
 **The chart page is blank, or it says it could not read `charts.json`.** Open the report through a local server (`python3 -m http.server` in the report folder). A browser will not let a `file://` page read `charts.json`.
 
-**The model note was not written.** Ollama has to be listening at `ollama.base_url`, and the `model` tag has to be pulled. `--no-ai` skips the model and still writes the counted `summary.md`. If the model call fails, that counted note is what gets saved.
+**The model note was not written.** For the default, Ollama has to be listening at `ollama.base_url`, and the `model` tag has to be pulled. For `--provider openai`, the base URL has to answer `/chat/completions`, and `AI_API_KEY` or `OPENAI_API_KEY` has to be set when the host is not local. `--no-ai` skips the model and still writes the counted `summary.md`. If the model call fails, that counted note is what gets saved.
 
-**Docker cannot reach the model.** Ollama stays on the host. Compose uses `host.docker.internal`. Start Ollama on the host before `docker compose run analyze` without `--no-ai`.
+**Docker cannot reach the model.** Ollama stays on the host. Compose uses `host.docker.internal`. Start Ollama on the host before `docker compose run analyze` without `--no-ai`. For a remote API, pass `AI_PROVIDER`, `AI_BASE_URL`, `AI_MODEL`, and `AI_API_KEY` into the `analyze` service.
 
 **A `.tsv` next to a pcap was ignored.** When both are in the folder, the pcap is used. `--from-tsv` keeps the spreadsheet files. Collection document ids are `couchbase.key.logical_key`. An export of `couchbase.key` is often empty.
 
-**The client IP chart is one slice.** Every request in that capture came from one address. The **IP : port** tab splits that client by source port.
+**One client sent every request.** **Clients** says so, and the bar and pie split that address by connection.
 
 **Find that call in Wireshark.** The slow-call table has the TCP stream and the opaque. [CB_WIRESHARK.md](CB_WIRESHARK.md) has the filter, plus filters for a document id such as `couchbase.key.logical_key == "invoice:12345"`.
 

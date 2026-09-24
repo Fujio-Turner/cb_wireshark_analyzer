@@ -256,7 +256,7 @@ A reply at the opening of the capture, with no request in front of it, is the re
 
 A reply later in the file, still with no request, is a different case. Couchbase did answer. The request was on the wire. The capture kept the reply and lost the request packet.
 
-The request and the reply travel in opposite directions. A hole in the client-to-server direction removes the request from the file. The reply comes back server-to-client and can still be recorded. In Wireshark that reply is a response magic (`0x81` or `0x18`) whose `tcp.stream` and `couchbase.opaque` never appear on a request. The chart page lists those rows under **Responses missing a request**, and marks **Start of file** only for the ones inside the opening in-flight window. **Inside** means the reply is later than that window.
+The request and the reply travel in opposite directions. A hole in the client-to-server direction removes the request from the file. The reply comes back server-to-client and can still be recorded. In Wireshark that reply is a response magic (`0x81` or `0x18`) whose `tcp.stream` and `couchbase.opaque` never appear on a request. The chart page shows up to ten of those rows under **Responses missing a request**, spaced across the capture rather than taken from the start of the file. **Start of file** is marked only for the ones inside the opening in-flight window. **Inside** means the reply is later than that window. The same limit applies to **Requests missing a response**. Every unanswered request is in `orphans.tsv` next to the page.
 
 The same opaque on a request that appears after that reply is a new call. Pairing does not attach the earlier reply to the later request, so the reply stays a reply with no request.
 

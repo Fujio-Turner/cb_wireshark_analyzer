@@ -21,6 +21,19 @@ def msg(time, stream="0", opaque="0x1", opcode="0x00", key="doc", src="10.0.0.2"
     }
 
 
+def test_missing_rows_are_spaced_across_the_capture():
+    requests = [msg(float(i), opaque=f"0x{i:x}", key=f"k{i}") for i in range(1, 31)]
+    paired = ac.pair_messages(requests, [])
+    charts = ac.build_charts(requests, paired, [], ["11210"], 40.0)
+    rows = charts["missing_response"]
+    assert charts["missing_response_total"] == 30
+    assert len(rows) == 10
+    assert rows[0]["key"] == "k1"
+    assert rows[-1]["key"] == "k30"
+    assert rows[0]["seconds"] < rows[4]["seconds"] < rows[-1]["seconds"]
+    assert all(not row["at_edge"] for row in rows)
+
+
 def test_buckets_percentiles_and_top_keys():
     requests = [
         msg(0.2, opaque="0x1", key="widget::hot", src="10.0.0.2"),

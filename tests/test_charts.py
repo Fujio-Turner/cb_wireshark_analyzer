@@ -21,11 +21,33 @@ def msg(time, stream="0", opaque="0x1", opcode="0x00", key="doc", src="10.0.0.2"
     }
 
 
+def test_dcp_mutation_is_not_a_lost_response():
+    mutation = msg(1.0, opaque="0x1", opcode="0x57", key="doc::a")
+    paired = ac.pair_messages([mutation], [])
+    assert paired["unanswered"] == []
+    assert len(paired["no_reply"]) == 1
+    charts = ac.build_charts([mutation], paired, [], ["11210"], 5.0)
+    row = charts["by_opcode"][0]
+    assert row["expects_reply"] is False
+    assert row["unanswered"] == 0
+    assert charts["missing_response_total"] == 0
+    assert charts["traffic"]["cluster"]["no_reply"] == 1
+    assert charts["traffic"]["cluster"]["unanswered"] == 0
+
+
 def test_node_port_and_dcp_are_cluster_and_an_app_port_is_sdk():
     assert ac.traffic_role("11210", "11210", "0x01") == "cluster"
     assert ac.traffic_role("4000", "11210", "0x57") == "cluster"
     assert ac.traffic_role("4000", "11210", "0xa2") == "cluster"
     assert ac.traffic_role("4000", "11210", "0x00") == "sdk"
+    assert ac.traffic_role("4000", "11210", "0x48") == "cluster"
+    assert ac.traffic_role("4000", "11210", "0x10", "vbucket-seqno") == "cluster"
+    assert ac.traffic_role("4000", "11210", "0x10", "connections") == "sdk"
+    assert ac.expects_reply("0x56") is False
+    assert ac.expects_reply("0x56", snapshot_ack=True) is True
+    assert ac.expects_reply("0x57") is False
+    assert ac.expects_reply("0x5c") is True
+    assert ac.expects_reply("0x5d") is False
     app = msg(0.2, opaque="0x1")
     node = msg(1.0, opaque="0x9", opcode="0x57", src="10.0.0.9")
     node["sport"] = "11210"
@@ -68,10 +90,48 @@ def test_missing_rows_are_spaced_across_the_capture():
     rows = charts["missing_response"]
     assert charts["missing_response_total"] == 30
     assert len(rows) == 10
-    assert rows[0]["key"] == "k1"
+    assert rows[0]["key"] == "k2"
     assert rows[-1]["key"] == "k30"
+    assert rows[0]["where"] == "inside"
     assert rows[0]["seconds"] < rows[4]["seconds"] < rows[-1]["seconds"]
     assert all(not row["at_edge"] for row in rows)
+
+
+def test_missing_calls_are_listed_sdk_then_cluster():
+    app = msg(1.0, opaque="0x1", opcode="0x00", key="app::gone")
+    node = msg(1.0, opaque="0x2", opcode="0xa2", key="cluster::gone", src="10.0.0.9")
+    done = msg(2.0, opaque="0x3", opcode="0x00", key="ok")
+    early = msg(0.01, opaque="0x4", opcode="0xa2", kind="res", src="10.0.0.9")
+    paired = ac.pair_messages([app, node, done], [msg(2.05, opaque="0x3", kind="res"), early])
+    charts = ac.build_charts([app, node, done], paired, [], ["11210"], 5.0)
+    assert charts["missing_response_sdk_total"] == 1
+    assert charts["missing_response_cluster_total"] == 1
+    assert charts["missing_response_sdk"][0]["key"] == "app::gone"
+    assert charts["missing_response_cluster"][0]["key"] == "cluster::gone"
+    assert charts["missing_request_sdk_total"] == 0
+    assert charts["missing_request_cluster_total"] == 1
+
+
+def test_sdk_and_cluster_speeds_stay_on_their_own_series():
+    app = msg(1.0, opaque="0x1", opcode="0x00", key="app::doc")
+    replication = msg(1.0, opaque="0x2", opcode="0xa2", key="cluster::doc", src="10.0.0.9")
+    opening = msg(0.01, opaque="0x3", opcode="0xa2", key="open::key", src="10.0.0.9")
+    responses = [
+        msg(1.002, opaque="0x1", kind="res"),
+        msg(1.035, opaque="0x2", kind="res"),
+    ]
+    paired = ac.pair_messages([app, replication, opening], responses)
+    charts = ac.build_charts([app, replication, opening], paired, [], ["11210"], 2.0)
+    bands = {row["label"]: row for row in charts["rtt_histogram"]}
+    assert bands["0–20"]["sdk"] == 1
+    assert bands["0–20"]["cluster"] == 0
+    assert bands["30–40"]["cluster"] == 1
+    second = charts["buckets"]["1"][1]
+    assert second["sdk_median"] == 2.0
+    assert second["cluster_median"] == 35.0
+    assert second["sdk_p99"] == 2.0
+    assert charts["missing_response"][0]["where"] == "start"
+    assert charts["missing_response"][0]["key"] == "open::key"
 
 
 def test_buckets_percentiles_and_top_keys():

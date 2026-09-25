@@ -244,7 +244,7 @@ KV_PORT = "11210"
 KV_PORTS = {"11210", "11207"}
 # DCP is the in-cluster replication stream. Meta commands are XDCR.
 _CLUSTER_OPCODES = {f"0x{code:02x}" for code in range(0x50, 0x68)} | {
-    "0xa0", "0xa1", "0xa2", "0xa3", "0xa4", "0xa5", "0xa8",
+    "0x48", "0xa0", "0xa1", "0xa2", "0xa3", "0xa4", "0xa5", "0xa8",
 }
 
 
@@ -257,6 +257,33 @@ PACKET_TYPE_ORDER = (
 )
 
 
+# A real TCP retransmission waits out a timeout. A second copy within a
+# millisecond is the same segment recorded twice.
+_DUPLICATE_RTO_SECONDS = 0.001
+
+
+def _rto_seconds(value: str) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def is_capture_duplicate(retrans: bool, rto: float | None) -> bool:
+    """Wireshark's suspected retransmission with no real timeout.
+
+    The expert info fires when the same sequence number appears again. On a
+    span or a double-fed capture that happens in the same microsecond. TCP
+    cannot retransmit that fast.
+    """
+    if not retrans:
+        return False
+    return rto is None or rto < _DUPLICATE_RTO_SECONDS
+
+
 def packet_kind(
     has_couchbase: bool,
     lost: bool,
@@ -265,20 +292,45 @@ def packet_kind(
     opcode: str = "",
     is_response: bool = False,
     tcp_len: int = 0,
+    duplicate: bool = False,
 ) -> str:
-    """One bar per packet. An error flag wins. Couchbase is split by command and direction."""
+    """One bar per packet. A Couchbase header names the command.
+
+    A capture duplicate is the same segment seen twice. It is not a retry.
+    Retransmission is a resend that waited out a timeout, and only when the
+    segment has no Couchbase header. The retry line on the loss chart counts
+    those real resends.
+    """
+    if duplicate:
+        return "Capture duplicate"
+    if has_couchbase:
+        side = "response" if is_response else "request"
+        return f"{opcode or 'Couchbase'} {side}"
     if lost:
         return "Lost segment"
     if retrans:
         return "Retransmission"
     if ack:
         return "Ack lost segment"
-    if has_couchbase:
-        side = "response" if is_response else "request"
-        return f"{opcode or 'Couchbase'} {side}"
     if tcp_len <= 0:
         return "TCP ACK"
     return "TCP data segment"
+
+
+def _frame_command(cols: list[str]) -> tuple[str, bool]:
+    """First command in a row whose Couchbase columns did not line up."""
+    magic_at = _PREFIX_COLUMNS
+    opcode_at = _PREFIX_COLUMNS + 1
+    if len(cols) <= opcode_at or not cols[magic_at]:
+        return "", False
+    magic_text = cols[magic_at].split(FIELD_AGG)[0]
+    opcode_text = cols[opcode_at].split(FIELD_AGG)[0] if cols[opcode_at] else ""
+    try:
+        magic_int = int(magic_text, 16) if magic_text.lower().startswith("0x") else int(magic_text or "0")
+    except ValueError:
+        magic_int = 0
+    name = opcode_name(hex_int(opcode_text, 2)) if opcode_text else ""
+    return name, magic_int in CLIENT_RES_MAGIC
 
 
 def on_kv_port(sport: str, dport: str) -> bool:
@@ -316,7 +368,7 @@ OPCODE_DESCRIPTIONS = {
     0x0D: "Quiet Get, and return the key.",
     0x0E: "Appends data to an existing document.",
     0x0F: "Prepends data to an existing document.",
-    0x10: "Retrieves server statistics.",
+    0x10: "Retrieves server statistics. Key vbucket-seqno is the DCP high-seqno poll.",
     0x11: "Quiet Set. No response on success.",
     0x12: "Quiet Add. No response on success.",
     0x13: "Quiet Replace. No response on success.",
@@ -369,17 +421,17 @@ OPCODE_DESCRIPTIONS = {
     0x50: "DCP Open. Starts a streaming connection.",
     0x51: "DCP add stream.",
     0x52: "DCP close stream.",
-    0x53: "DCP stream request.",
+    0x53: "DCP stream request. Its opaque is copied onto every later message for that stream.",
     0x54: "DCP get failover log.",
-    0x55: "DCP stream end.",
-    0x56: "DCP snapshot marker.",
-    0x57: "DCP mutation. A document change on the stream.",
-    0x58: "DCP deletion.",
-    0x59: "DCP expiration.",
+    0x55: "DCP stream end. The consumer does not reply.",
+    0x56: "DCP snapshot marker. A reply is required only when the ack flag 0x08 is set.",
+    0x57: "DCP mutation. The consumer does not reply. Flow control is a later buffer ack.",
+    0x58: "DCP deletion. The consumer does not reply.",
+    0x59: "DCP expiration. The consumer does not reply.",
     0x5A: "DCP flush.",
     0x5B: "DCP set vBucket state.",
-    0x5C: "DCP noop.",
-    0x5D: "DCP buffer acknowledgement.",
+    0x5C: "DCP noop. The producer sends it, and the consumer must answer or the producer drops the connection.",
+    0x5D: "DCP buffer acknowledgement. The producer does not answer. Opaque 0 is the whole connection.",
     0x5E: "DCP control.",
     0x83: "Requests a document from a replica.",
     0x89: "Selects the bucket for this connection.",
@@ -440,15 +492,16 @@ STATUS = {
     0x84: "internal error",
     0x85: "busy",
     0x86: "temporary failure",
+    0x23: "rollback",
 }
 
 CLIENT_REQ_MAGIC = {0x80, 0x08}
 CLIENT_RES_MAGIC = {0x81, 0x18}
 MAGIC_ROLE = {
-    0x80: "client request",
-    0x08: "client request, flexible framing",
-    0x81: "client response",
-    0x18: "client response, flexible framing",
+    0x80: "request",
+    0x08: "request, flexible framing",
+    0x81: "response",
+    0x18: "response, flexible framing",
     0x82: "server request",
     0x83: "server response",
 }
@@ -475,11 +528,59 @@ def log(message: str) -> None:
     print(message, file=sys.stderr)
 
 
-def traffic_role(sport: str, dport: str, opcode: str = "") -> str:
-    """Cluster is node-to-node or a replication command. SDK is an app port to KV."""
+# DCP is full duplex. The producer sends request-magic packets that are not
+# RPCs. kv_engine docs/dcp: the consumer does not reply to stream end, mutation,
+# deletion, expiration, or a snapshot marker unless snapshot-type flag 0x08 (Ack)
+# is set. Buffer acknowledgement's response is unused. Seqno acknowledged has
+# no success response. System event, prepare, commit, abort, seqno advanced,
+# OSO snapshot, and cache transfer are producer data. Noop is not in this set:
+# the consumer must answer it.
+_NO_REPLY_OPCODES = {
+    0x55, 0x56, 0x57, 0x58, 0x59, 0x5D,
+    0x5F, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,
+}
+
+
+# Statistics (0x10) answers with one packet per stat line, then an empty
+# terminator. Every packet repeats the request opaque. vbucket-seqno does this.
+_MULTI_RESPONSE_OPCODES = {0x10}
+
+
+def _opcode_number(opcode: str) -> int | None:
+    text = str(opcode or "").strip()
+    try:
+        return int(text, 16) if text.lower().startswith("0x") else int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _flag_set(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def expects_reply(opcode: str, snapshot_ack=False) -> bool:
+    number = _opcode_number(opcode)
+    if number is None:
+        return True
+    # Snapshot marker replies only when the ack flag (0x08) is set.
+    if number == 0x56:
+        return bool(snapshot_ack)
+    return number not in _NO_REPLY_OPCODES
+
+
+def is_multi_response(opcode: str) -> bool:
+    """One request, many response packets, one opaque."""
+    return _opcode_number(opcode) in _MULTI_RESPONSE_OPCODES
+
+
+def traffic_role(sport: str, dport: str, opcode: str = "", key: str = "") -> str:
+    """Cluster is node-to-node, DCP, or replication meta. SDK is an app port to KV."""
     if str(sport or "") in KV_PORTS and str(dport or "") in KV_PORTS:
         return "cluster"
     if str(opcode or "").lower() in _CLUSTER_OPCODES:
+        return "cluster"
+    # Stats key vbucket-seqno is the DCP poll for the high sequence number.
+    if _opcode_number(opcode) == 0x10 and str(key or "").startswith("vbucket-seqno"):
         return "cluster"
     return "sdk"
 
@@ -488,7 +589,7 @@ def cluster_endpoints(requests: list[dict]) -> set[str]:
     """Ephemeral ports that carried a cluster command. The reply comes back from the KV port."""
     ends: set[str] = set()
     for msg in requests:
-        if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "") != "cluster":
+        if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or "") != "cluster":
             continue
         for port in (str(msg.get("sport") or ""), str(msg.get("dport") or "")):
             if port and port not in KV_PORTS:
@@ -751,6 +852,7 @@ def _message_from_item(item: dict, frame: dict, ip: dict, tcp: dict) -> dict | N
         "status": hex_int(first(status_raw), 4) if status_raw not in (None, "") else "",
         "body": body_len(first(field(item, "total_bodylength"))),
         "magic": magic,
+        "snapshot_ack": _flag_set(first(field(item, "dcp_snapshot_marker_ack"))),
     }
 
 
@@ -768,16 +870,19 @@ _FIELD_COLUMNS = (
     "couchbase.opcode",
     "couchbase.opaque",
     "couchbase.key.logical_key",
+    "couchbase.key",
     "couchbase.status",
     "couchbase.total_bodylength",
+    "couchbase.extras.flags.dcp_snapshot_marker_ack",
     "tcp.analysis.lost_segment",
     "tcp.analysis.retransmission",
     "tcp.analysis.ack_lost_segment",
     "tcp.len",
+    "tcp.analysis.rto",
 )
 # Couchbase columns, then the three frame-level TCP flags. Flags are not repeated per message.
 _PREFIX_COLUMNS = 7
-_CB_COLUMNS = 6
+_CB_COLUMNS = 8
 _FLAG_COLUMNS = 3
 
 
@@ -845,14 +950,14 @@ def messages_from_field_line(line: str) -> tuple[list[dict], str | None, dict | 
     frame, time_raw, stream, src, sport, dst, dport = cols[:_PREFIX_COLUMNS]
     flag_at = _PREFIX_COLUMNS + _CB_COLUMNS
     loss = _loss_event(time_raw, stream, sport, dport, cols[flag_at], cols[flag_at + 1], cols[flag_at + 2])
-    magic, opcode, opaque, key, status, body = (
+    magic, opcode, opaque, key, raw_key, status, body, ack = (
         _split_repeated(col) for col in cols[_PREFIX_COLUMNS:flag_at]
     )
     present = [len(values) for values in (magic, opcode, opaque) if values]
     if not present:
         return [], None, loss
     count = max(present)
-    repeated = (magic, opcode, opaque, key, status, body)
+    repeated = (magic, opcode, opaque, key, raw_key, status, body, ack)
     if any(values is not None and len(values) != count for values in repeated):
         return [], frame or None, loss
 
@@ -883,10 +988,11 @@ def messages_from_field_line(line: str) -> tuple[list[dict], str | None, dict | 
                 "dport": dport,
                 "opcode": hex_int(at(opcode, index), 2),
                 "opaque": hex_int(at(opaque, index), 8),
-                "key": at(key, index),
+                "key": at(key, index) or at(raw_key, index),
                 "status": hex_int(at(status, index), 4) if at(status, index) else "",
                 "body": body_len(at(body, index)),
                 "magic": magic_int,
+                "snapshot_ack": _flag_set(at(ack, index)),
             }
         )
     return messages, None, loss
@@ -991,17 +1097,28 @@ def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter,
                 tcp_len = 0
         opcode = ""
         is_response = False
+        has_couchbase = bool(messages) or bad_frame is not None
         if messages:
             opcode = opcode_name(messages[0].get("opcode") or "")
             is_response = messages[0].get("magic") in CLIENT_RES_MAGIC
+        elif has_couchbase:
+            opcode, is_response = _frame_command(cols)
+        rto_at = tcp_len_at + 1
+        rto = _rto_seconds(cols[rto_at] if len(cols) > rto_at else "")
+        raw_retrans = bool(loss and loss.get("retrans"))
+        duplicate = is_capture_duplicate(raw_retrans, rto)
+        if loss and duplicate:
+            loss["retrans"] = False
+            loss["duplicate"] = True
         kind = packet_kind(
-            bool(messages) or bad_frame is not None,
+            has_couchbase,
             bool(loss and loss.get("lost")),
             bool(loss and loss.get("retrans")),
             bool(loss and loss.get("ack")),
             opcode,
             is_response,
             tcp_len,
+            duplicate,
         )
         packet_types[kind] += 1
         if loss and on_kv_port(loss.get("sport", ""), loss.get("dport", "")):
@@ -1144,6 +1261,27 @@ def _rtt_histogram(samples: list[float]) -> list[dict]:
     return [{"label": labels[index], "count": counts[index]} for index in range(len(edges))]
 
 
+def _role_histogram(matched_rtts: list[tuple]) -> list[dict]:
+    """One band list. count is both sides. sdk and cluster stay separate."""
+    all_gaps = []
+    sdk_gaps = []
+    cluster_gaps = []
+    for _when, gap, *rest in matched_rtts:
+        role = rest[-1] if rest else ""
+        all_gaps.append(gap)
+        if role == "cluster":
+            cluster_gaps.append(gap)
+        else:
+            sdk_gaps.append(gap)
+    rows = _rtt_histogram(all_gaps)
+    sdk = {row["label"]: row["count"] for row in _rtt_histogram(sdk_gaps)}
+    cluster = {row["label"]: row["count"] for row in _rtt_histogram(cluster_gaps)}
+    for row in rows:
+        row["sdk"] = sdk[row["label"]]
+        row["cluster"] = cluster[row["label"]]
+    return rows
+
+
 def _rtt_summary(samples: list[float]) -> dict:
     if not samples:
         return {
@@ -1195,7 +1333,7 @@ def build_charts(
             int(resp.get("body") or 0),
             req.get("opaque") or "",
             str(req.get("stream") or ""),
-            traffic_role(req.get("sport") or "", req.get("dport") or "", req.get("opcode") or ""),
+            traffic_role(req.get("sport") or "", req.get("dport") or "", req.get("opcode") or "", req.get("key") or ""),
         ))
 
     portset = set(ports)
@@ -1252,7 +1390,7 @@ def build_charts(
             index = _bucket_index(msg["time"], width, count)
             requests_n[index] += 1
             opcode_n[index][opcode_name(msg.get("opcode") or "")] += 1
-            if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "") == "cluster":
+            if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or "") == "cluster":
                 cluster_requests_n[index] += 1
             else:
                 sdk_requests_n[index] += 1
@@ -1272,7 +1410,7 @@ def build_charts(
         for msg in paired["unanswered"]:
             index = _bucket_index(msg["time"], width, count)
             unanswered_n[index] += 1
-            if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "") == "cluster":
+            if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or "") == "cluster":
                 cluster_unanswered_n[index] += 1
             else:
                 sdk_unanswered_n[index] += 1
@@ -1312,8 +1450,18 @@ def build_charts(
                 "cluster_unanswered": cluster_unanswered_n[index],
                 "sdk_retrans": sdk_retrans_n[index],
                 "cluster_retrans": cluster_retrans_n[index],
-                "sdk_median": _rtt_summary(sdk_samples[index])["rtt_median"],
-                "cluster_median": _rtt_summary(cluster_samples[index])["rtt_median"],
+                "sdk_n": (sdk_summary := _rtt_summary(sdk_samples[index]))["rtt_n"],
+                "sdk_median": sdk_summary["rtt_median"],
+                "sdk_p90": sdk_summary["rtt_p90"],
+                "sdk_p99": sdk_summary["rtt_p99"],
+                "sdk_min": sdk_summary["rtt_min"],
+                "sdk_max": sdk_summary["rtt_max"],
+                "cluster_n": (cluster_summary := _rtt_summary(cluster_samples[index]))["rtt_n"],
+                "cluster_median": cluster_summary["rtt_median"],
+                "cluster_p90": cluster_summary["rtt_p90"],
+                "cluster_p99": cluster_summary["rtt_p99"],
+                "cluster_min": cluster_summary["rtt_min"],
+                "cluster_max": cluster_summary["rtt_max"],
                 "ack_lost": ack_n[index],
                 "opcodes": dict(opcode_n[index]),
                 "body_in_max": body_in_max[index],
@@ -1344,7 +1492,7 @@ def build_charts(
             conn = [0, 0, str(msg.get("stream") or ""), 0, 0]
             by_conn[(ip, port)] = conn
         conn[0] += 1
-        if traffic_role(port, msg.get("dport") or "", opcode) == "cluster":
+        if traffic_role(port, msg.get("dport") or "", opcode, msg.get("key") or "") == "cluster":
             conn[4] += 1
         else:
             conn[3] += 1
@@ -1383,6 +1531,23 @@ def build_charts(
     all_rtts = [gap for _when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, _role in matched_rtts]
     overall = _rtt_summary(all_rtts)
     all_ms = [gap * 1000 for gap in all_rtts]
+    gap_window = _in_flight_window(matched_rtts)
+
+    def _side(msg: dict) -> str:
+        role = traffic_role(
+            msg.get("sport") or "",
+            msg.get("dport") or "",
+            msg.get("opcode") or "",
+            msg.get("key") or "",
+        )
+        return "cluster" if role == "cluster" else "sdk"
+
+    unanswered_by_role: dict[str, list] = {"sdk": [], "cluster": []}
+    resp_only_by_role: dict[str, list] = {"sdk": [], "cluster": []}
+    for msg in paired["unanswered"]:
+        unanswered_by_role[_side(msg)].append(msg)
+    for msg in paired["resp_only"]:
+        resp_only_by_role[_side(msg)].append(msg)
     return {
         "capture_seconds": round(capture_end, 3),
         "buckets": series,
@@ -1393,7 +1558,7 @@ def build_charts(
             "over_100": sum(1 for value in all_ms if value >= 100),
             "over_250": sum(1 for value in all_ms if value >= 250),
         },
-        "rtt_histogram": _rtt_histogram(all_rtts),
+        "rtt_histogram": _role_histogram(matched_rtts),
         "by_requester_ip": [
             {"ip": ip, "requests": counts[0], "unanswered": counts[1]}
             for ip, counts in sorted(by_ip.items(), key=lambda item: item[1][0], reverse=True)
@@ -1422,6 +1587,7 @@ def build_charts(
                 "p99_ms": summary["rtt_p99"],
                 "description": opcode_description(opcode),
                 "role": "cluster" if str(opcode or "").lower() in _CLUSTER_OPCODES else "sdk",
+                "expects_reply": expects_reply(opcode),
             }
             for opcode, counts in sorted(by_opcode.items(), key=lambda item: item[1][0], reverse=True)
         ],
@@ -1430,10 +1596,18 @@ def build_charts(
             for key, count in by_key.most_common(10)
         ],
         "top_slowest": slowest,
-        "missing_response": _ten_gaps(paired["unanswered"], capture_end, _in_flight_window(matched_rtts), at_start=False),
+        "missing_response": _ten_gaps(paired["unanswered"], capture_end, gap_window, at_start=False),
         "missing_response_total": len(paired["unanswered"]),
-        "missing_request": _ten_gaps(paired["resp_only"], capture_end, _in_flight_window(matched_rtts), at_start=True),
+        "missing_request": _ten_gaps(paired["resp_only"], capture_end, gap_window, at_start=True),
         "missing_request_total": len(paired["resp_only"]),
+        "missing_response_sdk": _ten_gaps(unanswered_by_role["sdk"], capture_end, gap_window, at_start=False),
+        "missing_response_sdk_total": len(unanswered_by_role["sdk"]),
+        "missing_response_cluster": _ten_gaps(unanswered_by_role["cluster"], capture_end, gap_window, at_start=False),
+        "missing_response_cluster_total": len(unanswered_by_role["cluster"]),
+        "missing_request_sdk": _ten_gaps(resp_only_by_role["sdk"], capture_end, gap_window, at_start=True),
+        "missing_request_sdk_total": len(resp_only_by_role["sdk"]),
+        "missing_request_cluster": _ten_gaps(resp_only_by_role["cluster"], capture_end, gap_window, at_start=True),
+        "missing_request_cluster_total": len(resp_only_by_role["cluster"]),
         "server": couchbase_server(requests),
         "packet_types": [
             {"name": name, "count": int(count)}
@@ -1483,20 +1657,22 @@ def _connection_role(slot: list) -> str:
 def _traffic_summary(requests: list[dict], paired: dict, loss_events: list[dict]) -> dict:
     """SDK is an application port to KV. Cluster is node-to-node or replication."""
     rows = {
-        "sdk": {"requests": 0, "unanswered": 0, "matched": 0, "retrans": 0, "lost": 0},
-        "cluster": {"requests": 0, "unanswered": 0, "matched": 0, "retrans": 0, "lost": 0},
+        "sdk": {"requests": 0, "unanswered": 0, "no_reply": 0, "matched": 0, "retrans": 0, "lost": 0},
+        "cluster": {"requests": 0, "unanswered": 0, "no_reply": 0, "matched": 0, "retrans": 0, "lost": 0},
     }
     unanswered = {id(msg) for msg in paired["unanswered"]}
     role_rtts: dict[str, list[float]] = {"sdk": [], "cluster": []}
     for msg in requests:
-        role = traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "")
+        role = traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or "")
         rows[role]["requests"] += 1
-        if id(msg) in unanswered:
+        if not expects_reply(msg.get("opcode") or "", msg.get("snapshot_ack")):
+            rows[role]["no_reply"] += 1
+        elif id(msg) in unanswered:
             rows[role]["unanswered"] += 1
     for req, resp in paired["matched"]:
         if resp["time"] < req["time"]:
             continue
-        role = traffic_role(req.get("sport") or "", req.get("dport") or "", req.get("opcode") or "")
+        role = traffic_role(req.get("sport") or "", req.get("dport") or "", req.get("opcode") or "", req.get("key") or "")
         rows[role]["matched"] += 1
         role_rtts[role].append(resp["time"] - req["time"])
     cluster_ends = cluster_endpoints(requests)
@@ -1553,7 +1729,14 @@ def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_sta
     for msg in messages:
         seconds = round(float(msg["time"]), 3)
         left = round(capture_end - float(msg["time"]), 3)
-        edge = seconds <= window if at_start else left <= window
+        if at_start:
+            where = "start" if seconds <= window else "inside"
+        elif left <= window:
+            where = "end"
+        elif seconds <= window:
+            where = "start"
+        else:
+            where = "inside"
         rows.append({
             "seconds": seconds,
             "seconds_left": left,
@@ -1562,8 +1745,9 @@ def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_sta
             "opcode": opcode_name(msg.get("opcode") or ""),
             "key": msg.get("key") or "",
             "status": msg.get("status") or "",
-            "at_edge": edge,
-            "role": traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or ""),
+            "at_edge": where != "inside",
+            "where": where,
+            "role": traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or ""),
         })
     interior = [row for row in rows if not row["at_edge"]]
     edge = [row for row in rows if row["at_edge"]]
@@ -1775,16 +1959,77 @@ def load_tsv_pair(reqs_path: Path, resps_path: Path | None) -> tuple[list[dict],
     return reqs, resps, joined
 
 
+def _completed_response(group: list[dict]) -> dict:
+    """The call finishes at the last packet. Body is the sum of every packet."""
+    done = dict(group[-1])
+    done["body"] = sum(int(msg.get("body") or 0) for msg in group)
+    done["response_packets"] = len(group)
+    return done
+
+
+def _pair_one_to_one(reqs: list[dict], resps: list[dict]) -> tuple[list, list, list, int]:
+    matched = []
+    unanswered = []
+    resp_only = []
+    i = j = 0
+    while i < len(reqs) and j < len(resps):
+        if resps[j]["time"] < reqs[i]["time"]:
+            resp_only.append(resps[j])
+            j += 1
+            continue
+        matched.append((reqs[i], resps[j]))
+        i += 1
+        j += 1
+    unanswered.extend(reqs[i:])
+    resp_only.extend(resps[j:])
+    return matched, unanswered, resp_only, 0
+
+
+def _pair_multi_response(reqs: list[dict], resps: list[dict]) -> tuple[list, list, list, int]:
+    """Attach every following response to the request, until the next request.
+
+    Statistics reuses one opaque for the whole reply, and the client sends the
+    same opaque again on the next poll. Packets before the next request belong
+    to this call. A packet before the first request stays unmatched.
+    """
+    matched = []
+    unanswered = []
+    resp_only = []
+    extra = 0
+    j = 0
+    for index, req in enumerate(reqs):
+        next_time = reqs[index + 1]["time"] if index + 1 < len(reqs) else None
+        while j < len(resps) and resps[j]["time"] < req["time"]:
+            resp_only.append(resps[j])
+            j += 1
+        group = []
+        while j < len(resps) and (next_time is None or resps[j]["time"] < next_time):
+            group.append(resps[j])
+            j += 1
+        if group:
+            matched.append((req, _completed_response(group)))
+            extra += len(group) - 1
+        else:
+            unanswered.append(req)
+    resp_only.extend(resps[j:])
+    return matched, unanswered, resp_only, extra
+
+
 def pair_messages(requests: list[dict], responses: list[dict]) -> dict:
     """Pair on (tcp.stream, opaque) in time order.
 
     A response timestamp earlier than the request is an in-flight response
     from before that request, not a match for it. Opaque is per connection,
-    so the stream stays in the key.
+    so the stream stays in the key. A Statistics request owns every response
+    packet on that key until the next request: those packets are one call.
     """
     by_req: dict[tuple[str, str], list[dict]] = defaultdict(list)
     by_res: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    no_reply = []
     for msg in requests:
+        if not expects_reply(msg.get("opcode") or "", msg.get("snapshot_ack")):
+            no_reply.append(msg)
+            continue
         by_req[(msg["stream"], msg["opaque"])].append(msg)
     for msg in responses:
         by_res[(msg["stream"], msg["opaque"])].append(msg)
@@ -1792,23 +2037,27 @@ def pair_messages(requests: list[dict], responses: list[dict]) -> dict:
     matched = []
     unanswered = []
     resp_only = []
+    continuations = 0
     for key in set(by_req) | set(by_res):
         reqs = sorted(by_req.get(key, []), key=lambda msg: (msg["time"], msg["frame"]))
         resps = sorted(by_res.get(key, []), key=lambda msg: (msg["time"], msg["frame"]))
-        i = j = 0
-        while i < len(reqs) and j < len(resps):
-            if resps[j]["time"] < reqs[i]["time"]:
-                resp_only.append(resps[j])
-                j += 1
-                continue
-            matched.append((reqs[i], resps[j]))
-            i += 1
-            j += 1
-        unanswered.extend(reqs[i:])
-        resp_only.extend(resps[j:])
+        if reqs and all(is_multi_response(msg.get("opcode") or "") for msg in reqs):
+            part_matched, part_unanswered, part_only, extra = _pair_multi_response(reqs, resps)
+        else:
+            part_matched, part_unanswered, part_only, extra = _pair_one_to_one(reqs, resps)
+        matched.extend(part_matched)
+        unanswered.extend(part_unanswered)
+        resp_only.extend(part_only)
+        continuations += extra
     unanswered.sort(key=lambda msg: (msg["time"], msg["frame"]))
     resp_only.sort(key=lambda msg: (msg["time"], msg["frame"]))
-    return {"matched": matched, "unanswered": unanswered, "resp_only": resp_only}
+    return {
+        "matched": matched,
+        "unanswered": unanswered,
+        "resp_only": resp_only,
+        "no_reply": no_reply,
+        "multi_response_continuations": continuations,
+    }
 
 
 def bin_width(capture_end: float) -> int:
@@ -1836,6 +2085,7 @@ def build_facts(
     matched = paired["matched"]
     unanswered = paired["unanswered"]
     resp_only = paired["resp_only"]
+    no_reply = paired.get("no_reply") or []
     rtts = [resp["time"] - req["time"] for req, resp in matched if resp["time"] >= req["time"]]
     max_rtt = max(rtts) if rtts else None
     window = max_rtt if max_rtt is not None else 1.0
@@ -1866,7 +2116,14 @@ def build_facts(
     start_rows = [row for row in resp_only_rows if row["time"] <= window]
     end_rows = [row for row in unanswered_rows if (row["seconds_left"] or 0) <= window]
     end_rows_1s = [row for row in unanswered_rows if (row["seconds_left"] or 0) <= 1.0]
-    interior_unanswered = [row for row in unanswered_rows if (row["seconds_left"] or 0) > window]
+    opening_rows = [
+        row for row in unanswered_rows
+        if row["time"] <= window and (row["seconds_left"] or 0) > window
+    ]
+    interior_unanswered = [
+        row for row in unanswered_rows
+        if row["time"] > window and (row["seconds_left"] or 0) > window
+    ]
     interior_resp_only = [row for row in resp_only_rows if row["time"] > window]
 
     width = bin_width(capture_end)
@@ -1989,8 +2246,10 @@ def build_facts(
             "response_messages": len(responses),
             "matched": len(matched),
             "unanswered_requests": len(unanswered_rows),
+            "no_reply_messages": len(no_reply),
             "unique_unanswered_keys": len({row["key"] for row in unanswered_rows if row["key"]}),
             "responses_without_request": len(resp_only_rows),
+            "multi_response_continuations": int(paired.get("multi_response_continuations") or 0),
         },
         "rtt_seconds": {
             "median": statistics.median(rtts) if rtts else None,
@@ -2007,6 +2266,7 @@ def build_facts(
             "start_responses": len(start_rows),
             "end_requests": len(end_rows),
             "end_requests_within_1s": len(end_rows_1s),
+            "opening_requests": len(opening_rows),
             "interior_unanswered": len(interior_unanswered),
             "interior_responses_without_request": len(interior_resp_only),
             "start_examples": start_rows[:8],
@@ -2108,6 +2368,15 @@ def render_summary(facts: dict) -> str:
         f"({counts['unique_unanswered_keys']} document keys). "
         f"**{counts['responses_without_request']} responses have no matching request.**"
     )
+    folded = counts.get("multi_response_continuations") or 0
+    if folded:
+        lines.append("")
+        lines.append(
+            f"A Statistics request is answered by many packets that repeat one opaque "
+            f"(vbucket-seqno does this, one line per vBucket). "
+            f"**{folded}** of those continuation packets belong to the request in front of them. "
+            f"They are one call, finished at the last packet, not responses without a request."
+        )
     lines.append("")
     lines.append(
         f"Matched calls return in {fmt_ms(rtt['median']) or 'an unknown time'}"
@@ -2120,7 +2389,12 @@ def render_summary(facts: dict) -> str:
         f"**{edge['end_requests']}** request"
         f"{'' if edge['end_requests'] == 1 else 's'} whose response would have arrived after it stopped "
         f"(**{edge['end_requests_within_1s']}** if that end window is widened to 1 second). "
-        f"The other **{edge['interior_unanswered']}** unanswered requests and "
+        + (
+            f"**{edge.get('opening_requests', 0)}** requests in that opening window have no reply in the file. "
+            if edge.get("opening_requests")
+            else ""
+        )
+        + f"The other **{edge['interior_unanswered']}** unanswered requests and "
         f"**{edge['interior_responses_without_request']}** unmatched responses sit further inside the file."
     )
     traffic = facts.get("traffic") or {}
@@ -2132,6 +2406,7 @@ def render_summary(facts: dict) -> str:
             f"Cluster (node-to-node, DCP, and replication meta): **{cluster.get('requests', 0)}** requests, "
             f"**{cluster.get('unanswered', 0)}** without a reply, median {fmt_ms((cluster.get('median_ms') or 0) / 1000) if cluster.get('median_ms') is not None else 'n/a'}, "
             f"**{cluster.get('retrans', 0)}** retransmissions. "
+            f"**{cluster.get('no_reply', 0)}** of the cluster messages are DCP stream data and do not expect a reply, so they are not lost responses. "
             f"SDK (an application port to 11210): **{sdk.get('requests', 0)}** requests, "
             f"**{sdk.get('unanswered', 0)}** without a reply, median {fmt_ms((sdk.get('median_ms') or 0) / 1000) if sdk.get('median_ms') is not None else 'n/a'}, "
             f"**{sdk.get('retrans', 0)}** retransmissions."
@@ -2543,8 +2818,22 @@ def next_questions(facts: dict, charts: dict | None = None) -> list[dict]:
                 ),
             }
         )
-    counts = facts["counts"]
     edge = facts["edge"]
+    opening = edge.get("opening_requests") or 0
+    if opening:
+        steps.append(
+            {
+                "title": "The recording opened in the middle of live calls",
+                "text": (
+                    f"{opening} requests in the first {edge['window_seconds']:.3f}s have no reply, and "
+                    f"{edge['start_responses']} replies in that window have no request. "
+                    "On a replication connection the opaque counts upward. The missing reply and the extra reply "
+                    "are neighbors that were already on the wire when the file started. "
+                    "Read later matched calls on that stream before treating the command as failed."
+                ),
+            }
+        )
+    counts = facts["counts"]
     streams = facts.get("streams") or []
     client_ip = (facts.get("client") or {}).get("ip") or ""
     sources = {row.get("src") for row in streams if row.get("src")}
@@ -2617,11 +2906,17 @@ def next_questions(facts: dict, charts: dict | None = None) -> list[dict]:
     slow = charts.get("slow_ms") or {}
     overall = charts.get("rtt_overall_ms") or {}
     if slow.get("over_100"):
+        sdk_ms = sdk.get("median_ms")
+        cluster_ms = cluster.get("median_ms")
+        if sdk_ms is not None and cluster_ms is not None:
+            pace = f"SDK median is {sdk_ms} ms. Cluster median is {cluster_ms} ms. "
+        else:
+            pace = f"The median matched call is {overall.get('rtt_median')} ms. "
         steps.append(
             {
                 "title": "The slow calls are a short tail",
                 "text": (
-                    f"The median matched call is {overall.get('rtt_median')} ms. "
+                    f"{pace}"
                     f"{slow.get('over_100')} calls took 100 ms or more"
                     f" and {slow.get('over_250')} took 250 ms or more. "
                     f"The slowest matched call is {overall.get('rtt_max')} ms. "
@@ -2676,15 +2971,28 @@ def chart_digest(charts: dict) -> list[str]:
         )
     )
     lines.append(
-        "Round trip ms median/p90/p95/p99/max: "
+        "Blended round trip ms median/p90/p95/p99/max (mixes SDK and cluster): "
         f"{overall.get('rtt_median')}, {overall.get('rtt_p90')}, {overall.get('rtt_p95')}, "
         f"{overall.get('rtt_p99')}, {overall.get('rtt_max')}"
     )
+    traffic = charts.get("traffic") or {}
+    if traffic:
+        lines.append("Read SDK and cluster speeds separately. The blended median hides the slower side.")
+        for role, row in traffic.items():
+            lines.append(
+                f"- {role}: requests {row.get('requests')} matched {row.get('matched')} "
+                f"unanswered {row.get('unanswered')} no_reply {row.get('no_reply')} "
+                f"median_ms {row.get('median_ms')} p99_ms {row.get('p99_ms')} "
+                f"retrans {row.get('retrans')}"
+            )
     bands = [row for row in charts.get("rtt_histogram") or [] if row.get("count")]
     if bands:
         lines.append(
-            "Response-time bands (ms, count): "
-            + ", ".join(f"{row['label']}={row['count']}" for row in bands)
+            "Response-time bands (ms, count/sdk/cluster): "
+            + ", ".join(
+                f"{row['label']}={row['count']}/{row.get('sdk', 0)}/{row.get('cluster', 0)}"
+                for row in bands
+            )
         )
     max_in, sec_in, max_out, sec_out, large = _body_peaks(charts)
     lines.append(
@@ -2713,18 +3021,22 @@ def chart_digest(charts: dict) -> list[str]:
             f"- {row['ip']}:{row['port']} stream {row['stream']}: "
             f"{row['requests']} requests, {row['unanswered']} unanswered"
         )
-    lines.append("Opcodes in this capture (opcode, name, requests, unanswered, median ms, p99 ms, what it does):")
+    lines.append(
+        "Opcodes in this capture (opcode, name, side, expects a reply, requests, unanswered, median ms, p99 ms, what it does):"
+    )
     for row in charts.get("by_opcode") or []:
+        expects = "reply" if row.get("expects_reply") is not False else "no reply"
         lines.append(
-            f"- {row.get('opcode')} {row.get('name')}: requests={row.get('requests')} "
-            f"unanswered={row.get('unanswered')} median_ms={row.get('median_ms')} "
-            f"p99_ms={row.get('p99_ms')} {row.get('description') or ''}".rstrip()
+            f"- {row.get('opcode')} {row.get('name')} side={row.get('role') or ''} {expects}: "
+            f"requests={row.get('requests')} unanswered={row.get('unanswered')} "
+            f"median_ms={row.get('median_ms')} p99_ms={row.get('p99_ms')} "
+            f"{row.get('description') or ''}".rstrip()
         )
     lines.append("Ten slowest matched calls (ms, seconds from start, body bytes, key):")
     for row in charts.get("top_slowest") or []:
         lines.append(
-            f"- {row.get('time_ms')} ms at {row.get('seconds')}s body={row.get('body_bytes')} "
-            f"stream {row.get('stream')} opaque {row.get('opaque')} {row.get('key')}"
+            f"- {row.get('time_ms')} ms at {row.get('seconds')}s side={row.get('role') or ''} "
+            f"body={row.get('body_bytes')} stream {row.get('stream')} opaque {row.get('opaque')} {row.get('key')}"
         )
     return lines
 
@@ -2736,6 +3048,15 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
     rtt = facts["rtt_seconds"]
     lines = [
         "Write the capture note from these counts. Do not invent a number or a key.",
+        "",
+        "How to read the counts:",
+        "- DCP is full duplex. Cluster is node-to-node KV, DCP opcodes 0x50-0x67, Get All VBucket Seqnos 0x48, a Statistics key that starts with vbucket-seqno, or replication meta 0xa0-0xa5 and 0xa8. SDK is an application port to 11210 for the other commands.",
+        "- The opaque on a DCP stream request is copied onto every later command for that stream. A snapshot marker and a mutation often share one packet and that opaque. A later packet is the next change, not a retry. Do not call no_reply messages lost responses.",
+        "- These producer messages do not expect a command reply: stream end 0x55, snapshot marker 0x56 unless snapshot-type flag 0x08 Ack is set, mutation 0x57, deletion 0x58, expiration 0x59, buffer acknowledgement 0x5d (its response is unused; opaque 0 means the whole connection), and 0x5f-0x67. Noop 0x5c does expect a reply: the producer disconnects if the consumer stays silent.",
+        "- Statistics 0x10 with key vbucket-seqno, and Get All VBucket Seqnos 0x48, are how a DCP consumer learns the high sequence number before a stream request. Statistics is one request and many response packets on one opaque. Continuation packets folded into the request are one call.",
+        "- Replies with no request in the opening window, and requests with no reply in that same window, are calls the capture cut through. Requests in the closing window were still in flight when recording stopped.",
+        "- Quote the SDK median and the cluster median. The blended round-trip median mixes them and hides the slower side.",
+        "- Capture duplicates are the same TCP segment seen twice within 1 ms. Do not call them retransmissions or DCP retries. A retransmission waited out a timeout.",
         "",
         f"Source: {facts['source']}",
         f"Capture files: {', '.join(facts.get('pcap_files') or []) or '(tsv export)'}",
@@ -2756,7 +3077,8 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
             "Cluster vs SDK: "
             + ", ".join(
                 f"{role} requests {row.get('requests')} unanswered {row.get('unanswered')} "
-                f"median_ms {row.get('median_ms')} retrans {row.get('retrans')}"
+                f"no_reply {row.get('no_reply')} median_ms {row.get('median_ms')} "
+                f"p99_ms {row.get('p99_ms')} retrans {row.get('retrans')}"
                 for role, row in traffic.items()
             )
         )
@@ -2764,11 +3086,13 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
         f"Unanswered requests: {counts['unanswered_requests']}",
         f"Unique unanswered keys: {counts['unique_unanswered_keys']}",
         f"Responses with no request: {counts['responses_without_request']}",
+        f"Statistics continuation packets folded into their request: {counts.get('multi_response_continuations') or 0}",
         f"Round trip median/mean/p90/p95/p99/max seconds: "
         f"{rtt['median']}, {rtt['mean']}, {rtt['p90']}, {rtt['p95']}, {rtt['p99']}, {rtt['max']}",
         f"Edge window seconds: {edge['window_seconds']} ({edge['window_source']})",
         f"Start-window responses: {edge['start_responses']}",
         f"End-window requests: {edge['end_requests']}",
+        f"Opening-window requests with no reply: {edge.get('opening_requests', 0)}",
         f"Requests in the last 1 second: {edge['end_requests_within_1s']}",
         f"Interior unanswered: {edge['interior_unanswered']}",
         f"Interior responses with no request: {edge['interior_responses_without_request']}",
@@ -2824,6 +3148,13 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
         )
         lines.append(f"Lost by stream: {tcp['lost_by_stream']}")
         lines.append(f"Unanswered with a gap after the request: {tcp['unanswered_near_gap']}")
+    if charts:
+        packet_counts = {row.get("name"): row.get("count") or 0 for row in charts.get("packet_types") or []}
+        lines.append(
+            f"Capture duplicates: {packet_counts.get('Capture duplicate', 0)}. "
+            "These are the same TCP segment recorded again within 1 ms. They are not retries and they are not DCP. "
+            f"Retransmission packets that waited out a timeout: {packet_counts.get('Retransmission', 0)}."
+        )
     lines.append("")
     lines.append("Request opcodes: " + ", ".join(f"{row['count']} {row['name']} ({row['opcode']})" for row in facts["opcodes_requests"]))
     lines.append("Unanswered opcodes: " + ", ".join(f"{row['count']} {row['name']} ({row['opcode']})" for row in facts["opcodes_unanswered"]))
@@ -2835,13 +3166,22 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
         lines.append("Duplicate unanswered keys:")
         for row in facts["duplicate_keys"]:
             lines.append(f"- {row['count']} {row['key']}")
-    lines.append("Streams:")
-    for row in facts["streams"]:
-        if row["unanswered"] or row["requests"] >= 20:
-            lines.append(
-                f"- stream {row['stream']} {row['src']}:{row['sport']} -> {row['dst']}:{row['dport']} "
-                f"requests={row['requests']} unanswered={row['unanswered']}"
-            )
+    streams = facts["streams"]
+    ranked_streams = sorted(
+        streams,
+        key=lambda row: (row.get("unanswered") or 0, row.get("requests") or 0),
+        reverse=True,
+    )
+    shown_streams = ranked_streams[:12]
+    lines.append(
+        f"Streams: {len(streams)} total. "
+        f"Showing {len(shown_streams)} with the most unanswered requests, then the busiest."
+    )
+    for row in shown_streams:
+        lines.append(
+            f"- stream {row['stream']} {row['src']}:{row['sport']} -> {row['dst']}:{row['dport']} "
+            f"requests={row['requests']} unanswered={row['unanswered']}"
+        )
     if facts["cross_stream_opaque_count"]:
         lines.append(f"Same opaque on another stream: {facts['cross_stream_opaque_count']}")
         for row in facts["cross_stream_opaque"][:3]:
@@ -3133,7 +3473,7 @@ def model_request(
         "think": False,
         "stream": False,
         "messages": messages,
-        "options": {"temperature": 0.2, "num_predict": 8192},
+        "options": {"temperature": 0.2, "num_predict": 3072},
     }
     return base_url.rstrip("/") + "/api/chat", payload, headers
 
@@ -3170,7 +3510,7 @@ def call_model(
     )
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    log(f"asking {model} at {base_url} ({provider})")
+    log(f"asking {model} at {base_url} ({provider}), note {len(note)} characters")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))

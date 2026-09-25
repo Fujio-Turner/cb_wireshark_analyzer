@@ -85,10 +85,69 @@ def test_summary_names_the_interior_key_and_splice_fills_the_table():
     assert ac.TABLE_TOKEN not in text
     brief = ac.facts_brief(facts)
     assert "Next questions and steps" in brief
+    assert "do not expect a command reply" in brief
+    assert "vbucket-seqno" in brief
+    assert "SDK median and the cluster median" in brief
+    facts["streams"] = [
+        {
+            "stream": str(i),
+            "src": "10.0.0.2",
+            "sport": "4000",
+            "dst": "10.0.0.3",
+            "dport": "11210",
+            "requests": 30,
+            "unanswered": i % 3,
+        }
+        for i in range(40)
+    ]
+    capped = ac.facts_brief(facts)
+    assert "40 total" in capped
+    assert "Showing 12" in capped
+    assert capped.count("\n- stream ") == 12
     assert ac.TABLE_TOKEN in brief
     spliced = ac.splice_table(brief, ac.unanswered_table(facts["unanswered"]))
     assert "widget::alpha::two" in spliced
     assert ac.TABLE_TOKEN not in spliced
+
+
+def test_statistics_packets_that_share_an_opaque_are_one_call():
+    requests = [
+        message(1.0, "5", "0xde030e00", "0x10", "vbucket-seqno"),
+        message(2.0, "5", "0xde030e00", "0x10", "vbucket-seqno"),
+        message(3.0, "5", "0xde030e00", "0x10", "vbucket-seqno"),
+    ]
+    responses = [
+        message(0.4, "5", "0xde030e00", "0x10", kind="res", status="0x0000"),
+        message(1.1, "5", "0xde030e00", "0x10", "vb_0:high_seqno", kind="res", status="0x0000"),
+        message(1.2, "5", "0xde030e00", "0x10", "vb_1:high_seqno", kind="res", status="0x0000"),
+        message(1.3, "5", "0xde030e00", "0x10", "", kind="res", status="0x0000"),
+        message(2.4, "5", "0xde030e00", "0x10", "vb_0:high_seqno", kind="res", status="0x0000"),
+    ]
+    for msg, size in zip(responses, (1, 10, 20, 30, 40)):
+        msg["body"] = size
+    paired = ac.pair_messages(requests, responses)
+    assert len(paired["matched"]) == 2
+    assert len(paired["unanswered"]) == 1
+    assert paired["unanswered"][0]["time"] == 3.0
+    assert [msg["time"] for msg in paired["resp_only"]] == [0.4]
+    done = paired["matched"][0][1]
+    assert done["time"] == 1.3
+    assert done["body"] == 60
+    assert done["response_packets"] == 3
+    assert paired["matched"][1][1]["time"] == 2.4
+    assert paired["multi_response_continuations"] == 2
+
+
+def test_a_normal_command_keeps_a_spare_reply_unmatched():
+    requests = [message(1.0, "0", "0x00000001", "0x00", "widget::alpha::one")]
+    responses = [
+        message(1.1, "0", "0x00000001", kind="res", status="0x0000"),
+        message(1.2, "0", "0x00000001", kind="res", status="0x0000"),
+    ]
+    paired = ac.pair_messages(requests, responses)
+    assert len(paired["matched"]) == 1
+    assert len(paired["resp_only"]) == 1
+    assert paired["multi_response_continuations"] == 0
 
 
 def test_same_opaque_on_two_streams_stays_two_operations():

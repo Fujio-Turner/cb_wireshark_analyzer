@@ -8,9 +8,25 @@ tcp.port == 11210
 
 `tcp.port` is either side. A request has destination 11210. The reply has source 11210. A capture filter of `dst port 11210` keeps the requests and drops the replies, so the report can show no round trips. Use `port 11210` when recording if you want both directions. The tcpdump command, including the other Couchbase service ports, is in [CB_TCPDUMP.md](CB_TCPDUMP.md).
 
-The analyzer marks two kinds of KV traffic. **Cluster** is port 11210 or 11207 on both ends, or a DCP command (`0x50`–`0x67`) or a replication meta command (`0xa0`, `0xa2`, `0xa8`). **SDK** is an application port talking to 11210 for the other commands. A retransmission of the reply stays with that same flow.
+The analyzer marks two kinds of KV traffic. **Cluster** is port 11210 or 11207 on both ends, a DCP command (`0x50`–`0x67`), Get All VBucket Seqnos (`0x48`), a Statistics key `vbucket-seqno`, or a replication meta command (`0xa0`, `0xa2`, `0xa8`). **SDK** is an application port talking to 11210 for the other commands. A retransmission of the reply stays with that same flow.
 
-The chart page’s slow-call table gives the `tcp.stream` and `couchbase.opaque` for each slow row. Those two fields together are one call.
+The chart page’s slow-call table gives the `tcp.stream` and `couchbase.opaque` for each slow row. For an application call those two fields are one request and its reply. For DCP they are one stream.
+
+## DCP
+
+DCP is Couchbase’s replication protocol, and it is not a normal KV call. A client call is simplex: the application sends one command, the server sends one reply, and the opaque identifies that pair. DCP is full duplex. After the consumer opens a stream, the producer sends snapshots and mutations on its own, and the consumer sends buffer acknowledgements and control commands on the same TCP connection without waiting its turn.
+
+There is no standalone Couchbase repository for the Server or DCP binary-protocol decoder. The decoder is Wireshark’s `epan/dissectors/packet-couchbase.c`. It was added in 2014 and has been maintained there since. Couchbase engineers, including Trond Norbye, Jim Walker, and Dave Rigby, send updates into Wireshark rather than keeping a fork. The [GitHub copy](https://github.com/wireshark/wireshark/blob/master/epan/dissectors/packet-couchbase.c) is a read-only mirror. The file to read is the [GitLab upstream](https://gitlab.com/wireshark/wireshark/-/blob/master/epan/dissectors/packet-couchbase.c). It covers the binary protocol on port 11210, including the DCP opcodes. The behavior those fields implement is specified in kv_engine: the [DCP overview](https://github.com/couchbase/kv_engine/blob/master/docs/dcp/README.md), the [DCP protocol](https://github.com/couchbase/kv_engine/blob/master/docs/dcp/documentation/protocol.md), and the [binary protocol](https://github.com/couchbase/kv_engine/blob/master/docs/BinaryProtocol.md).
+
+The producer sends mutations with request magic `0x80`. The consumer sends stream requests and buffer acknowledgements the other way.
+
+The opaque on a stream request is copied onto every later command for that stream. A snapshot marker (`0x56`) and the mutations that follow it (`0x57`) share that opaque. The consumer does not send a command reply for a mutation, a deletion, an expiration, or a stream end. A snapshot marker wants a reply only when the ack flag is set:
+
+```text
+couchbase.opcode == 0x56 && couchbase.extras.flags.dcp_snapshot_marker_ack
+```
+
+Flow control is a buffer acknowledgement (`0x5d`), not a reply per mutation. Opaque `0` on that acknowledgement means the whole connection. A DCP noop (`0x5c`) is different: the producer sends it when the connection is idle, and the consumer must answer or the producer drops the connection. A stream-request response of `couchbase.status == 0x0023` is rollback.
 
 ## One document
 
@@ -261,6 +277,10 @@ A reply later in the file, still with no request, is a different case. Couchbase
 The request and the reply travel in opposite directions. A hole in the client-to-server direction removes the request from the file. The reply comes back server-to-client and can still be recorded. In Wireshark that reply is a response magic (`0x81` or `0x18`) whose `tcp.stream` and `couchbase.opaque` never appear on a request. The chart page shows up to ten of those rows under **Responses missing a request**, spaced across the capture rather than taken from the start of the file. **Start of file** is marked only for the ones inside the opening in-flight window. **Inside** means the reply is later than that window. The same limit applies to **Requests missing a response**. Every unanswered request is in `orphans.tsv` next to the page.
 
 The same opaque on a request that appears after that reply is a new call. Pairing does not attach the earlier reply to the later request, so the reply stays a reply with no request.
+
+A Statistics request (`couchbase.opcode == 0x10`), including key `vbucket-seqno`, is not one of those. The server answers with one response packet per stat line, hundreds of them, every packet repeating the request opaque, and a final packet with an empty key ends the list. The client often sends that same opaque again a second later for the next poll. Those packets are one call. The call is finished at the last packet. They are not lost replies and they are not a retry.
+
+DCP is a different reuse of the opaque. On a replication stream the opaque is the stream id. A snapshot marker (`0x56`) and a mutation (`0x57`) often share one TCP packet and that id. The snapshot ack flag is usually clear, so no `0x81` reply is expected. A later packet with the same key and the same opaque is the next mutation (sequence number and revision both move), not a second try of the first packet.
 
 To look at one of them, take the stream and opaque from that table:
 

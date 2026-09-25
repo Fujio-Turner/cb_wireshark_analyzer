@@ -195,7 +195,7 @@
       font-weight: normal;
     }
     .card .note { margin: 2px 12px 0; color: var(--muted); font-size: 12px; }
-    .tabs { display: flex; gap: 6px; margin: 8px 12px 0; }
+    .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 12px 0; }
     .tab {
       border: 1px solid var(--line);
       background: transparent;
@@ -356,6 +356,7 @@
       font: inherit;
       cursor: help;
       text-align: inherit;
+      text-decoration: none;
     }
     .term:hover::after,
     .term:focus::after,
@@ -458,7 +459,7 @@
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         cb_wireshark_analyzer
       </a>
-      <span class="version" id="app-version">v0.7.0</span>
+      <span class="version" id="app-version">v0.8.0</span>
     </div>
     </div>
     <div class="bar">
@@ -521,22 +522,22 @@
         <div class="grid two">
           <section class="card">
             <h2>How long calls took</h2>
-            <p class="note">The horizontal axis is <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">response time</button>, split into <button type="button" class="term" data-tip="A slice of response time, such as 30–40 ms. A call that took 33 ms is counted in 30–40. The last band is 1000 ms or slower.">latency bands</button> in milliseconds. Left is fast. Right is slow. The vertical axis is how many <button type="button" class="term" data-tip="A request whose reply is also in this capture. They are paired by TCP connection and the Couchbase opaque id.">matched calls</button> finished in that band. A taller bar means more calls landed there.</p>
+            <p class="note">The horizontal axis is <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">response time</button>, split into <button type="button" class="term" data-tip="A slice of response time, such as 30–40 ms. A call that took 33 ms is counted in 30–40. The last band is 1000 ms or slower.">latency bands</button> in milliseconds. Left is fast. Right is slow. Blue is application calls. Rust is cluster replication. A tall blue bar in the first band and a tall rust bar further right means the two sides are not the same speed.</p>
             <div id="spread" class="chart"></div>
           </section>
           <section class="card">
             <h2>Round trip</h2>
-            <p class="note"><button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">Response time</button> of <button type="button" class="term" data-tip="A request whose reply is also in this capture. They are paired by TCP connection and the Couchbase opaque id.">matched calls</button>. <button type="button" class="term" data-tip="The middle call. Half were faster, half were slower.">Median</button> is typical. <button type="button" class="term" data-tip="90 percent of matched calls were this fast or faster.">p90</button>, <button type="button" class="term" data-tip="95 percent of matched calls were this fast or faster.">p95</button>, and <button type="button" class="term" data-tip="99 percent of matched calls were this fast or faster. This is the slow end.">p99</button> show the slow tail.</p>
+            <p class="note">Blue is the application. Rust is cluster replication. Each side has its own <button type="button" class="term" data-tip="The middle call on that side. Half were faster, half were slower.">median</button> and <button type="button" class="term" data-tip="99 percent of matched calls on that side were this fast or faster.">p99</button>. A single blended line would sit on the busier side and hide the other.</p>
             <div id="rtt" class="chart"></div>
           </section>
           <section class="card">
             <h2>Median, p99, TCP loss, and retries</h2>
-            <p class="note">The left axis is milliseconds. <button type="button" class="term" data-tip="The middle call. Half were faster, half were slower.">Median</button> and <button type="button" class="term" data-tip="99 percent of matched calls in that bucket were this fast or faster. This is the slow end.">p99</button> are solid. The right axis counts packets. <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply, so the request can be left without a response.">Loss toward the client</button> and <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request, so a reply can arrive with no request in the file.">loss toward the server</button> are dashed, with <button type="button" class="term" data-tip="The sender transmitted the same TCP data again.">retries</button>.</p>
+            <p class="note">The left axis is milliseconds, with a median and a p99 for the application and another pair for the cluster. The right axis counts packets. <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply, so the request can be left without a response.">Loss toward the client</button> and <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request, so a reply can arrive with no request in the file.">loss toward the server</button> are dashed, with <button type="button" class="term" data-tip="The sender transmitted the same TCP data again.">retries</button>.</p>
             <div id="tail" class="chart"></div>
           </section>
           <section class="card">
             <h2>Latency range</h2>
-            <p class="note">The thick part of each candle runs from the <button type="button" class="term" data-tip="The middle call in that bucket. Half were faster, half were slower.">median</button> to <button type="button" class="term" data-tip="90 percent of matched calls in that bucket were this fast or faster.">p90</button>. The thin line runs from the fastest call to the slowest.</p>
+            <p class="note">Two candles per second. Blue is the application and rust is the cluster. The thick part runs from the <button type="button" class="term" data-tip="The middle call on that side in that bucket.">median</button> to <button type="button" class="term" data-tip="90 percent of matched calls on that side in that bucket were this fast or faster.">p90</button>. The thin line runs from the fastest call to the slowest.</p>
             <div id="range" class="chart"></div>
           </section>
         </div>
@@ -557,7 +558,7 @@
         <div class="grid two">
           <section class="card">
             <h2>Calls by opcode and response time</h2>
-            <p class="note">Each color is one <button type="button" class="term" data-tip="The kind of Couchbase operation, such as Get or Set.">opcode</button>. Bar height is how many of that kind ran in the <button type="button" class="term" data-tip="How wide each point on the time charts is. One second shows more detail. Five and ten seconds smooth a long capture.">time bucket</button>. The lines are <button type="button" class="term" data-tip="The middle matched call. Half of the calls in that bucket were faster, and half were slower.">median</button> and <button type="button" class="term" data-tip="99 percent of matched calls in that bucket were this fast or faster. This is the slow end.">p99</button> response time.</p>
+            <p class="note">Each color is one <button type="button" class="term" data-tip="The kind of Couchbase operation, such as Get or Set.">opcode</button>. Bar height is how many of that kind ran in the <button type="button" class="term" data-tip="How wide each point on the time charts is. One second shows more detail. Five and ten seconds smooth a long capture.">time bucket</button>. The lines are the application median and the cluster median, so a slow replication second stays visible next to fast application calls.</p>
             <div id="mix" class="chart"></div>
           </section>
           <section class="card">
@@ -587,18 +588,20 @@
       <div class="stack">
         <section class="card">
           <h2>Packets on port 11210</h2>
-          <p class="note">Each bar is one packet on port 11210, counted once. Couchbase requests are shades of blue. Couchbase responses are shades of green. Each command keeps its own shade. TCP packets are greys. Lost segments, retransmissions, and ack-lost are reds. TCP data segment and TCP ACK start hidden so the Couchbase bars are readable. Click either name in the legend to show it. TCP data segment is payload with no Couchbase header, usually the rest of a value that did not fit in the first segment. TCP ACK has no payload.</p>
+          <p class="note">Each bar is one packet on port 11210, counted once. A Couchbase header is counted as that command. Requests are blue, responses are green. <a class="term" href="#capture-duplicate">Capture duplicate</a>, TCP data segment, and TCP ACK start hidden.</p>
           <div id="packets" class="chart"></div>
         </section>
         <section class="card">
           <h2><button type="button" class="term" data-tip="A request is in the file and its reply is not. The recording may have stopped first, or the reply packet was never captured.">Lost responses</button>, retries, and TCP loss</h2>
-          <p class="note">Bars on the left are Couchbase operations. The right axis counts packets. Dashed lines split <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply.">loss toward the client</button> from <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request.">loss toward the server</button>. Retries are on that same axis.</p>
+          <p class="note">Missing replies are split. Blue is an application call with no reply. Rust is a cluster call with no reply. Gray is a matched call, and it starts hidden. Purple is a reply with no request. DCP stream messages are not in either missing bar: they do not expect a reply. The right axis counts packets. A dark dashed line is <button type="button" class="term" data-tip="A hole in packets the server sent. The missing bytes are often the reply.">loss toward the client</button>. A green dashed line is <button type="button" class="term" data-tip="A hole in packets the client sent. The missing bytes are often the request.">loss toward the server</button>. The gold line is <button type="button" class="term" data-tip="The sender transmitted the same TCP data again.">retries</button>.</p>
           <div id="issues" class="chart"></div>
         </section>
         <section class="card">
           <div class="tabs" id="gap-tabs">
-            <button type="button" class="tab on" data-gap-tab="request">Requests missing a response</button>
-            <button type="button" class="tab" data-gap-tab="response">Responses missing a request</button>
+            <button type="button" class="tab on" data-gap-tab="sdk-request">SDK requests missing a response</button>
+            <button type="button" class="tab" data-gap-tab="sdk-response">SDK responses missing a request</button>
+            <button type="button" class="tab" data-gap-tab="cluster-request">Cluster requests missing a response</button>
+            <button type="button" class="tab" data-gap-tab="cluster-response">Cluster responses missing a request</button>
           </div>
           <p class="note" id="gap-note"></p>
           <div id="gaps"></div>
@@ -746,6 +749,7 @@
           <a href="#total-body-length">Total body length</a>
           <a href="#tcp-loss">TCP loss</a>
           <a href="#retry">Retry</a>
+          <a href="#capture-duplicate">Capture duplicate</a>
           <a href="#data-source">Data source</a>
         </nav>
       </div>
@@ -755,7 +759,7 @@
           <dt id="matched-call">Matched call</dt>
           <dd>A request and its reply are both in this capture. They share a TCP stream and the same opaque, the client’s semi-transaction number for that one call.</dd>
           <dt id="opaque">Opaque</dt>
-          <dd>The semi-transaction number on a Couchbase request. The matching response repeats it. In Wireshark, filter <code>tcp.stream</code> and <code>couchbase.opaque</code> together to see that pair. The same opaque on a different stream is a different call.</dd>
+          <dd>The semi-transaction number on a Couchbase request. The matching response repeats it. In Wireshark, filter <code>tcp.stream</code> and <code>couchbase.opaque</code> together to see that pair. The same opaque on a different stream is a different call. A Statistics request sends many response packets on that one opaque, one stat line each, and they count as one call. On DCP the stream request chooses the opaque, and every later snapshot and mutation on that stream copies it. Those packets do not expect a command reply unless the snapshot ack flag is set. A later packet is the next change, not a retry.</dd>
           <dt id="stream">Stream</dt>
           <dd>The TCP connection number Wireshark assigns. Opaque is only unique inside one stream. The same opaque on stream 0 and stream 1 is two calls.</dd>
           <dt id="left">Left</dt>
@@ -765,7 +769,7 @@
           <dt id="lost-response">Lost response</dt>
           <dd>The request is in the file and the reply is not. That happens when the recording stops while the call is still open, or when the reply packet was never captured.</dd>
           <dt id="response-without-request">Response without request</dt>
-          <dd>The reply is in the file and the request is not. The request was usually sent before the recording started.</dd>
+          <dd>The reply is in the file and the request is not. The request was usually sent before the recording started. Extra packets from a Statistics reply are not this: they repeat the opaque on purpose and stay with that request.</dd>
           <dt id="response-time">Response time</dt>
           <dd>Milliseconds from the request packet to the matching reply. Only matched calls have one.</dd>
           <dt id="latency-band">Latency band</dt>
@@ -781,7 +785,9 @@
           <dt id="tcp-loss">TCP loss</dt>
           <dd>A hole in the recorded TCP byte stream. Toward the client means the server’s packets are missing, often the reply. Toward the server means the client’s packets are missing, often the request.</dd>
           <dt id="retry">Retry</dt>
-          <dd>The sender transmitted the same TCP data again.</dd>
+          <dd>The sender transmitted the same TCP data again after waiting out a timeout. A second copy that arrives within a millisecond is a capture duplicate, not a retry.</dd>
+          <dt id="capture-duplicate">Capture duplicate</dt>
+          <dd>Wireshark marks a second copy of the same TCP segment as a retransmission. When that copy arrives within a millisecond, TCP did not retry. The segment was recorded twice, often because the capture saw the packet on the way in and on the way out. The payload is frequently the middle of a document, not a new Couchbase command, and it is not a DCP retry. The bar on <a href="#packets">Packets on port 11210</a> starts hidden. Click Capture duplicate in that chart’s legend to show it. A red Retransmission bar is a resend that waited out a timeout.</dd>
         </dl>
         <h2>What each chart is for</h2>
         <ol>
@@ -791,7 +797,7 @@
           <li><a href="#range">Latency range</a> shows the spread in each bucket. The thick part is median to p90. The thin line is the fastest call to the slowest.</li>
           <li><a href="#issues">Lost responses, retries, and TCP loss</a> shows missing Couchbase replies next to holes and resent TCP data. Loss toward the client lines up with a missing reply. Loss toward the server lines up with a reply whose request is missing.</li>
           <li><a href="#clients">Clients</a> is which machines sent the operations, as a fleet and one address at a time. <a href="#opcodes">p99 by opcode</a> is which kind of operation has the slow tail.</li>
-          <li><a href="#packets">Packets on port 11210</a> is a bar for each Couchbase command, split into request and response, plus lost segments, retransmissions, ack-lost, TCP data segments, and TCP ACKs.</li>
+          <li><a href="#packets">Packets on port 11210</a> is a bar for each Couchbase command, split into request and response. <a href="#capture-duplicate">Capture duplicate</a>, TCP data, and TCP ACK start hidden.</li>
           <li><a href="#body">Total body length</a> uses bars for the largest request and the largest reply, and dashed lines for every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC carries about 125 MB/s, and a 10 Gbit NIC about 1,250 MB/s.</li>
           <li>The tables are the <a href="#top-asked">busiest document ids</a>, and the <a href="#top-slow">ten slowest matched calls</a>. Set Stake on a slow call marks that second on the time charts, including the body-length chart.</li>
         </ol>
@@ -810,8 +816,8 @@
     const timeChartIds = ["mix", "rtt", "tail", "range", "issues", "body"];
     const STAKE_SERIES = "__stake";
     let clientPick = "";
-    let gapTab = "request";
-    const hiddenPacketBars = new Set(["TCP data segment", "TCP ACK"]);
+    let gapTab = "sdk-request";
+    const hiddenPacketBars = new Set(["TCP data segment", "TCP ACK", "Capture duplicate"]);
     let data = null;
     let stakes = [];
     let lightboxHome = null;
@@ -1024,24 +1030,24 @@
       const names = labels(rows);
       const kind = yType();
       charts.rtt.setOption({
-        color: palette,
+        color: ["#1a5276", "#c45c26", "#5d8aa8", "#e59866"],
         ...cross(),
-        legend: scopedLegend("rtt", ["Median", "p90", "p95", "p99"]),
+        legend: scopedLegend("rtt", ["SDK median", "Cluster median", "SDK p99", "Cluster p99"]),
         grid: baseGrid(),
         dataZoom: axisZoom(),
         xAxis: { type: "category", data: names },
         yAxis: { type: kind, name: "ms" },
         series: pin([
-          { name: scopedName("rtt", "Median"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
-          { name: scopedName("rtt", "p90"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p90)) },
-          { name: scopedName("rtt", "p95"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p95)) },
-          { name: scopedName("rtt", "p99"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p99)) }
+          { name: scopedName("rtt", "SDK median"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.sdk_median)) },
+          { name: scopedName("rtt", "Cluster median"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.cluster_median)) },
+          { name: scopedName("rtt", "SDK p99"), type: "line", showSymbol: false, lineStyle: { type: "dashed" }, data: rows.map((row) => yValue(row.sdk_p99)) },
+          { name: scopedName("rtt", "Cluster p99"), type: "line", showSymbol: false, lineStyle: { type: "dashed" }, data: rows.map((row) => yValue(row.cluster_p99)) }
         ], rows)
       }, true);
       charts.tail.setOption({
-        color: ["#c45c26", "#24576e", "#1c2430", "#6e8b74", "#d4a017"],
+        color: ["#1a5276", "#c45c26", "#5d8aa8", "#e59866", "#1c2430", "#6e8b74", "#d4a017"],
         ...cross(),
-        legend: scopedLegend("tail", ["Median", "p99", "Loss toward client", "Loss toward server", "Retries"]),
+        legend: scopedLegend("tail", ["SDK median", "Cluster median", "SDK p99", "Cluster p99", "Loss toward client", "Loss toward server", "Retries"], { type: "scroll" }),
         grid: baseGrid(),
         dataZoom: axisZoom(),
         xAxis: { type: "category", data: names },
@@ -1050,43 +1056,52 @@
           { type: kind, name: "packets", splitLine: { show: false } }
         ],
         series: pin([
-          { name: scopedName("tail", "Median"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
-          { name: scopedName("tail", "p99"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.rtt_p99)) },
+          { name: scopedName("tail", "SDK median"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.sdk_median)) },
+          { name: scopedName("tail", "Cluster median"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.cluster_median)) },
+          { name: scopedName("tail", "SDK p99"), type: "line", showSymbol: false, lineStyle: { type: "dashed" }, data: rows.map((row) => yValue(row.sdk_p99)) },
+          { name: scopedName("tail", "Cluster p99"), type: "line", showSymbol: false, lineStyle: { type: "dashed" }, data: rows.map((row) => yValue(row.cluster_p99)) },
           { name: scopedName("tail", "Loss toward client"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost_s2c)) },
           { name: scopedName("tail", "Loss toward server"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost_c2s)) },
           { name: scopedName("tail", "Retries"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.retrans)) }
         ], rows)
       }, true);
+      function candle(row, prefix) {
+        const n = row[prefix + "_n"];
+        const med = row[prefix + "_median"];
+        const p90 = row[prefix + "_p90"];
+        const lo = row[prefix + "_min"];
+        const hi = row[prefix + "_max"];
+        if (!n || med == null || lo == null || (lo <= 0 && kind === "log")) return "-";
+        return [med, p90 == null ? med : p90, lo, hi];
+      }
       charts.range.setOption({
-        color: palette,
+        color: ["#1a5276", "#c45c26"],
         ...cross(),
-        legend: scopedLegend("range", ["Median to p90"]),
+        legend: scopedLegend("range", ["SDK median to p90", "Cluster median to p90"]),
         grid: baseGrid(),
         dataZoom: axisZoom(),
         xAxis: { type: "category", data: names },
         yAxis: { type: kind, name: "ms" },
-        series: pin([{
-          name: scopedName("range", "Median to p90"),
-          type: "candlestick",
-          itemStyle: {
-            color: "#c45c26",
-            color0: "#24576e",
-            borderColor: "#c45c26",
-            borderColor0: "#24576e"
+        series: pin([
+          {
+            name: scopedName("range", "SDK median to p90"),
+            type: "candlestick",
+            itemStyle: { color: "#1a5276", color0: "#1a5276", borderColor: "#1a5276", borderColor0: "#1a5276" },
+            data: rows.map((row) => candle(row, "sdk"))
           },
-          data: rows.map((row) => {
-            if (!row.rtt_n || row.rtt_min == null || row.rtt_min <= 0 && kind === "log") return "-";
-            const med = row.rtt_median;
-            const p90 = row.rtt_p90 == null ? med : row.rtt_p90;
-            return [med, p90, row.rtt_min, row.rtt_max];
-          })
-        }], rows)
+          {
+            name: scopedName("range", "Cluster median to p90"),
+            type: "candlestick",
+            itemStyle: { color: "#c45c26", color0: "#c45c26", borderColor: "#c45c26", borderColor0: "#c45c26" },
+            data: rows.map((row) => candle(row, "cluster"))
+          }
+        ], rows)
       }, true);
       const opcodeNames = (data.by_opcode || []).map((row) => row.name || row.opcode);
       charts.mix.setOption({
         color: palette,
         ...cross(),
-        legend: scopedLegend("mix", opcodeNames.concat(["Median", "p99"]), { type: "scroll" }),
+        legend: scopedLegend("mix", opcodeNames.concat(["SDK median", "Cluster median"]), { type: "scroll" }),
         tooltip: {
           trigger: "axis",
           axisPointer: { type: "cross", label: { backgroundColor: "#1c2430" } },
@@ -1114,14 +1129,14 @@
           emphasis: { focus: "series" },
           data: rows.map((row) => yValue((row.opcodes && row.opcodes[name]) || 0))
         })).concat([
-          { name: scopedName("mix", "Median"), type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.rtt_median)) },
-          { name: scopedName("mix", "p99"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { width: 2 }, data: rows.map((row) => yValue(row.rtt_p99)) }
+          { name: scopedName("mix", "SDK median"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { color: "#1a5276", width: 2 }, data: rows.map((row) => yValue(row.sdk_median)) },
+          { name: scopedName("mix", "Cluster median"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { color: "#c45c26", width: 2 }, data: rows.map((row) => yValue(row.cluster_median)) }
         ]), rows)
       }, true);
       charts.issues.setOption({
-        color: palette,
+        color: ["#b7b1a8", "#1a5276", "#c45c26", "#6b3fa0", "#1c2430", "#1f8a4c", "#e0a100"],
         ...cross(),
-        legend: scopedLegend("issues", ["Matched", "Lost response", "Response without request", "Loss toward client", "Loss toward server", "Retries"], {
+        legend: scopedLegend("issues", ["Matched", "SDK missing", "Cluster missing", "Response without request", "Loss toward client", "Loss toward server", "Retries"], {
           selected: { [scopedName("issues", "Matched")]: false }
         }),
         grid: baseGrid(),
@@ -1132,12 +1147,13 @@
           { type: kind, name: "packets", splitLine: { show: false } }
         ],
         series: pin([
-          { name: scopedName("issues", "Matched"), type: "bar", stack: "ops", data: rows.map((row) => yValue(row.matched)) },
-          { name: scopedName("issues", "Lost response"), type: "bar", stack: "ops", data: rows.map((row) => yValue(row.unanswered)) },
-          { name: scopedName("issues", "Response without request"), type: "bar", stack: "ops", data: rows.map((row) => yValue(row.resp_only)) },
-          { name: scopedName("issues", "Loss toward client"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost_s2c)) },
-          { name: scopedName("issues", "Loss toward server"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost_c2s)) },
-          { name: scopedName("issues", "Retries"), type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.retrans)) }
+          { name: scopedName("issues", "Matched"), type: "bar", stack: "ops", itemStyle: { color: "#b7b1a8" }, data: rows.map((row) => yValue(row.matched)) },
+          { name: scopedName("issues", "SDK missing"), type: "bar", stack: "ops", itemStyle: { color: "#1a5276" }, data: rows.map((row) => yValue(row.sdk_unanswered)) },
+          { name: scopedName("issues", "Cluster missing"), type: "bar", stack: "ops", itemStyle: { color: "#c45c26" }, data: rows.map((row) => yValue(row.cluster_unanswered)) },
+          { name: scopedName("issues", "Response without request"), type: "bar", stack: "ops", itemStyle: { color: "#6b3fa0" }, data: rows.map((row) => yValue(row.resp_only)) },
+          { name: scopedName("issues", "Loss toward client"), type: "line", yAxisIndex: 1, showSymbol: false, itemStyle: { color: "#1c2430" }, lineStyle: { color: "#1c2430", type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost_s2c)) },
+          { name: scopedName("issues", "Loss toward server"), type: "line", yAxisIndex: 1, showSymbol: false, itemStyle: { color: "#1f8a4c" }, lineStyle: { color: "#1f8a4c", type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.lost_c2s)) },
+          { name: scopedName("issues", "Retries"), type: "line", yAxisIndex: 1, showSymbol: false, itemStyle: { color: "#e0a100" }, lineStyle: { color: "#e0a100", width: 3 }, data: rows.map((row) => yValue(row.retrans)) }
         ], rows)
       }, true);
       if (charts.flow) charts.flow.setOption({
@@ -1208,7 +1224,8 @@
 
     const packetSystemColors = {
       "TCP data segment": "#4a5560",
-      "TCP ACK": "#b7c0c7"
+      "TCP ACK": "#b7c0c7",
+      "Capture duplicate": "#7f8c8d"
     };
     const packetErrorColors = {
       "Lost segment": "#c0392b",
@@ -1454,10 +1471,12 @@
       const cluster = (data.traffic || {}).cluster || {};
       const requests = cluster.requests || 0;
       const unanswered = cluster.unanswered || 0;
-      const pct = requests ? Math.round(1000 * unanswered / requests) / 10 : 0;
+      const expectReply = Math.max(0, requests - (cluster.no_reply || 0));
+      const pct = expectReply ? Math.round(1000 * unanswered / expectReply) / 10 : 0;
       if (note) {
         note.textContent = "Node-to-node traffic only. Both ends on port 11210 or 11207, or a DCP or replication-meta command. "
-          + requests + " requests, " + unanswered + " without a reply (" + pct + "%). Median "
+          + requests + " requests. " + (cluster.no_reply || 0) + " are DCP stream messages and do not expect a reply, so they are not lost responses. "
+          + unanswered + " other cluster commands have no reply (" + pct + "%). Median "
           + (cluster.median_ms == null ? "—" : cluster.median_ms + " ms") + ". Retransmissions on these flows: "
           + (cluster.retrans || 0) + ". Lost segments: " + (cluster.lost || 0) + ".";
       }
@@ -1635,6 +1654,8 @@
     }
 
     function gapPlace(row, atStart) {
+      if (row.where === "start") return "Start of file";
+      if (row.where === "end") return "End of file";
       if (!row.at_edge) return "Inside";
       return atStart ? "Start of file" : "End of file";
     }
@@ -1645,23 +1666,29 @@
     }
 
     function drawGaps() {
-      const requests = data.missing_response || [];
-      const replies = data.missing_request || [];
-      const requestTab = document.querySelector("[data-gap-tab='request']");
-      const responseTab = document.querySelector("[data-gap-tab='response']");
-      if (requestTab) requestTab.textContent = "Requests missing a response (" + gapTotal("missing_response", requests) + ")";
-      if (responseTab) responseTab.textContent = "Responses missing a request (" + gapTotal("missing_request", replies) + ")";
-      const atStart = gapTab === "response";
-      const items = atStart ? replies : requests;
-      const total = atStart ? gapTotal("missing_request", replies) : gapTotal("missing_response", requests);
+      const gapViews = [
+        { id: "sdk-request", label: "SDK requests missing a response", rows: "missing_response_sdk", total: "missing_response_sdk_total", atStart: false },
+        { id: "sdk-response", label: "SDK responses missing a request", rows: "missing_request_sdk", total: "missing_request_sdk_total", atStart: true },
+        { id: "cluster-request", label: "Cluster requests missing a response", rows: "missing_response_cluster", total: "missing_response_cluster_total", atStart: false },
+        { id: "cluster-response", label: "Cluster responses missing a request", rows: "missing_request_cluster", total: "missing_request_cluster_total", atStart: true }
+      ];
+      gapViews.forEach((view) => {
+        const button = document.querySelector("[data-gap-tab='" + view.id + "']");
+        const count = data[view.total] == null ? (data[view.rows] || []).length : data[view.total];
+        if (button) button.textContent = view.label + " (" + count + ")";
+      });
+      const view = gapViews.find((item) => item.id === gapTab) || gapViews[0];
+      const atStart = view.atStart;
+      const items = data[view.rows] || [];
+      const total = data[view.total] == null ? items.length : data[view.total];
       const note = document.getElementById("gap-note");
       if (note) {
         const sample = items.length < total
           ? "Showing " + items.length + " of " + total + ", spaced from the earliest to the latest. These are not the first rows. "
           : "All " + total + " are listed. ";
         note.textContent = atStart
-          ? sample + "Start of file means the reply arrived inside the longest completed round trip of the opening, so the request may have been sent before recording started."
-          : sample + "End of file means the request is still inside the longest completed round trip of the close, so the reply may have been cut off. Those rows are false positives for a call Couchbase never answered.";
+          ? sample + "Start of file means the reply arrived inside the longest completed round trip of the opening, so the request may have been sent before recording started. A Statistics reply (vbucket-seqno) is many packets on one opaque; those packets are one call and are not listed here."
+          : sample + "Start of file means this request is inside that same opening window: the connection was already mid-call, and the reply in the file may belong to the next opaque. End of file means the request is still inside the longest completed round trip of the close, so the reply may have been cut off. Inside is away from both edges.";
       }
       table(
         "gaps",
@@ -1695,15 +1722,15 @@
       const items = data.interest_stakes || [];
       table(
         "interest",
-        ["pi", "Seconds", "Point", "Median ms", "p99 ms", "Top opcode", "Bytes in", "Bytes out", "Toward client", "Toward server", "Lost responses", "Stake"],
+        ["pi", "Seconds", "Point", "SDK median", "Cluster median", "Top opcode", "Bytes in", "Bytes out", "Toward client", "Toward server", "Lost responses", "Stake"],
         items.map((row, index) => {
           const bucket = bucketAt(Number(row.seconds));
           return [
             "pi:" + (index + 1),
             escapeHtml(cellText(row.seconds)),
             escapeHtml(row.title || ""),
-            cellText(bucket.rtt_median),
-            cellText(bucket.rtt_p99),
+            cellText(bucket.sdk_median),
+            cellText(bucket.cluster_median),
             escapeHtml(topOpcode(bucket)),
             cellText(bucket.body_in_bytes),
             cellText(bucket.body_out_bytes),
@@ -1800,22 +1827,23 @@
     function drawTiles() {
       const overall = data.rtt_overall_ms || {};
       const slow = data.slow_ms || {};
+      const traffic = data.traffic || {};
+      const sdk = traffic.sdk || {};
+      const cluster = traffic.cluster || {};
       const matched = slow.matched || overall.rtt_n || 0;
       const requests = (data.by_requester_ip || []).reduce((sum, row) => sum + row.requests, 0);
       const lost = (data.by_requester_ip || []).reduce((sum, row) => sum + row.unanswered, 0);
       const share = (count) => matched ? Math.round(1000 * count / matched) / 10 + "% of matched" : "";
       const msText = (value) => value == null ? "—" : value + " ms";
       document.getElementById("tiles").innerHTML = [
-        tile(term("Median", "The middle matched call. Half were faster, half were slower."), msText(overall.rtt_median), matched + " " + term("matched calls", "Requests whose replies are also in this capture.")),
-        tile(term("p90", "90 percent of matched calls were this fast or faster."), msText(overall.rtt_p90), "90th percentile"),
-        tile(term("p95", "95 percent of matched calls were this fast or faster."), msText(overall.rtt_p95), "95th percentile"),
-        tile(term("p99", "99 percent of matched calls were this fast or faster. This is the slow end."), msText(overall.rtt_p99), "99th percentile", true),
-        tile(term("Max", "The slowest matched call in the capture."), msText(overall.rtt_max), "slowest matched call", true),
-        tile(term("≥ 100 ms", "Matched calls whose response time was 100 milliseconds or more."), slow.over_100 == null ? "—" : slow.over_100, share(slow.over_100 || 0), true),
-        tile(term("≥ 250 ms", "Matched calls whose response time was 250 milliseconds or more."), slow.over_250 == null ? "—" : slow.over_250, share(slow.over_250 || 0)),
-        tile("Requests", requests, lost + " " + term("lost responses", "Requests whose replies are not in this file.")),
-        tile("SDK median", msText((data.traffic && data.traffic.sdk && data.traffic.sdk.median_ms)), "application calls"),
-        tile("Cluster median", msText((data.traffic && data.traffic.cluster && data.traffic.cluster.median_ms)), "replication calls")
+        tile(term("SDK median", "The middle application call. An ephemeral port talking to 11210."), msText(sdk.median_ms), (sdk.matched || 0) + " application calls"),
+        tile(term("Cluster median", "The middle replication call. DCP and meta commands."), msText(cluster.median_ms), (cluster.matched || 0) + " replication calls"),
+        tile(term("SDK p99", "99 percent of application calls were this fast or faster."), msText(sdk.p99_ms), "application slow end", true),
+        tile(term("Cluster p99", "99 percent of replication calls were this fast or faster."), msText(cluster.p99_ms), "replication slow end", true),
+        tile(term("Max", "The slowest matched call on either side."), msText(overall.rtt_max), "slowest matched call", true),
+        tile(term("≥ 100 ms", "Matched calls on either side whose response time was 100 milliseconds or more."), slow.over_100 == null ? "—" : slow.over_100, share(slow.over_100 || 0), true),
+        tile(term("≥ 250 ms", "Matched calls on either side whose response time was 250 milliseconds or more."), slow.over_250 == null ? "—" : slow.over_250, share(slow.over_250 || 0)),
+        tile("Requests", requests, lost + " " + term("lost responses", "Requests whose replies are not in this file. DCP stream messages are not in this count."))
       ].join("");
     }
 
@@ -1842,12 +1870,16 @@
       }, true);
       const bands = data.rtt_histogram || [];
       charts.spread.setOption({
-        color: palette,
+        color: ["#1a5276", "#c45c26"],
         tooltip: { trigger: "axis" },
-        grid: { left: 56, right: 24, top: 16, bottom: 40 },
+        legend: { data: ["SDK", "Cluster"] },
+        grid: { left: 56, right: 24, top: 28, bottom: 40 },
         xAxis: { type: "category", data: bands.map((row) => row.label), name: "ms" },
         yAxis: { type: yType(), name: "calls" },
-        series: [{ type: "bar", data: bands.map((row) => yValue(row.count)), itemStyle: { color: "#24576e" } }]
+        series: [
+          { name: "SDK", type: "bar", data: bands.map((row) => yValue(row.sdk)), itemStyle: { color: "#1a5276" } },
+          { name: "Cluster", type: "bar", data: bands.map((row) => yValue(row.cluster)), itemStyle: { color: "#c45c26" } }
+        ]
       }, true);
       table("top-asked", [term("Document id", "The Couchbase key the operation named."), "Requests", term("Lost responses", "Requests for that document whose replies are not in this file.")], (data.top_requested || []).map((row) => [copyCell("key", row.key), row.count, row.unanswered]));
       table("top-slow", [
@@ -1872,18 +1904,17 @@
       markStakeButtons();
       drawInterest();
       drawNext();
-      const overall = data.rtt_overall_ms || {};
       const bits = [];
       if (data.capture_seconds != null) bits.push(data.capture_seconds + " seconds");
-      if (overall.rtt_median != null) bits.push("median " + overall.rtt_median + " ms");
-      if (overall.rtt_p90 != null) bits.push("p90 " + overall.rtt_p90 + " ms");
-      if (overall.rtt_p95 != null) bits.push("p95 " + overall.rtt_p95 + " ms");
-      if (overall.rtt_p99 != null) bits.push("p99 " + overall.rtt_p99 + " ms");
+      const sdkPace = data.traffic && data.traffic.sdk;
+      const clusterPace = data.traffic && data.traffic.cluster;
+      if (sdkPace && sdkPace.median_ms != null) bits.push("SDK median " + sdkPace.median_ms + " ms");
+      if (clusterPace && clusterPace.median_ms != null) bits.push("cluster median " + clusterPace.median_ms + " ms");
       document.getElementById("subtitle").textContent = bits.join(" · ") || "No matched calls";
       table(
         "opcodes-seen",
         ["Opcode", "Command", "Side", "What it does", "Requests", "Lost responses"],
-        (data.by_opcode || []).map((row) => [row.opcode, row.name, row.role || "", row.description || "", row.requests, row.unanswered])
+        (data.by_opcode || []).map((row) => [row.opcode, row.name, row.role || "", row.description || "", row.requests, row.expects_reply === false && !row.unanswered ? "not expected" : row.unanswered])
       );
     }
 

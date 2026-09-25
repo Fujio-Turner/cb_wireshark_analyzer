@@ -11,9 +11,9 @@ def test_opcode_names_match_wireshark():
 import analyze_capture as ac
 
 
-def _row(magic, opcode, opaque, key="", status="", body=""):
+def _row(magic, opcode, opaque, key="", status="", body="", ack="", raw_key=""):
     return "\t".join(
-        ["10", "1.5", "3", "10.0.0.2", "4000", "10.0.0.3", "11210", magic, opcode, opaque, key, status, body]
+        ["10", "1.5", "3", "10.0.0.2", "4000", "10.0.0.3", "11210", magic, opcode, opaque, key, raw_key, status, body, ack]
     )
 
 
@@ -63,6 +63,28 @@ def test_body_length_stays_with_its_message():
     assert [msg["body"] for msg in messages] == [1048576, 24]
 
 
+def test_stat_key_comes_from_couchbase_key_when_the_logical_key_is_empty():
+    line = _row("0x80", "0x10", "0xde030e00", "", "", "13", "", "vbucket-seqno")
+    messages, bad, _loss = ac.messages_from_field_line(line)
+    assert bad is None
+    assert messages[0]["key"] == "vbucket-seqno"
+    assert ac.traffic_role(messages[0]["sport"], messages[0]["dport"], messages[0]["opcode"], messages[0]["key"]) == "cluster"
+
+
+def test_snapshot_ack_flag_marks_that_marker_as_wanting_a_reply():
+    line = _row("0x80", "0x56", "0x10", "", "", "20", "True")
+    messages, bad, _loss = ac.messages_from_field_line(line)
+    assert bad is None
+    assert messages[0]["snapshot_ack"] is True
+    paired = ac.pair_messages(messages, [])
+    assert paired["no_reply"] == []
+    assert len(paired["unanswered"]) == 1
+    quiet = _row("0x80", "0x56", "0x11", "", "", "20", "")
+    quiet_messages, quiet_bad, _loss = ac.messages_from_field_line(quiet)
+    assert quiet_bad is None
+    assert ac.pair_messages(quiet_messages, [])["no_reply"]
+
+
 def test_shifted_column_is_handed_back_for_a_second_read():
     agg = ac.FIELD_AGG
     line = _row(agg.join(["0x80", "0x80"]), agg.join(["0x00", "0x01"]), agg.join(["0x1", "0x2"]), "only-the-first")
@@ -86,7 +108,13 @@ def test_same_size_files_group_together_and_different_sizes_do_not(tmp_path):
 
 
 def test_packet_kind_splits_couchbase_and_tcp():
-    assert ac.packet_kind(True, True, False, False, "Get", False, 100) == "Lost segment"
+    assert ac.packet_kind(True, True, True, False, "DCP Snapshot Marker", False, 100) == "DCP Snapshot Marker request"
+    assert ac.packet_kind(False, False, True, False, "", False, 100, True) == "Capture duplicate"
+    assert ac.is_capture_duplicate(True, 0.000001) is True
+    assert ac.is_capture_duplicate(True, None) is True
+    assert ac.is_capture_duplicate(True, 0.2) is False
+    assert ac.packet_kind(False, True, True, False, "", False, 100) == "Lost segment"
+    assert ac.packet_kind(False, False, True, False, "", False, 100) == "Retransmission"
     assert ac.packet_kind(True, False, False, False, "Get", False, 100) == "Get request"
     assert ac.packet_kind(True, False, False, False, "Set", True, 20) == "Set response"
     assert ac.packet_kind(False, False, False, False, "", False, 0) == "TCP ACK"
@@ -101,13 +129,13 @@ def test_kv_port_is_either_side():
 
 def test_gap_flags_share_the_couchbase_row_and_other_ports_drop():
     line = "\t".join(
-        ["20", "4.0", "1", "10.0.0.3", "11210", "10.0.0.2", "4000", "0x18", "0x00", "0x3", "", "0x0", "24", "1", "", "1"]
+        ["20", "4.0", "1", "10.0.0.3", "11210", "10.0.0.2", "4000", "0x18", "0x00", "0x3", "", "", "0x0", "24", "", "1", "", "1"]
     )
     messages, bad, loss = ac.messages_from_field_line(line)
     assert bad is None
     assert len(messages) == 1
     assert loss["lost"] and loss["ack"] and not loss["retrans"]
-    only_gap = "\t".join(["21", "4.1", "9", "10.9.9.9", "80", "10.9.9.1", "443", "", "", "", "", "", "", "", "1", ""])
+    only_gap = "\t".join(["21", "4.1", "9", "10.9.9.9", "80", "10.9.9.1", "443", "", "", "", "", "", "", "", "", "", "1", ""])
     no_messages, no_bad, other = ac.messages_from_field_line(only_gap)
     assert no_messages == []
     assert no_bad is None

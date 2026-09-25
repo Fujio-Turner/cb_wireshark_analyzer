@@ -1,5 +1,9 @@
 # Release notes
 
+## 0.10.1
+
+The ten busiest document ids show how often each key is asked for, and how big it is. **Per second** is the request count divided by the length of the capture. **Average body** is the mean total body length for that key. Each call contributes the larger of the request and the reply, so a 1 MB get is not hidden by the small request packet. A key asked for hundreds of times a second at about 1 MB is moving a lot of bytes even when only a few keys look slow.
+
 ## 0.10.0
 
 Slowness is split into where the time went, and replica reads are called out in the note.

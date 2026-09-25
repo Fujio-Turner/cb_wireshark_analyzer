@@ -233,7 +233,11 @@ def test_buckets_percentiles_and_top_keys():
     assert clients["10.0.0.8"]["unanswered"] == 0
     assert charts["by_connection"][0]["port"] == "4000"
     assert sum(row["requests"] for row in charts["by_connection"]) == 4
-    assert charts["top_requested"][0] == {"key": "widget::hot", "count": 2, "unanswered": 0}
+    assert charts["top_requested"][0]["key"] == "widget::hot"
+    assert charts["top_requested"][0]["count"] == 2
+    assert charts["top_requested"][0]["unanswered"] == 0
+    assert charts["top_requested"][0]["per_second"] == 1.0
+    assert charts["top_requested"][0]["avg_body_bytes"] == 0
     assert charts["top_slowest"][0]["key"] == "widget::slow"
     assert charts["top_slowest"][0]["time_ms"] == 150.0
     assert charts["top_slowest"][0]["seconds"] == 1.2
@@ -277,6 +281,21 @@ def test_buckets_percentiles_and_top_keys():
     assert next(row["count"] for row in charts["rtt_histogram"] if row["label"] == "100–250") == 1
     assert len(charts["buckets"]["5"]) == 1
     assert len(charts["buckets"]["10"]) == 1
+
+
+def test_busiest_key_averages_the_larger_body_of_each_call():
+    big = msg(0.1, opaque="0x1", key="doc::fat")
+    big_reply = msg(0.2, opaque="0x1", key="doc::fat", kind="resp", body=1_000_000)
+    small = msg(0.3, opaque="0x2", key="doc::fat", body=100)
+    small_reply = msg(0.4, opaque="0x2", key="doc::fat", kind="resp", body=200)
+    requests = [big, small]
+    paired = ac.pair_messages(requests, [big_reply, small_reply])
+    charts = ac.build_charts(requests, paired, [], ["11210"], 2.0)
+    row = charts["top_requested"][0]
+    assert row["key"] == "doc::fat"
+    assert row["count"] == 2
+    assert row["per_second"] == 1.0
+    assert row["avg_body_bytes"] == 500_100
 
 
 def test_replica_reads_are_counted_by_the_node_that_was_asked():

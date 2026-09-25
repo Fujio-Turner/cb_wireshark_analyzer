@@ -1952,6 +1952,8 @@ def build_charts(
     by_opcode: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     by_key: Counter = Counter()
     key_unanswered: Counter = Counter()
+    key_body_sum: Counter = Counter()
+    key_body_n: Counter = Counter()
     opcode_rtts: dict[str, list[float]] = defaultdict(list)
     unanswered_keys = {id(msg) for msg in paired["unanswered"]}
     for msg in requests:
@@ -1978,8 +1980,13 @@ def build_charts(
             conn[1] += 1
             if key:
                 key_unanswered[key] += 1
-    for _when, gap, _key, opcode, _body_in, _body_out, _opaque, _stream, _requester, _role in matched_rtts:
+                key_body_sum[key] += int(msg.get("body") or 0)
+                key_body_n[key] += 1
+    for _when, gap, key, opcode, body_in, body_out, _opaque, _stream, _requester, _role in matched_rtts:
         opcode_rtts[opcode].append(gap)
+        if key:
+            key_body_sum[key] += max(body_in, body_out)
+            key_body_n[key] += 1
 
     ranked_calls = sorted(
         (
@@ -2068,7 +2075,13 @@ def build_charts(
             for opcode, counts in sorted(by_opcode.items(), key=lambda item: item[1][0], reverse=True)
         ],
         "top_requested": [
-            {"key": key, "count": count, "unanswered": key_unanswered[key]}
+            {
+                "key": key,
+                "count": count,
+                "unanswered": key_unanswered[key],
+                "per_second": round(count / capture_end, 1) if capture_end else None,
+                "avg_body_bytes": round(key_body_sum[key] / key_body_n[key]) if key_body_n[key] else None,
+            }
             for key, count in by_key.most_common(10)
         ],
         "top_slowest": slowest,

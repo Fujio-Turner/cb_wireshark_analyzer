@@ -17,7 +17,7 @@ One run writes two things, side by side in the output folder.
 
 **The note, `summary.md`.** A model writes this from the counts: what the capture did, the slow tail, the missing replies, and the next questions. The default is local Ollama with Qwen. The same brief can go to an OpenAI-compatible API instead. `--no-ai` skips the model and writes the counted note. A model run also keeps that counted text as `summary.computed.md`.
 
-**The chart page, `charts.json` and `index.html`.** `charts.json` is the analysis: half-, one-, five-, and ten-second buckets, percentiles, opcodes, body size, TCP loss, client connections, and the points of interest. `index.html` draws that file. The heading names the Couchbase server. A bar under the title jumps to Timings, Operations, Packets, Clients, Documents, Marks, Report, and Glossary. The section pills stay on the left. On the right of that same bar, plain links open `summary.md`, `summary.computed.md` when that file is present, and `charts.json`. **summary.md** opens `summary.html`, which formats the note in the same colors and type as the chart page. Chips under each heading jump to that chart, and a dotted word jumps to its glossary entry. The time charts share a crosshair. A stake marks the same second on every chart, so opcode mix, response time, missing replies, TCP loss, and body size can be read together. Packets on port 11210 are bars by command, request, and response. A copy icon next to a document id or an opaque puts the Wireshark filter on the clipboard. Open the folder with a local web server. A `file://` page cannot read `charts.json`. The previous single-column page is `index.original.html`.
+**The chart page, `charts.json` and `index.html`.** `charts.json` is the analysis: half-, one-, five-, and ten-second buckets, percentiles, opcodes, body size, TCP loss, client connections, and the points of interest. `index.html` draws that file. The heading names the Couchbase server. A bar under the title jumps to Timings, Operations, Diagnosis, Packets, Clients, Documents, Marks, Report, and Glossary. The section pills stay on the left. On the right of that same bar, plain links open `summary.md`, `summary.computed.md` when that file is present, and `charts.json`. **summary.md** opens `summary.html`, which formats the note in the same colors and type as the chart page. Chips under each heading jump to that chart, and a dotted word jumps to its glossary entry. The time charts share a crosshair. A stake marks the same second on every chart, so opcode mix, response time, missing replies, TCP loss, and body size can be read together. Packets on port 11210 are bars by command, request, and response. A copy icon next to a document id or an opaque puts the Wireshark filter on the clipboard. Open the folder with a local web server. A `file://` page cannot read `charts.json`. The previous single-column page is `index.original.html`.
 
 Python owns every number in both. The model does not invent the counts. Only packets from or to TCP port 11210 are counted. That is `tcp.port == 11210`, both directions. A capture limited to `dst port 11210` has the requests and not the replies.
 
@@ -51,7 +51,13 @@ The bars are Couchbase operations: matched calls, requests whose reply is missin
 
 ![Largest request and reply body each second](images/json_size_in_out.png)
 
-Bars are the largest Couchbase body in that second, one document in and one document out. Dashed lines add every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC can carry about 125 MB/s (125,000,000 bytes). A 10 Gbit NIC can carry about 1,250 MB/s (1,250,000,000 bytes). The points-of-interest table puts median, p99, the top opcode, those byte totals, and both loss directions on the same second.
+Bars are the largest Couchbase body in that second, one document in and one document out. Dashed lines add every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC can carry about 125 MB/s (125,000,000 bytes). A 10 Gbit NIC can carry about 1,250 MB/s (1,250,000,000 bytes). The points-of-interest table puts median, p99, the top opcode, those byte totals, and both loss directions on the same second. **NIC headroom**, above that chart, turns the busiest bucket’s bytes in plus bytes out into a rate and sets it against 125 MB/s (1 Gbit) and 1,250 MB/s (10 Gbit).
+
+### Diagnosis
+
+Diagnosis is where a slow call is taken apart. A scatter is every matched call of 50 ms or more, and the same dots against the server’s own microseconds. A heatmap is missing replies by client or by command. A box is the spread of one opcode. A flow is where calls went: matched, not found, key exists, an error status, a missing reply, or not expected. Status, durability level, vBucket, snapshot kind, and buffer-ack credit sit with them. Time to replicate and time to persist are the Observe estimates, in milliseconds. Wireshark writes those two numbers only on opcode `0x92`, in the CAS field.
+
+The note has a **Watch for** section. Get Replica (`0x83`) and a subdocument request with `replica_read` set are reads of a replica vBucket. The SDK usually tried the active first, waited the default 2.5 second KV timeout, and sometimes backed off before the fallback. The nodes that receive those reads are still serving. The active that stopped answering is the one to check.
 
 ## Getting Started
 
@@ -64,8 +70,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-python3 analyze_capture.py --no-ai /path/to/capture.pcap -o ./orphan-report
-cd orphan-report
+python3 analyze_capture.py --no-ai /path/to/capture.pcap
+# writes /path/to/capture-report/ next to the pcap
+cd /path/to/capture-report
 python3 -m http.server
 ```
 
@@ -106,7 +113,7 @@ Put the key in the environment, not in `config.json`:
 
 ```bash
 export AI_API_KEY="your key"
-python3 analyze_capture.py /path/to/capture.pcap -o ./orphan-report
+python3 analyze_capture.py /path/to/capture.pcap
 ```
 
 `OPENAI_API_KEY` is accepted as well. `AI_PROVIDER`, `AI_BASE_URL`, and `AI_MODEL` override the file. The same switch on the command line is `--provider openai --api-base https://api.openai.com/v1 --model gpt-4.1-mini`. A local OpenAI-compatible server on `localhost` can omit the key. Any other host needs one.
@@ -130,10 +137,10 @@ pip install -r requirements.txt
 python3 analyze_capture.py --dry-run /path/to/capture.pcap
 
 # Counted note only.
-python3 analyze_capture.py --no-ai /path/to/capture.pcap -o ./orphan-report
+python3 analyze_capture.py --no-ai /path/to/capture.pcap
 
 # Counted note plus the local model. Ollama must already be listening.
-python3 analyze_capture.py /path/to/capture.pcap -o ./orphan-report
+python3 analyze_capture.py /path/to/capture.pcap
 
 python3 -m pytest -q
 ```
@@ -161,7 +168,7 @@ docker compose run --rm test
 # Plan only. No files written, model not called.
 docker compose run --rm analyze --dry-run --no-ai /captures/your.pcap -o /out
 
-# Counted note, written to ./orphan-report on the host.
+# Counted note. On the host this is ./orphan-report unless OUT_DIR is set.
 docker compose run --rm analyze --no-ai /captures/your.pcap -o /out
 
 # Counted note plus Qwen on the host.

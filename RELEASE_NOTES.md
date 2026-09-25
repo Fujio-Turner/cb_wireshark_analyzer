@@ -1,5 +1,14 @@
 # Release notes
 
+## 0.10.0
+
+Slowness is split into where the time went, and replica reads are called out in the note.
+
+- **Diagnosis** adds a scatter of calls at 50 ms or more, the same dots against server microseconds, a missing-reply heatmap, a box per opcode, and a flow of where calls went. Status, durability level, vBucket, snapshot kind, and buffer-ack credit sit with them. The numeric axes follow the linear/log control.
+- **NIC headroom**, above Total body length, gauges the busiest time bucket. Document bytes in plus document bytes out are a rate. The scale ends at 10 Gbit (1,250 MB/s) and changes color at 1 Gbit (125 MB/s).
+- **Time to replicate** (`couchbase.ttr`) and **time to persist** (`couchbase.ttp`) are charted in milliseconds. Wireshark writes them only on Observe (`0x92`), in the CAS field. Zero means that step is already done. A durable Set does not carry them.
+- The note has a **Watch for** section, and the model brief has the same rule. Get Replica (`0x83`) and a subdocument request with `replica_read` set are fallbacks after the active read timed out. The SDK default KV timeout is 2.5 seconds. The nodes that receive those reads are still serving. The active that stopped answering is the one to check.
+
 ## 0.9.1
 
 Each capture writes its own report folder. `filename_1.pcap` becomes `filename_1-report/` next to the file, so a second pcap in the same directory does not overwrite the first. Pass `-o` when you want a different path.

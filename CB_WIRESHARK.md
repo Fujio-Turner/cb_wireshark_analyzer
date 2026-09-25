@@ -376,6 +376,30 @@ To see the level on every row, select a request that has the field, right-click 
 
 `couchbase.flex_frame.frame.durability_timeout` is the client’s limit on that wait, in milliseconds. Wireshark only had it from 3.0.0 through 3.0.14. Wireshark 4.6.8 does not, so the filter will not resolve on a current install. On those old builds it is also on the request. A timeout of a few seconds means the client was willing to sit on the disk wait for that long.
 
+## Time to persist and time to replicate
+
+`couchbase.ttp` and `couchbase.ttr` are on Observe only. In `packet-couchbase.c` the opcode check is `CLIENT_OPCODE_OBSERVE` (`0x92`). Those four-byte fields replace the CAS slot: time to persist, then time to replicate. The field text says both are milliseconds, an approximate time still needed. Zero means that step is already done. A durable Set does not carry them.
+
+```text
+couchbase.opcode == 0x92 && (couchbase.ttp > 0 || couchbase.ttr > 0)
+```
+
+## Replica reads
+
+A replica read is a client that did not get the document from the active vBucket. The SDK default KV timeout is 2.5 seconds. After that, and sometimes after a linear or exponential backoff, the client reads a replica. The nodes that receive these packets are the ones still serving. The active that stopped answering is the one in trouble, now or earlier. On a four-node cluster, replica reads on three nodes point at the fourth.
+
+Get Replica is opcode `0x83`:
+
+```text
+couchbase.opcode == 0x83
+```
+
+A subdocument request uses the doc flag. The dissector calls it “operate on a replica vBucket instead of an active one.” The bit is `0x20`, field `couchbase.extras.subdoc.doc_flags.replica_read`, present in Wireshark 4.2 and later:
+
+```text
+couchbase.extras.subdoc.doc_flags.replica_read
+```
+
 ## Examples
 
 A get of one invoice, request and reply:

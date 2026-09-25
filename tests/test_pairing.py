@@ -88,6 +88,9 @@ def test_summary_names_the_interior_key_and_splice_fills_the_table():
     assert "do not expect a command reply" in brief
     assert "vbucket-seqno" in brief
     assert "SDK median and the cluster median" in brief
+    assert "2.5 seconds" in brief
+    assert "Replica reads: 0" in brief
+    assert "Replica reads: **0**" in text
     facts["streams"] = [
         {
             "stream": str(i),

@@ -433,7 +433,7 @@ OPCODE_DESCRIPTIONS = {
     0x5C: "DCP noop. The producer sends it, and the consumer must answer or the producer drops the connection.",
     0x5D: "DCP buffer acknowledgement. The producer does not answer. Opaque 0 is the whole connection.",
     0x5E: "DCP control.",
-    0x83: "Requests a document from a replica.",
+    0x83: "Get Replica. Reads a replica vBucket, usually after the active read timed out.",
     0x89: "Selects the bucket for this connection.",
     0x91: "Checks durability by sequence number.",
     0x92: "Legacy durability check.",
@@ -556,6 +556,44 @@ def _opcode_number(opcode: str) -> int | None:
 
 def _flag_set(value) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def _optional_number(value, *, integer: bool = False):
+    """Blank stays missing. Zero is a real measurement."""
+    text = str(value or "").strip()
+    if not text or text.lower() in {"false", "true"}:
+        return None
+    try:
+        number = int(text, 16) if text.lower().startswith("0x") else float(text)
+    except ValueError:
+        return None
+    if integer:
+        return int(number)
+    return number
+
+
+def _measure(
+    vbucket, duration, durability, snap_memory, snap_disk, snap_start, snap_end, bytes_ack,
+    ttp="", ttr="", replica_read="",
+) -> dict:
+    """Fields that explain a slow, missing, or odd call. Absent stays None."""
+    level = _optional_number(durability, integer=True)
+    if level not in (1, 2, 3):
+        level = None
+    return {
+        "vbucket": _optional_number(vbucket, integer=True),
+        "server_us": _optional_number(duration),
+        "durability": level,
+        "snapshot_memory": _flag_set(snap_memory),
+        "snapshot_disk": _flag_set(snap_disk),
+        "snap_start": _optional_number(snap_start, integer=True),
+        "snap_end": _optional_number(snap_end, integer=True),
+        "bytes_to_ack": _optional_number(bytes_ack, integer=True),
+        # Server estimates, in milliseconds. Zero means that step is already done.
+        "ttp": _optional_number(ttp, integer=True),
+        "ttr": _optional_number(ttr, integer=True),
+        "replica_read": _flag_set(replica_read),
+    }
 
 
 def expects_reply(opcode: str, snapshot_ack=False) -> bool:
@@ -853,6 +891,19 @@ def _message_from_item(item: dict, frame: dict, ip: dict, tcp: dict) -> dict | N
         "body": body_len(first(field(item, "total_bodylength"))),
         "magic": magic,
         "snapshot_ack": _flag_set(first(field(item, "dcp_snapshot_marker_ack"))),
+        **_measure(
+            first(field(item, "vbucket")),
+            first(field(item, "flex_frame_frame_duration")),
+            first(field(item, "durability_req")),
+            first(field(item, "dcp_snapshot_marker_memory")),
+            first(field(item, "dcp_snapshot_marker_disk")),
+            first(field(item, "start_seqno")),
+            first(field(item, "end_seqno")),
+            first(field(item, "bytes_to_ack")),
+            first(field(item, "ttp")),
+            first(field(item, "ttr")),
+            first(field(item, "replica_read")),
+        ),
     }
 
 
@@ -874,6 +925,17 @@ _FIELD_COLUMNS = (
     "couchbase.status",
     "couchbase.total_bodylength",
     "couchbase.extras.flags.dcp_snapshot_marker_ack",
+    "couchbase.vbucket",
+    "couchbase.flex_frame.frame.duration",
+    "couchbase.flex_frame.frame.durability_req",
+    "couchbase.extras.flags.dcp_snapshot_marker_memory",
+    "couchbase.extras.flags.dcp_snapshot_marker_disk",
+    "couchbase.extras.start_seqno",
+    "couchbase.extras.end_seqno",
+    "couchbase.extras.bytes_to_ack",
+    "couchbase.ttp",
+    "couchbase.ttr",
+    "couchbase.extras.subdoc.doc_flags.replica_read",
     "tcp.analysis.lost_segment",
     "tcp.analysis.retransmission",
     "tcp.analysis.ack_lost_segment",
@@ -882,7 +944,7 @@ _FIELD_COLUMNS = (
 )
 # Couchbase columns, then the three frame-level TCP flags. Flags are not repeated per message.
 _PREFIX_COLUMNS = 7
-_CB_COLUMNS = 8
+_CB_COLUMNS = 19
 _FLAG_COLUMNS = 3
 
 
@@ -950,14 +1012,20 @@ def messages_from_field_line(line: str) -> tuple[list[dict], str | None, dict | 
     frame, time_raw, stream, src, sport, dst, dport = cols[:_PREFIX_COLUMNS]
     flag_at = _PREFIX_COLUMNS + _CB_COLUMNS
     loss = _loss_event(time_raw, stream, sport, dport, cols[flag_at], cols[flag_at + 1], cols[flag_at + 2])
-    magic, opcode, opaque, key, raw_key, status, body, ack = (
-        _split_repeated(col) for col in cols[_PREFIX_COLUMNS:flag_at]
-    )
+    (
+        magic, opcode, opaque, key, raw_key, status, body, ack,
+        vbucket, duration, durability, snap_memory, snap_disk, snap_start, snap_end, bytes_ack,
+        ttp, ttr, replica_read,
+    ) = (_split_repeated(col) for col in cols[_PREFIX_COLUMNS:flag_at])
     present = [len(values) for values in (magic, opcode, opaque) if values]
     if not present:
         return [], None, loss
     count = max(present)
-    repeated = (magic, opcode, opaque, key, raw_key, status, body, ack)
+    repeated = (
+        magic, opcode, opaque, key, raw_key, status, body, ack,
+        vbucket, duration, durability, snap_memory, snap_disk, snap_start, snap_end, bytes_ack,
+        ttp, ttr, replica_read,
+    )
     if any(values is not None and len(values) != count for values in repeated):
         return [], frame or None, loss
 
@@ -993,6 +1061,19 @@ def messages_from_field_line(line: str) -> tuple[list[dict], str | None, dict | 
                 "body": body_len(at(body, index)),
                 "magic": magic_int,
                 "snapshot_ack": _flag_set(at(ack, index)),
+                **_measure(
+                    at(vbucket, index),
+                    at(duration, index),
+                    at(durability, index),
+                    at(snap_memory, index),
+                    at(snap_disk, index),
+                    at(snap_start, index),
+                    at(snap_end, index),
+                    at(bytes_ack, index),
+                    at(ttp, index),
+                    at(ttr, index),
+                    at(replica_read, index),
+                ),
             }
         )
     return messages, None, loss
@@ -1317,6 +1398,333 @@ def _rtt_summary(samples: list[float]) -> dict:
     }
 
 
+_SLOW_SECONDS = 0.05
+_SCATTER_CAP = 2000
+_HEATMAP_LIMIT = 12
+_SANKEY_OPCODES = 8
+_DURABILITY_NAMES = {
+    0: "No durability",
+    1: "Majority",
+    2: "Majority and persist on master",
+    3: "Persist to majority",
+}
+_SANKEY_COLORS = {
+    "Application": "#1a5276",
+    "Cluster": "#c45c26",
+    "Matched": "#b7b1a8",
+    "Not found": "#1f8a4c",
+    "Key exists": "#6e8b74",
+    "Error status": "#a33b3b",
+    "Missing reply": "#24576e",
+    "Not expected": "#6b3fa0",
+}
+
+
+def _reply_outcome(status: str) -> str:
+    number = _opcode_number(status or "")
+    if number in (None, 0x00):
+        return "Matched"
+    if number == 0x01:
+        return "Not found"
+    if number == 0x02:
+        return "Key exists"
+    return "Error status"
+
+
+def _role_name(msg: dict) -> str:
+    role = traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or "")
+    return "Cluster" if role == "cluster" else "Application"
+
+
+def _call_point(req: dict, resp: dict, gap: float) -> dict:
+    server = resp.get("server_us")
+    if server is None:
+        server = req.get("server_us")
+    return {
+        "t": round(req["time"], 3),
+        "rtt": _ms(gap),
+        "role": "cluster" if _role_name(req) == "Cluster" else "sdk",
+        "opcode": req.get("opcode") or "",
+        "name": opcode_name(req.get("opcode") or ""),
+        "server_us": None if server is None else round(float(server), 1),
+        "body": max(int(req.get("body") or 0), int(resp.get("body") or 0)),
+        "durability": req.get("durability"),
+        "vbucket": req.get("vbucket"),
+    }
+
+
+def _spread_points(points: list[dict], cap: int) -> list[dict]:
+    if len(points) <= cap:
+        return points
+    ordered = sorted(points, key=lambda point: point["t"])
+    step = len(ordered) / cap
+    return [ordered[int(index * step)] for index in range(cap)]
+
+
+def _scatters(paired: dict) -> tuple[list[dict], list[dict]]:
+    """Slow calls, and calls that reported a server duration.
+
+    The time scatter keeps calls of 50 ms or more, slowest first, capped.
+    The server scatter keeps the slowest durations and a spread of the rest,
+    so a fast call with a tiny server time stays visible.
+    """
+    slow = []
+    timed = []
+    for req, resp in paired["matched"]:
+        gap = resp["time"] - req["time"]
+        if gap < 0:
+            continue
+        point = _call_point(req, resp, gap)
+        if gap >= _SLOW_SECONDS:
+            slow.append(point)
+        if point["server_us"] is not None:
+            timed.append(point)
+    slow.sort(key=lambda point: point["rtt"] or 0, reverse=True)
+    slow = slow[:_SCATTER_CAP]
+    timed.sort(key=lambda point: point["rtt"] or 0, reverse=True)
+    half = _SCATTER_CAP // 2
+    chosen = {id(point): point for point in timed[:half]}
+    for point in _spread_points(timed[half:], _SCATTER_CAP - len(chosen)):
+        chosen[id(point)] = point
+    return slow, list(chosen.values())
+
+
+def _heatmaps(unanswered: list[dict], capture_end: float) -> dict:
+    by_ip: Counter = Counter()
+    by_opcode: Counter = Counter()
+    for msg in unanswered:
+        by_ip[msg.get("src") or "(unknown)"] += 1
+        by_opcode[opcode_name(msg.get("opcode") or "")] += 1
+    ips = [ip for ip, _count in by_ip.most_common(_HEATMAP_LIMIT)]
+    names = [name for name, _count in by_opcode.most_common(_HEATMAP_LIMIT)]
+    out = {}
+    for width in (0.5, 1, 5, 10):
+        count = _bucket_count(capture_end, width)
+        ip_rows = {ip: [0] * count for ip in ips}
+        opcode_rows = {name: [0] * count for name in names}
+        for msg in unanswered:
+            index = _bucket_index(msg["time"], width, count)
+            ip = msg.get("src") or "(unknown)"
+            if ip in ip_rows:
+                ip_rows[ip][index] += 1
+            name = opcode_name(msg.get("opcode") or "")
+            if name in opcode_rows:
+                opcode_rows[name][index] += 1
+        out[_bucket_key(width)] = {
+            "clients": [{"name": ip, "values": ip_rows[ip]} for ip in ips],
+            "opcodes": [{"name": name, "values": opcode_rows[name]} for name in names],
+        }
+    return out
+
+
+def _boxplot(opcode_rtts: dict[str, list[float]]) -> list[dict]:
+    """Five numbers per command: fastest, p25, median, p75, p99."""
+    rows = []
+    for opcode, samples in opcode_rtts.items():
+        if not samples:
+            continue
+        rows.append({
+            "opcode": opcode,
+            "name": opcode_name(opcode),
+            "n": len(samples),
+            "box": [
+                _ms(min(samples)),
+                _ms(percentile(samples, 0.25)),
+                _ms(statistics.median(samples)),
+                _ms(percentile(samples, 0.75)),
+                _ms(percentile(samples, 0.99)),
+            ],
+        })
+    rows.sort(key=lambda row: row["box"][4] or 0, reverse=True)
+    return rows[:16]
+
+
+def _sankey(requests: list[dict], paired: dict) -> dict:
+    """Application or cluster, then the command, then how the call ended."""
+    unanswered = {id(msg) for msg in paired["unanswered"]}
+    no_reply = {id(msg) for msg in paired.get("no_reply") or []}
+    matched = {id(req): resp for req, resp in paired["matched"]}
+    counts: Counter = Counter()
+    for msg in requests:
+        if id(msg) in no_reply:
+            outcome = "Not expected"
+        elif id(msg) in unanswered:
+            outcome = "Missing reply"
+        elif id(msg) in matched:
+            outcome = _reply_outcome(matched[id(msg)].get("status") or "")
+        else:
+            continue
+        counts[(_role_name(msg), opcode_name(msg.get("opcode") or "") or "Unknown", outcome)] += 1
+    totals: Counter = Counter()
+    for (_role, name, _outcome), count in counts.items():
+        totals[name] += count
+    keep = {name for name, _count in totals.most_common(_SANKEY_OPCODES)}
+    folded: Counter = Counter()
+    for (role, name, outcome), count in counts.items():
+        folded[(role, name if name in keep else "Other", outcome)] += count
+    role_opcode: Counter = Counter()
+    opcode_outcome: Counter = Counter()
+    for (role, name, outcome), count in folded.items():
+        role_opcode[(role, name)] += count
+        opcode_outcome[(name, outcome)] += count
+    node_names = []
+    for name in ("Application", "Cluster"):
+        if any(role == name for role, _opcode in role_opcode):
+            node_names.append(name)
+    for name in list(dict.fromkeys(name for _role, name in role_opcode)):
+        node_names.append(name)
+    for name in ("Matched", "Not found", "Key exists", "Error status", "Missing reply", "Not expected"):
+        if any(outcome == name for _opcode, outcome in opcode_outcome):
+            node_names.append(name)
+    nodes = [{"name": name, "itemStyle": {"color": _SANKEY_COLORS.get(name, "#5d8aa8")}} for name in node_names]
+    links = [
+        {"source": role, "target": name, "value": count}
+        for (role, name), count in role_opcode.items()
+    ] + [
+        {"source": name, "target": outcome, "value": count}
+        for (name, outcome), count in opcode_outcome.items()
+    ]
+    return {"nodes": nodes, "links": links}
+
+
+def _milli_summary(samples: list[float]) -> dict:
+    """Median and p99 of a millisecond estimate. Zero is a real reading."""
+    if not samples:
+        return {"n": 0, "median": None, "p99": None, "max": None}
+    return {
+        "n": len(samples),
+        "median": round(statistics.median(samples), 1),
+        "p99": round(percentile(samples, 0.99) or 0, 1),
+        "max": round(max(samples), 1),
+    }
+
+
+def replica_read_kind(msg: dict) -> str:
+    """Get Replica, or a subdocument request flagged to read a replica vBucket."""
+    if _opcode_number(msg.get("opcode") or "") == 0x83:
+        return "get_replica"
+    if msg.get("replica_read"):
+        return "subdoc"
+    return ""
+
+
+def replica_reads(requests: list[dict]) -> dict:
+    """Fallback reads, counted by the node that was asked."""
+    by_dst: dict[str, dict[str, int]] = {}
+    get_n = 0
+    sub_n = 0
+    for msg in requests:
+        kind = replica_read_kind(msg)
+        if not kind:
+            continue
+        if kind == "get_replica":
+            get_n += 1
+        else:
+            sub_n += 1
+        dst = msg.get("dst") or "(unknown)"
+        slot = by_dst.setdefault(dst, {"get_replica": 0, "subdoc": 0})
+        slot[kind] += 1
+    servers = [
+        {
+            "ip": ip,
+            "get_replica": slot["get_replica"],
+            "subdoc": slot["subdoc"],
+            "total": slot["get_replica"] + slot["subdoc"],
+        }
+        for ip, slot in sorted(by_dst.items(), key=lambda item: item[1]["get_replica"] + item[1]["subdoc"], reverse=True)
+    ]
+    return {
+        "total": get_n + sub_n,
+        "get_replica": get_n,
+        "subdoc": sub_n,
+        "servers": servers,
+    }
+
+
+def _persist_times(paired: dict) -> dict:
+    """Server estimates of time to replicate and time to persist, in milliseconds."""
+    ttp: list[float] = []
+    ttr: list[float] = []
+    messages = [resp for _req, resp in paired["matched"]] + list(paired["resp_only"])
+    for msg in messages:
+        if msg.get("ttp") is not None:
+            ttp.append(float(msg["ttp"]))
+        if msg.get("ttr") is not None:
+            ttr.append(float(msg["ttr"]))
+    return {"ttp": _milli_summary(ttp), "ttr": _milli_summary(ttr)}
+
+
+def _durability_rows(requests: list[dict], paired: dict) -> list[dict]:
+    gaps = {}
+    for req, resp in paired["matched"]:
+        gap = resp["time"] - req["time"]
+        if gap >= 0:
+            gaps[id(req)] = gap
+    samples: dict[int, list[float]] = {0: [], 1: [], 2: [], 3: []}
+    counts: Counter = Counter()
+    for msg in requests:
+        level = msg.get("durability")
+        if level not in (1, 2, 3):
+            level = 0
+        counts[level] += 1
+        if id(msg) in gaps:
+            samples[level].append(gaps[id(msg)])
+    rows = []
+    for level in (0, 1, 2, 3):
+        if not counts[level]:
+            continue
+        summary = _rtt_summary(samples[level])
+        rows.append({
+            "level": level,
+            "name": _DURABILITY_NAMES[level],
+            "requests": counts[level],
+            "matched": summary["rtt_n"],
+            "median_ms": summary["rtt_median"],
+            "p99_ms": summary["rtt_p99"],
+        })
+    return rows
+
+
+def _vbucket_rows(requests: list[dict], paired: dict) -> list[dict]:
+    unanswered = {id(msg) for msg in paired["unanswered"]}
+    gaps = {}
+    for req, resp in paired["matched"]:
+        gap = resp["time"] - req["time"]
+        if gap >= 0:
+            gaps[id(req)] = gap
+    stats: dict[int, list] = {}
+    for msg in requests:
+        vb = msg.get("vbucket")
+        if vb is None:
+            continue
+        slot = stats.get(vb)
+        if slot is None:
+            slot = [0, 0, 0, []]
+            stats[vb] = slot
+        slot[0] += 1
+        if id(msg) in unanswered:
+            slot[1] += 1
+        gap = gaps.get(id(msg))
+        if gap is None:
+            continue
+        slot[3].append(gap)
+        if gap >= 0.1:
+            slot[2] += 1
+    rows = []
+    for vb, (requests_n, missing, slow, samples) in stats.items():
+        summary = _rtt_summary(samples)
+        rows.append({
+            "vbucket": vb,
+            "requests": requests_n,
+            "unanswered": missing,
+            "over_100": slow,
+            "median_ms": summary["rtt_median"],
+            "p99_ms": summary["rtt_p99"],
+        })
+    rows.sort(key=lambda row: (row["unanswered"], row["over_100"], row["requests"]), reverse=True)
+    return rows[:12]
+
+
 def build_charts(
     requests: list[dict],
     paired: dict,
@@ -1390,6 +1798,15 @@ def build_charts(
         body_in_sum = [0] * count
         body_out_sum = [0] * count
         body_large = [0] * count
+        snap_memory_n = [0] * count
+        snap_disk_n = [0] * count
+        snap_other_n = [0] * count
+        snap_span_max = [0] * count
+        ack_bytes_n = [0] * count
+        buffer_ack_n = [0] * count
+        mutation_n = [0] * count
+        ttp_samples: list[list[float]] = [[] for _ in range(count)]
+        ttr_samples: list[list[float]] = [[] for _ in range(count)]
 
         def note_body(msg: dict, maxima: list[int], totals: list[int]) -> None:
             size = int(msg.get("body") or 0)
@@ -1408,11 +1825,40 @@ def build_charts(
                 cluster_requests_n[index] += 1
             else:
                 sdk_requests_n[index] += 1
+            number = _opcode_number(msg.get("opcode") or "")
+            if number == 0x57:
+                mutation_n[index] += 1
+            if number == 0x56:
+                if msg.get("snapshot_disk"):
+                    snap_disk_n[index] += 1
+                elif msg.get("snapshot_memory"):
+                    snap_memory_n[index] += 1
+                else:
+                    snap_other_n[index] += 1
+                start = msg.get("snap_start")
+                end = msg.get("snap_end")
+                if start is not None and end is not None and end >= start:
+                    span = end - start
+                    if span > snap_span_max[index]:
+                        snap_span_max[index] = span
+            credit = msg.get("bytes_to_ack")
+            if credit:
+                ack_bytes_n[index] += credit
+                buffer_ack_n[index] += 1
             note_body(msg, body_in_max, body_in_sum)
+        def note_persist(msg: dict) -> None:
+            index = _bucket_index(msg["time"], width, count)
+            if msg.get("ttp") is not None:
+                ttp_samples[index].append(float(msg["ttp"]))
+            if msg.get("ttr") is not None:
+                ttr_samples[index].append(float(msg["ttr"]))
+
         for _req, resp in paired["matched"]:
             note_body(resp, body_out_max, body_out_sum)
+            note_persist(resp)
         for msg in paired["resp_only"]:
             note_body(msg, body_out_max, body_out_sum)
+            note_persist(msg)
         for when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, _requester, role in matched_rtts:
             index = _bucket_index(when, width, count)
             matched_n[index] += 1
@@ -1483,6 +1929,19 @@ def build_charts(
                 "body_in_bytes": body_in_sum[index],
                 "body_out_bytes": body_out_sum[index],
                 "body_large": body_large[index],
+                "snap_memory": snap_memory_n[index],
+                "snap_disk": snap_disk_n[index],
+                "snap_other": snap_other_n[index],
+                "snap_span_max": snap_span_max[index],
+                "ack_bytes": ack_bytes_n[index],
+                "buffer_acks": buffer_ack_n[index],
+                "mutations": mutation_n[index],
+                "ttp_n": (ttp_summary := _milli_summary(ttp_samples[index]))["n"],
+                "ttp_median": ttp_summary["median"],
+                "ttp_p99": ttp_summary["p99"],
+                "ttr_n": (ttr_summary := _milli_summary(ttr_samples[index]))["n"],
+                "ttr_median": ttr_summary["median"],
+                "ttr_p99": ttr_summary["p99"],
             }
             row.update(_rtt_summary(samples[index]))
             rows.append(row)
@@ -1631,6 +2090,17 @@ def build_charts(
             for name, count in (packet_types or Counter()).most_common()
             if count
         ],
+        "scatter": (scatter := _scatters(paired))[0],
+        "scatter_server": scatter[1],
+        "heatmap": _heatmaps(paired["unanswered"], capture_end),
+        "boxplot": _boxplot(opcode_rtts),
+        "sankey": _sankey(requests, paired),
+        "status_counts": _status_counter(
+            [resp for _req, resp in paired["matched"]] + list(paired["resp_only"])
+        ),
+        "durability": _durability_rows(requests, paired),
+        "persist": _persist_times(paired),
+        "vbuckets": _vbucket_rows(requests, paired),
     }
 
 
@@ -2401,6 +2871,7 @@ def build_facts(
         "other_keys": other_rows,
         "unanswered": unanswered_rows,
         "tcp": tcp,
+        "replica_reads": replica_reads(requests),
     }
 
 
@@ -2456,6 +2927,46 @@ def unanswered_table(rows: list[dict]) -> str:
         ["Time (s)", "Left (s)", "Frame", "Stream", "Op", "Key"],
         table_rows,
     )
+
+
+def _replica_watch(reads: dict) -> str:
+    """Replica reads are the fallback after an active read fails."""
+    total = int(reads.get("total") or 0)
+    rule = (
+        "A replica read means the client did not get the document from the active vBucket. "
+        "The SDK default KV timeout is 2.5 seconds. After that timeout, and sometimes after a linear or exponential backoff, "
+        "the client reads a replica. Get Replica is opcode `0x83`. "
+        "A subdocument request with `couchbase.extras.subdoc.doc_flags.replica_read` does the same thing: "
+        "Wireshark’s dissector calls that flag “operate on a replica vBucket instead of an active one.” "
+        "The nodes that receive these reads are the ones still serving. "
+        "The active node that stopped answering is the one in trouble, now or earlier. "
+        "On a four-node cluster, replica reads landing on three nodes point at the fourth."
+    )
+    if not total:
+        return f"Replica reads: **0**. {rule}"
+    bits = [
+        f"Replica reads: **{total}**. "
+        f"Get Replica **{reads.get('get_replica') or 0}**, "
+        f"subdocument replica_read **{reads.get('subdoc') or 0}**."
+    ]
+    servers = reads.get("servers") or []
+    if servers:
+        listed = ", ".join(
+            f"`{row['ip']}` {row['total']} (Get Replica {row['get_replica']}, subdoc {row['subdoc']})"
+            for row in servers[:8]
+        )
+        bits.append(f" They were sent to {listed}.")
+    if len(servers) == 1:
+        bits.append(
+            f" This capture shows one Couchbase address receiving them, so `{servers[0]['ip']}` is the fallback. "
+            "The troubled active is another node."
+        )
+    elif len(servers) > 1:
+        bits.append(
+            " These addresses are the fallbacks. A node in the cluster that is absent from this list is the one to check."
+        )
+    bits.append(" " + rule)
+    return "".join(bits)
 
 
 def render_summary(facts: dict) -> str:
@@ -2523,6 +3034,11 @@ def render_summary(facts: dict) -> str:
             f"**{sdk.get('unanswered', 0)}** without a reply, median {fmt_ms((sdk.get('median_ms') or 0) / 1000) if sdk.get('median_ms') is not None else 'n/a'}, "
             f"**{sdk.get('retrans', 0)}** retransmissions."
         )
+    reads = facts.get("replica_reads") or {}
+    lines.append("")
+    lines.append("## Watch for")
+    lines.append("")
+    lines.append(_replica_watch(reads))
     lines.append("")
     lines.append("## What was captured")
     lines.append("")
@@ -3169,6 +3685,8 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
         "- Replies with no request in the opening window, and requests with no reply in that same window, are calls the capture cut through. Requests in the closing window were still in flight when recording stopped.",
         "- Quote the SDK median and the cluster median. The blended round-trip median mixes them and hides the slower side.",
         "- Capture duplicates are the same TCP segment seen twice within 1 ms. Do not call them retransmissions or DCP retries. A retransmission waited out a timeout.",
+        "- Observe (opcode 0x92) is the only command where Wireshark fills couchbase.ttp and couchbase.ttr. They replace the CAS field and are milliseconds: approximate time still needed to persist the key, then to replicate it. Zero means that step is already done. A durable Set does not carry these fields. Its request carries durability_req.",
+        "- Replica reads are fallbacks. Get Replica is opcode 0x83. A subdocument request with replica_read set reads a replica vBucket instead of the active one. The SDK default KV timeout is 2.5 seconds. After that, and sometimes after linear or exponential backoff, the client reads a replica. The nodes that receive the reads are still serving. The active that stopped answering is the one in trouble, now or earlier. If the count is 0, do not invent a troubled node. If the count is above 0, one next question must name the servers in the count and say the active they replaced is the node to check. Do not name a server that is not in the count.",
         "",
         f"Source: {facts['source']}",
         f"Capture files: {', '.join(facts.get('pcap_files') or []) or '(tsv export)'}",
@@ -3272,6 +3790,16 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
     lines.append("Unanswered opcodes: " + ", ".join(f"{row['count']} {row['name']} ({row['opcode']})" for row in facts["opcodes_unanswered"]))
     lines.append("Response-only opcodes: " + ", ".join(f"{row['count']} {row['name']}" for row in facts["opcodes_resp_only"]))
     lines.append("Response status: " + ", ".join(f"{row['count']} {row['status']} {row['name']}" for row in facts["status_responses"]))
+    reads = facts.get("replica_reads") or {}
+    lines.append(
+        f"Replica reads: {reads.get('total') or 0} total, "
+        f"Get Replica {reads.get('get_replica') or 0}, "
+        f"subdoc replica_read {reads.get('subdoc') or 0}"
+    )
+    for row in (reads.get("servers") or [])[:8]:
+        lines.append(
+            f"- {row['ip']}: {row['total']} (Get Replica {row['get_replica']}, subdoc {row['subdoc']})"
+        )
     lines.append("Key families: " + ", ".join(f"{row['count']} {row['family']}" for row in facts["families"]))
     lines.append(f"Dominant family: {facts['dominant_family']}")
     if facts["duplicate_keys"]:

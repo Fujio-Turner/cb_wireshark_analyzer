@@ -277,3 +277,117 @@ def test_buckets_percentiles_and_top_keys():
     assert next(row["count"] for row in charts["rtt_histogram"] if row["label"] == "100–250") == 1
     assert len(charts["buckets"]["5"]) == 1
     assert len(charts["buckets"]["10"]) == 1
+
+
+def test_replica_reads_are_counted_by_the_node_that_was_asked():
+    active = msg(1.0, opaque="0x1", opcode="0x00")
+    active["dst"] = "10.0.0.9"
+    replica = msg(1.1, opaque="0x2", opcode="0x83")
+    replica["dst"] = "10.0.0.4"
+    subdoc = msg(1.2, opaque="0x3", opcode="0xc5")
+    subdoc["dst"] = "10.0.0.4"
+    subdoc["replica_read"] = True
+    quiet = msg(1.3, opaque="0x4", opcode="0xc5")
+    quiet["dst"] = "10.0.0.4"
+    quiet["replica_read"] = False
+    requests = [active, replica, subdoc, quiet]
+    paired = ac.pair_messages(requests, [])
+    facts = ac.build_facts(
+        requests, [], paired,
+        source_label="unit", pcap_names=[], capture_end=5.0,
+        packet_count=4, magics=None, joined_rows=0, opcode_names={}, loss=None,
+    )
+    reads = facts["replica_reads"]
+    assert reads["total"] == 2
+    assert reads["get_replica"] == 1
+    assert reads["subdoc"] == 1
+    assert reads["servers"][0]["ip"] == "10.0.0.4"
+    assert reads["servers"][0]["total"] == 2
+    text = ac.render_summary(facts)
+    assert "10.0.0.4" in text
+    assert "2.5 seconds" in text
+    brief = ac.facts_brief(facts)
+    assert "Get Replica 1" in brief
+    assert "10.0.0.4: 2" in brief
+
+
+def test_diagnosis_charts_separate_slow_missing_and_one_way_dcp():
+    slow = msg(1.2, opaque="0x1", opcode="0x01", key="doc::slow")
+    slow["durability"] = 3
+    slow["vbucket"] = 7
+    slow_reply = msg(1.45, opaque="0x1", opcode="0x01", kind="resp")
+    slow_reply["status"] = "0x0000"
+    slow_reply["server_us"] = 40.0
+    fast = msg(2.0, opaque="0x2", opcode="0x00", key="doc::fast")
+    fast["vbucket"] = 7
+    fast_reply = msg(2.001, opaque="0x2", opcode="0x00", kind="resp")
+    fast_reply["status"] = "0x0001"
+    fast_reply["server_us"] = 12.0
+    missing = msg(3.0, opaque="0x3", opcode="0x00", key="doc::gone", src="10.0.0.8")
+    missing["vbucket"] = 9
+    exists = msg(3.2, opaque="0x4", opcode="0x02")
+    exists_reply = msg(3.21, opaque="0x4", opcode="0x02", kind="resp")
+    exists_reply["status"] = "0x0002"
+    wrong = msg(3.4, opaque="0x5", opcode="0x00", src="10.0.0.8")
+    wrong["vbucket"] = 9
+    wrong_reply = msg(3.41, opaque="0x5", opcode="0x00", kind="resp")
+    wrong_reply["status"] = "0x0007"
+    mutation = msg(0.4, opaque="0x6", opcode="0x57", key="doc::dcp", src="10.0.0.9")
+    mutation["sport"] = "11210"
+    mutation["dport"] = "11210"
+    marker = msg(0.4, opaque="0x6", opcode="0x56", key="", src="10.0.0.9")
+    marker["sport"] = "11210"
+    marker["dport"] = "11210"
+    marker["snapshot_disk"] = True
+    marker["snap_start"] = 100
+    marker["snap_end"] = 150
+    ack = msg(0.5, opaque="0x0", opcode="0x5d", key="", src="10.0.0.4")
+    ack["sport"] = "11210"
+    ack["dport"] = "11210"
+    ack["bytes_to_ack"] = 4096
+    requests = [slow, fast, missing, exists, wrong, mutation, marker, ack]
+    responses = [slow_reply, fast_reply, exists_reply, wrong_reply]
+    paired = ac.pair_messages(requests, responses)
+    charts = ac.build_charts(requests, paired, [], ["11210"], 5.0)
+    assert [point["rtt"] for point in charts["scatter"]] == [250.0]
+    assert charts["scatter"][0]["server_us"] == 40.0
+    assert charts["scatter"][0]["durability"] == 3
+    assert any(point["server_us"] == 12.0 for point in charts["scatter_server"])
+    box = next(row for row in charts["boxplot"] if row["opcode"] == "0x01")
+    assert box["box"][2] == 250.0
+    assert box["box"][4] == 250.0
+    heat = charts["heatmap"]["1"]["clients"]
+    assert heat[0]["name"] == "10.0.0.8"
+    assert sum(heat[0]["values"]) == 1
+    outcomes = {(link["source"], link["target"]): link["value"] for link in charts["sankey"]["links"]}
+    assert outcomes[("Cluster", "DCP (Key) Mutation")] == 1
+    assert outcomes[("DCP (Key) Mutation", "Not expected")] == 1
+    assert outcomes[("Get", "Not found")] == 1
+    assert outcomes[("Get", "Error status")] == 1
+    assert outcomes[("Add", "Key exists")] == 1
+    assert any(row["status"] == "0x0007" and row["name"] == "not my vbucket" for row in charts["status_counts"])
+    durable = next(row for row in charts["durability"] if row["level"] == 3)
+    assert durable["name"] == "Persist to majority"
+    assert durable["p99_ms"] == 250.0
+    vb = next(row for row in charts["vbuckets"] if row["vbucket"] == 9)
+    assert vb["unanswered"] == 1
+    second = charts["buckets"]["1"][0]
+    assert second["snap_disk"] == 1
+    assert second["snap_span_max"] == 50
+    assert second["ack_bytes"] == 4096
+    assert second["mutations"] == 1
+    assert second["buffer_acks"] == 1
+    slow_reply["ttp"] = 80
+    slow_reply["ttr"] = 12
+    fast_reply["ttp"] = 0
+    paired_persist = ac.pair_messages(requests, responses)
+    persist_charts = ac.build_charts(requests, paired_persist, [], ["11210"], 5.0)
+    assert persist_charts["persist"]["ttp"]["n"] == 2
+    assert persist_charts["persist"]["ttp"]["median"] == 40.0
+    assert persist_charts["persist"]["ttr"]["n"] == 1
+    assert persist_charts["persist"]["ttr"]["median"] == 12.0
+    bucket = persist_charts["buckets"]["1"][1]
+    assert bucket["ttp_n"] == 1
+    assert bucket["ttp_median"] == 80.0
+    assert bucket["ttr_median"] == 12.0
+    assert persist_charts["buckets"]["1"][2]["ttp_median"] == 0.0

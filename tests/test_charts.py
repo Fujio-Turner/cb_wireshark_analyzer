@@ -112,6 +112,51 @@ def test_missing_calls_are_listed_sdk_then_cluster():
     assert charts["missing_request_cluster_total"] == 1
 
 
+def test_a_nearby_tcp_hole_marks_the_missing_call_possible():
+    request = msg(1.0, opaque="0x11", opcode="0x00", key="widget::gone", stream="4")
+    hole = {
+        "time": 1.2,
+        "stream": "4",
+        "sport": "11210",
+        "dport": "4000",
+        "lost": True,
+        "retrans": False,
+        "ack": False,
+        "duplicate": False,
+    }
+    far = dict(hole, time=4.0, stream="9")
+    paired = ac.pair_messages([request], [])
+    charts = ac.build_charts([request], paired, [hole, far], ["11210"], 5.0)
+    row = charts["missing_response"][0]
+    assert row["error"] == "possible"
+    assert "tcp.stream == 4" in row["error_filter"]
+    assert "ip.addr == 10.0.0.2" in row["error_filter"]
+    assert "couchbase.opaque == 0x11" in row["error_filter"]
+    assert 'couchbase.key.logical_key == "widget::gone"' in row["error_filter"]
+    assert "tcp.analysis.lost_segment" in row["error_filter"]
+    assert " || " in row["error_filter"]
+    assert "frame.time_relative >= " in row["error_filter"]
+    quiet = msg(1.0, opaque="0x12", opcode="0x00", key="other", stream="8")
+    charts = ac.build_charts([quiet], ac.pair_messages([quiet], []), [far], ["11210"], 5.0)
+    assert charts["missing_response"][0]["error"] == ""
+
+
+def test_half_second_buckets_split_one_second():
+    early = msg(0.2, opaque="0x1", opcode="0x00", key="early")
+    late = msg(0.7, opaque="0x2", opcode="0x00", key="late")
+    paired = ac.pair_messages(
+        [early, late],
+        [msg(0.21, opaque="0x1", kind="res"), msg(0.71, opaque="0x2", kind="res")],
+    )
+    charts = ac.build_charts([early, late], paired, [], ["11210"], 1.2)
+    halves = charts["buckets"]["0.5"]
+    assert [row["t"] for row in halves] == [0.0, 0.5, 1.0]
+    assert halves[0]["requests"] == 1
+    assert halves[1]["requests"] == 1
+    assert halves[2]["requests"] == 0
+    assert "1" in charts["buckets"]
+
+
 def test_sdk_and_cluster_speeds_stay_on_their_own_series():
     app = msg(1.0, opaque="0x1", opcode="0x00", key="app::doc")
     replication = msg(1.0, opaque="0x2", opcode="0xa2", key="cluster::doc", src="10.0.0.9")
@@ -127,6 +172,8 @@ def test_sdk_and_cluster_speeds_stay_on_their_own_series():
     assert bands["0–20"]["cluster"] == 0
     assert bands["30–40"]["cluster"] == 1
     second = charts["buckets"]["1"][1]
+    assert charts["top_slowest"][0]["requester"] == "10.0.0.9"
+    assert charts["top_slowest"][0]["stream"]
     assert second["sdk_median"] == 2.0
     assert second["cluster_median"] == 35.0
     assert second["sdk_p99"] == 2.0

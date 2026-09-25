@@ -1229,19 +1229,32 @@ def _ms(value: float | None) -> float | None:
     return round(value * 1000, 3)
 
 
-def _bucket_count(capture_end: float, width: int) -> int:
+def _bucket_count(capture_end: float, width: float) -> int:
     if capture_end <= 0:
         return 1
-    return int(capture_end // width) + 1
+    return int(capture_end / width) + 1
 
 
-def _bucket_index(when: float, width: int, count: int) -> int:
+def _bucket_index(when: float, width: float, count: int) -> int:
     if when < 0:
         when = 0
-    index = int(when // width)
+    index = int(when / width + 1e-9)
     if index >= count:
         return count - 1
     return index
+
+
+def _bucket_key(width: float) -> str:
+    if float(width).is_integer():
+        return str(int(width))
+    return str(width)
+
+
+def _bucket_time(index: int, width: float) -> float:
+    value = index * width
+    if float(width).is_integer():
+        return float(int(value))
+    return round(value, 1)
 
 
 def _rtt_histogram(samples: list[float]) -> list[dict]:
@@ -1312,7 +1325,7 @@ def build_charts(
     capture_end: float,
     packet_types: Counter | None = None,
 ) -> dict:
-    """Aggregates for the chart page at 1, 5, and 10 second buckets."""
+    """Aggregates for the chart page at 0.5, 1, 5, and 10 second buckets."""
     matched_rtts: list[tuple] = []
     ip_rtts: dict[str, list[float]] = defaultdict(list)
     ip_over_100: Counter = Counter()
@@ -1333,6 +1346,7 @@ def build_charts(
             int(resp.get("body") or 0),
             req.get("opaque") or "",
             str(req.get("stream") or ""),
+            req.get("src") or "",
             traffic_role(req.get("sport") or "", req.get("dport") or "", req.get("opcode") or "", req.get("key") or ""),
         ))
 
@@ -1348,7 +1362,7 @@ def build_charts(
             continue
         timed_loss.append(event)
 
-    widths = (1, 5, 10)
+    widths = (0.5, 1, 5, 10)
     series: dict[str, list[dict]] = {}
     for width in widths:
         count = _bucket_count(capture_end, width)
@@ -1399,7 +1413,7 @@ def build_charts(
             note_body(resp, body_out_max, body_out_sum)
         for msg in paired["resp_only"]:
             note_body(msg, body_out_max, body_out_sum)
-        for when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, role in matched_rtts:
+        for when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, _requester, role in matched_rtts:
             index = _bucket_index(when, width, count)
             matched_n[index] += 1
             samples[index].append(gap)
@@ -1435,7 +1449,7 @@ def build_charts(
         rows = []
         for index in range(count):
             row = {
-                "t": index * width,
+                "t": _bucket_time(index, width),
                 "requests": requests_n[index],
                 "matched": matched_n[index],
                 "unanswered": unanswered_n[index],
@@ -1472,7 +1486,7 @@ def build_charts(
             }
             row.update(_rtt_summary(samples[index]))
             rows.append(row)
-        series[str(width)] = rows
+        series[_bucket_key(width)] = rows
 
     by_ip: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     by_conn: dict[tuple[str, str], list] = {}
@@ -1505,13 +1519,13 @@ def build_charts(
             conn[1] += 1
             if key:
                 key_unanswered[key] += 1
-    for _when, gap, _key, opcode, _body_in, _body_out, _opaque, _stream, _role in matched_rtts:
+    for _when, gap, _key, opcode, _body_in, _body_out, _opaque, _stream, _requester, _role in matched_rtts:
         opcode_rtts[opcode].append(gap)
 
     ranked_calls = sorted(
         (
-            (when, gap, key, body_in, body_out, opaque, stream, role)
-            for when, gap, key, _opcode, body_in, body_out, opaque, stream, role in matched_rtts
+            (when, gap, key, opcode, body_in, body_out, opaque, stream, requester, role)
+            for when, gap, key, opcode, body_in, body_out, opaque, stream, requester, role in matched_rtts
             if key
         ),
         key=lambda item: (-item[1], item[0]),
@@ -1523,12 +1537,14 @@ def build_charts(
             "seconds": round(when, 3),
             "body_bytes": max(body_in, body_out),
             "opaque": opaque,
+            "opcode": opcode,
             "stream": stream,
+            "requester": requester,
             "role": role,
         }
-        for when, gap, key, body_in, body_out, opaque, stream, role in ranked_calls[:10]
+        for when, gap, key, opcode, body_in, body_out, opaque, stream, requester, role in ranked_calls[:10]
     ]
-    all_rtts = [gap for _when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, _role in matched_rtts]
+    all_rtts = [gap for _when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, _requester, _role in matched_rtts]
     overall = _rtt_summary(all_rtts)
     all_ms = [gap * 1000 for gap in all_rtts]
     gap_window = _in_flight_window(matched_rtts)
@@ -1548,6 +1564,7 @@ def build_charts(
         unanswered_by_role[_side(msg)].append(msg)
     for msg in paired["resp_only"]:
         resp_only_by_role[_side(msg)].append(msg)
+    loss_marks = _loss_marks(timed_loss, ports)
     return {
         "capture_seconds": round(capture_end, 3),
         "buckets": series,
@@ -1596,17 +1613,17 @@ def build_charts(
             for key, count in by_key.most_common(10)
         ],
         "top_slowest": slowest,
-        "missing_response": _ten_gaps(paired["unanswered"], capture_end, gap_window, at_start=False),
+        "missing_response": _annotate_gap_errors(_ten_gaps(paired["unanswered"], capture_end, gap_window, at_start=False), loss_marks),
         "missing_response_total": len(paired["unanswered"]),
-        "missing_request": _ten_gaps(paired["resp_only"], capture_end, gap_window, at_start=True),
+        "missing_request": _annotate_gap_errors(_ten_gaps(paired["resp_only"], capture_end, gap_window, at_start=True), loss_marks),
         "missing_request_total": len(paired["resp_only"]),
-        "missing_response_sdk": _ten_gaps(unanswered_by_role["sdk"], capture_end, gap_window, at_start=False),
+        "missing_response_sdk": _annotate_gap_errors(_ten_gaps(unanswered_by_role["sdk"], capture_end, gap_window, at_start=False), loss_marks),
         "missing_response_sdk_total": len(unanswered_by_role["sdk"]),
-        "missing_response_cluster": _ten_gaps(unanswered_by_role["cluster"], capture_end, gap_window, at_start=False),
+        "missing_response_cluster": _annotate_gap_errors(_ten_gaps(unanswered_by_role["cluster"], capture_end, gap_window, at_start=False), loss_marks),
         "missing_response_cluster_total": len(unanswered_by_role["cluster"]),
-        "missing_request_sdk": _ten_gaps(resp_only_by_role["sdk"], capture_end, gap_window, at_start=True),
+        "missing_request_sdk": _annotate_gap_errors(_ten_gaps(resp_only_by_role["sdk"], capture_end, gap_window, at_start=True), loss_marks),
         "missing_request_sdk_total": len(resp_only_by_role["sdk"]),
-        "missing_request_cluster": _ten_gaps(resp_only_by_role["cluster"], capture_end, gap_window, at_start=True),
+        "missing_request_cluster": _annotate_gap_errors(_ten_gaps(resp_only_by_role["cluster"], capture_end, gap_window, at_start=True), loss_marks),
         "missing_request_cluster_total": len(resp_only_by_role["cluster"]),
         "server": couchbase_server(requests),
         "packet_types": [
@@ -1737,6 +1754,8 @@ def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_sta
             where = "start"
         else:
             where = "inside"
+        # A missing reply was sent by src. A reply with no request was sent back to dst.
+        requester = msg.get("dst") if at_start else msg.get("src")
         rows.append({
             "seconds": seconds,
             "seconds_left": left,
@@ -1745,6 +1764,7 @@ def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_sta
             "opcode": opcode_name(msg.get("opcode") or ""),
             "key": msg.get("key") or "",
             "status": msg.get("status") or "",
+            "requester": str(requester or ""),
             "at_edge": where != "inside",
             "where": where,
             "role": traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or ""),
@@ -1758,6 +1778,98 @@ def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_sta
         chosen.extend(_spread_rows(edge, 10 - len(chosen)))
     chosen.sort(key=lambda row: row["seconds"])
     return chosen
+
+
+_ERROR_WINDOW_SECONDS = 0.5
+
+
+def _loss_marks(events: list[dict], ports: list[str]) -> list[tuple]:
+    """Lost segments and lost acks. Capture duplicates are not errors."""
+    portset = {str(port) for port in ports}
+    marks = []
+    for event in events:
+        if event.get("time") is None or event.get("duplicate"):
+            continue
+        flags = []
+        if event.get("lost"):
+            flags.append("tcp.analysis.lost_segment")
+        if event.get("ack"):
+            flags.append("tcp.analysis.ack_lost_segment")
+        if not flags:
+            continue
+        toward_client = str(event.get("sport") or "") in portset
+        marks.append((
+            float(event["time"]),
+            str(event.get("stream") or ""),
+            toward_client,
+            tuple(flags),
+        ))
+    marks.sort()
+    return marks
+
+
+def _annotate_gap_errors(rows: list[dict], marks: list[tuple], window: float = _ERROR_WINDOW_SECONDS) -> list[dict]:
+    """Mark a missing call when a TCP hole sits within half a second of it.
+
+    Same stream is preferred. Otherwise any hole in that half-second still
+    counts, because the chart shows the loss and the missing call together.
+    """
+    for row in rows:
+        when = float(row["seconds"])
+        near = [mark for mark in marks if abs(mark[0] - when) <= window]
+        same = [mark for mark in near if mark[1] and mark[1] == str(row.get("stream") or "")]
+        chosen = same or near
+        if not chosen:
+            row["error"] = ""
+            row["error_filter"] = ""
+            continue
+        times = [mark[0] for mark in chosen]
+        start = max(0.0, round(min(when, min(times)) - 0.05, 3))
+        end = round(max(when, max(times)) + 0.05, 3)
+        flags = []
+        for mark in chosen:
+            for flag in mark[3]:
+                if flag not in flags:
+                    flags.append(flag)
+        flag_text = flags[0] if len(flags) == 1 else "(" + " || ".join(flags) + ")"
+        # Errors to and from this machine, both directions, not every host in the file.
+        hole = ["tcp.port == 11210"]
+        requester = str(row.get("requester") or "")
+        if requester:
+            addr = "ipv6.addr" if ":" in requester else "ip.addr"
+            hole.append(f"{addr} == {requester}")
+        elif same:
+            hole.append(f"tcp.stream == {row['stream']}")
+        hole.append(f"frame.time_relative >= {start}")
+        hole.append(f"frame.time_relative <= {end}")
+        hole.append(flag_text)
+        call = _call_filter(row)
+        hole_text = " && ".join(hole)
+        row["error"] = "possible"
+        row["error_filter"] = f"{call} || ({hole_text})" if call else hole_text
+    return rows
+
+
+def _filter_quote(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _call_filter(row: dict) -> str:
+    """The suspected call, so it shows in the same packet list as the hole."""
+    pieces = []
+    opaque = str(row.get("opaque") or "")
+    if opaque:
+        pieces.append(f"couchbase.opaque == {opaque}")
+    key = str(row.get("key") or "")
+    if key:
+        pieces.append(f'couchbase.key.logical_key == "{_filter_quote(key)}"')
+    if not pieces:
+        return ""
+    call = pieces[0] if len(pieces) == 1 else "(" + " || ".join(pieces) + ")"
+    stream = str(row.get("stream") or "")
+    if stream:
+        return f"(tcp.stream == {stream} && {call})"
+    return f"({call})"
 
 
 def gap_counts(unanswered: list[dict], loss: dict) -> dict[str, int]:
@@ -3260,6 +3372,47 @@ def clean_model_markdown(text: str) -> str:
     return text.strip() + "\n"
 
 
+def trace_filters(charts: dict) -> str:
+    """Filters a person can paste into Wireshark. Counted, so the model cannot drop them."""
+    lines = [
+        "## Wireshark filters",
+        "",
+        "Counted from this capture. Each line is a display filter.",
+        "",
+    ]
+    for row in charts.get("top_slowest") or []:
+        stream = row.get("stream") or ""
+        opaque = row.get("opaque") or ""
+        if not stream or not opaque:
+            continue
+        call = f"tcp.stream == {stream} && couchbase.opaque == {opaque}"
+        lines.append(f"- Slow call, {row.get('time_ms')} ms, `{row.get('key') or ''}`: `{call}`")
+    groups = (
+        ("SDK request missing a response", "missing_response_sdk"),
+        ("Cluster request missing a response", "missing_response_cluster"),
+        ("SDK response missing a request", "missing_request_sdk"),
+        ("Cluster response missing a request", "missing_request_cluster"),
+    )
+    for label, key in groups:
+        for row in charts.get(key) or []:
+            filt = row.get("error_filter") or ""
+            if not filt and row.get("stream") and row.get("opaque"):
+                filt = f"tcp.stream == {row['stream']} && couchbase.opaque == {row['opaque']}"
+            if not filt:
+                continue
+            lines.append(f"- {label}, {row.get('seconds')} s, `{row.get('key') or row.get('opaque') or ''}`: `{filt}`")
+    if len(lines) == 4:
+        return ""
+    return "\n".join(lines) + "\n"
+
+
+def append_trace_filters(text: str, charts: dict) -> str:
+    block = trace_filters(charts)
+    if not block or "## Wireshark filters" in text:
+        return text
+    return text.rstrip() + "\n\n" + block
+
+
 def splice_table(text: str, table: str) -> str:
     block = "Sorted by time. Left is seconds of capture remaining after the request.\n\n" + table
     if TABLE_TOKEN in text:
@@ -3913,7 +4066,7 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
 
     if args.no_ai:
         finish_charts(False)
-        (out / "summary.md").write_text(computed)
+        (out / "summary.md").write_text(append_trace_filters(computed, charts))
         log(f"wrote {out / 'summary.md'}")
         return out, True
 
@@ -3928,13 +4081,16 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
         )
     except SystemExit as exc:
         finish_charts(True)
-        (out / "summary.md").write_text(computed)
+        (out / "summary.md").write_text(append_trace_filters(computed, charts))
         log(str(exc))
         log(f"The model did not write the note. The counted report is {out / 'summary.md'}")
         return out, False
     finish_charts(True)
-    cleaned = splice_table(clean_model_markdown(raw), unanswered_table(facts["unanswered"]))
-    (out / "summary.computed.md").write_text(computed)
+    cleaned = append_trace_filters(
+        splice_table(clean_model_markdown(raw), unanswered_table(facts["unanswered"])),
+        charts,
+    )
+    (out / "summary.computed.md").write_text(append_trace_filters(computed, charts))
     (out / "summary.md").write_text(cleaned)
     missing = [
         row["key"]

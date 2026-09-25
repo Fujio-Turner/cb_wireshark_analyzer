@@ -28,6 +28,27 @@ couchbase.opcode == 0x56 && couchbase.extras.flags.dcp_snapshot_marker_ack
 
 Flow control is a buffer acknowledgement (`0x5d`), not a reply per mutation. Opaque `0` on that acknowledgement means the whole connection. A DCP noop (`0x5c`) is different: the producer sends it when the connection is idle, and the consumer must answer or the producer drops the connection. A stream-request response of `couchbase.status == 0x0023` is rollback.
 
+```text
+couchbase.opcode == 0x53
+couchbase.opcode == 0x55
+couchbase.opcode == 0x56
+couchbase.opcode == 0x57
+couchbase.opcode == 0x58
+couchbase.opcode == 0x59
+couchbase.opcode == 0x5c
+couchbase.opcode == 0x5d
+couchbase.opcode == 0x5d && couchbase.opaque == 0x00000000
+couchbase.opcode == 0x48
+couchbase.opcode == 0x10 && couchbase.key == "vbucket-seqno"
+couchbase.opcode == 0xa0
+couchbase.opcode == 0xa2
+couchbase.opcode == 0xa8
+couchbase.status == 0x0023
+tcp.srcport == 11210 && tcp.dstport == 11210
+```
+
+In that order: stream request, stream end, snapshot marker, mutation, deletion, expiration, noop, buffer acknowledgement, a buffer acknowledgement for the whole connection, Get All VBucket Seqnos, the vbucket-seqno statistics poll, Get Meta, Set with Meta, Delete with Meta, rollback, and KV port to KV port.
+
 ## One document
 
 ```text
@@ -94,6 +115,113 @@ The mirror is at the start of the file. A response with no request is often a ca
 
 ```text
 tcp.stream == 0 && tcp.analysis.lost_segment
+```
+
+## Filters the chart page copies
+
+The copy icon writes one of these. Paste it as it is. `couchbase &&` keeps the list on Couchbase packets. The **Errors** copy is wider, because a TCP hole often has no Couchbase header.
+
+| Where | What you get |
+|---|---|
+| Next to a document id | `couchbase && couchbase.key.logical_key == "invoice:12345"` |
+| Next to an opaque on a slow or missing row | `tcp.stream == 121 && couchbase.opaque == 0x00c5a34d` |
+| Next to a stream number | `tcp.stream == 121` |
+| Next to a client address | `tcp.port == 11210 && ip.addr == 10.227.75.29` |
+| Next to an opcode | `couchbase.opcode == 0x00` |
+| Next to Set Stake | `tcp.port == 11210 && ip.addr == 10.227.75.29 && frame.time_relative >= 9.171 && frame.time_relative <= 9.671` |
+| A bar on Packets on port 11210 | `tcp.port == 11210 && couchbase.opcode == 0x56 && (couchbase.magic == 0x80 \|\| couchbase.magic == 0x08)` |
+| **Errors** = possible | the call, then `\|\|`, then the holes to and from that requester |
+| Bottom of the report | the same slow-call and missing-call filters, one per line |
+
+A statistics key such as `vbucket-seqno` is on `couchbase.key`, not the logical key. Use that field when the logical key is empty:
+
+```text
+couchbase.key == "vbucket-seqno"
+```
+
+## TCP errors
+
+These expert flags are not Couchbase status codes. The missing-call table’s **Errors** column says `possible` when a lost segment or a lost ack is within half a second of that row. A dash means no hole that close. The copy icon is the call and those holes in one filter.
+
+`lost_segment` is a hole in the sequence. The packet that carries the flag is the one that revealed the hole. `ack_lost_segment` is an acknowledgement of data the capture never saw. `retransmission` is the same sequence sent again. A copy that arrives within a millisecond has a tiny `tcp.analysis.rto` and is a capture duplicate, not a retry.
+
+Every error on the KV port, then each type alone:
+
+```text
+tcp.port == 11210 && (tcp.analysis.lost_segment || tcp.analysis.ack_lost_segment || tcp.analysis.retransmission)
+tcp.port == 11210 && tcp.analysis.lost_segment
+tcp.port == 11210 && tcp.analysis.ack_lost_segment
+tcp.port == 11210 && tcp.analysis.retransmission && tcp.analysis.rto >= 0.001
+tcp.port == 11210 && tcp.analysis.retransmission && tcp.analysis.rto < 0.001
+```
+
+The last line is the capture duplicate: the same segment recorded twice. Leave it out when you are looking for a hole next to a missing call. The page does.
+
+By direction. Loss toward the client is the server sending, source port 11210. Loss toward the server is the client sending, destination port 11210. The same split works for a lost ack. Swap the flag.
+
+```text
+tcp.srcport == 11210 && tcp.analysis.lost_segment
+tcp.dstport == 11210 && tcp.analysis.lost_segment
+tcp.srcport == 11210 && tcp.analysis.ack_lost_segment
+tcp.dstport == 11210 && tcp.analysis.ack_lost_segment
+```
+
+By machine. `ip.addr` matches the address on either side, so this is every KV packet to or from that host. `ipv6.addr` is the same test when the address has a colon.
+
+```text
+tcp.port == 11210 && ip.addr == 10.227.75.29
+tcp.port == 11210 && ip.addr == 10.227.75.29 && (tcp.analysis.lost_segment || tcp.analysis.ack_lost_segment)
+```
+
+By connection, then by one stream and one direction:
+
+```text
+tcp.stream == 121 && (tcp.analysis.lost_segment || tcp.analysis.ack_lost_segment)
+tcp.stream == 121 && tcp.srcport == 11210 && tcp.analysis.lost_segment
+tcp.stream == 121 && tcp.dstport == 11210 && tcp.analysis.lost_segment
+```
+
+By time. `frame.time_relative` is seconds from the first packet. This is the opening half-second, then the close of a file that ends at 9.535 s, then an arbitrary window around one row:
+
+```text
+tcp.port == 11210 && frame.time_relative >= 0 && frame.time_relative <= 0.5 && (tcp.analysis.lost_segment || tcp.analysis.ack_lost_segment)
+tcp.port == 11210 && frame.time_relative >= 9.0 && frame.time_relative <= 9.535 && (tcp.analysis.lost_segment || tcp.analysis.ack_lost_segment)
+tcp.port == 11210 && ip.addr == 10.227.75.29 && frame.time_relative >= 9.371 && frame.time_relative <= 9.471 && tcp.analysis.lost_segment
+```
+
+The call by itself, then the call narrowed to one command:
+
+```text
+tcp.stream == 121 && couchbase.opaque == 0x00c5a34d
+tcp.stream == 121 && couchbase.key.logical_key == "querycache::GetManifestByDevice::8936b2d780a369d2763196f953330bf0"
+tcp.stream == 121 && (couchbase.opaque == 0x00c5a34d || couchbase.key.logical_key == "querycache::GetManifestByDevice::8936b2d780a369d2763196f953330bf0")
+tcp.stream == 121 && couchbase.opaque == 0x00c5a34d && couchbase.opcode == 0x00
+```
+
+What the **Errors** copy actually writes. The first parenthesis is the document and the opaque, so the request stays in the list. The second is holes to and from that machine in the surrounding time, on any of its connections, not every host in the file. `||` keeps both. Scroll the packet list. The gap between the request row and the flagged row is the distance.
+
+Both flags, which is the usual copy:
+
+```text
+(tcp.stream == 121 && (couchbase.opaque == 0x00c5a34d || couchbase.key.logical_key == "querycache::GetManifestByDevice::8936b2d780a369d2763196f953330bf0")) || (tcp.port == 11210 && ip.addr == 10.227.75.29 && frame.time_relative >= 0 && frame.time_relative <= 0.263 && (tcp.analysis.ack_lost_segment || tcp.analysis.lost_segment))
+```
+
+Only a lost segment, when that is the only flag near the row:
+
+```text
+(tcp.stream == 121 && (couchbase.opaque == 0x00c5a34d || couchbase.key.logical_key == "querycache::GetManifestByDevice::8936b2d780a369d2763196f953330bf0")) || (tcp.port == 11210 && ip.addr == 10.227.75.29 && frame.time_relative >= 9.371 && frame.time_relative <= 9.585 && tcp.analysis.lost_segment)
+```
+
+Only a lost ack:
+
+```text
+(tcp.stream == 121 && couchbase.opaque == 0x00c5a34d) || (tcp.port == 11210 && ip.addr == 10.227.75.29 && frame.time_relative >= 0 && frame.time_relative <= 0.263 && tcp.analysis.ack_lost_segment)
+```
+
+No document id on the row, so the call half is only the opaque. An IPv6 requester uses `ipv6.addr` in that same position.
+
+```text
+(tcp.stream == 9 && couchbase.opaque == 0x14006e8d) || (tcp.port == 11210 && ipv6.addr == fe80::1 && frame.time_relative >= 0 && frame.time_relative <= 0.118 && tcp.analysis.ack_lost_segment)
 ```
 
 Loss toward the client is a hole in packets the server sent. The missing bytes are often the reply, which is why the request is in the file and the response is not. Loss toward the server is a hole in packets the client sent.

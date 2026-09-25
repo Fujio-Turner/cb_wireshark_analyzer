@@ -3839,9 +3839,9 @@ def resolve_job(args: argparse.Namespace) -> dict:
 def default_out(job: dict, args: argparse.Namespace) -> Path:
     if args.out:
         return Path(args.out).expanduser().resolve()
-    if job["mode"] == "pcap":
-        return job["pcap"].parent / "orphan-report"
-    return job["reqs"].parent / "orphan-report"
+    source = job["pcap"] if job["mode"] == "pcap" else job["reqs"]
+    # One folder per capture so filename_1 does not overwrite filename_0.
+    return source.parent / f"{source.stem}-report"
 
 
 def load_config(path: Path | None = None) -> dict:
@@ -4137,7 +4137,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="read the tsv even when a pcap is in the same folder",
     )
-    parser.add_argument("-o", "--out", help="output directory (default: orphan-report next to the input)")
+    parser.add_argument("-o", "--out", help="output directory (default: <capture name>-report next to the input)")
     parser.add_argument("--model", default=None, help=f"Model name (default from config.json, else {DEFAULT_MODEL} for Ollama)")
     parser.add_argument("--ollama", default=None, help=f"Ollama base URL (default from config.json, else {DEFAULT_OLLAMA})")
     parser.add_argument(

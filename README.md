@@ -87,7 +87,7 @@ Open `http://127.0.0.1:8000/`. Drop `--no-ai` to add the note. With the default 
 }
 ```
 
-An empty `tshark` or `output_dir` means "detect it" and "write `orphan-report/` next to the input". A flag on the command line wins over the environment, which wins over this file. `OLLAMA_BASE_URL` and `TSHARK` are the environment names. `qwen3.8-notes:latest` is the other local tag if you want it in `model`.
+An empty `tshark` or `output_dir` means "detect it" and "write `<capture name>-report/` next to the input", so two pcaps in one folder do not share a report. A flag on the command line wins over the environment, which wins over this file. `OLLAMA_BASE_URL` and `TSHARK` are the environment names. `qwen3.8-notes:latest` is the other local tag if you want it in `model`.
 
 The default model is Ollama on this machine. To send the counted brief to an API off the laptop, add an `ai` object. The service must accept `POST {base_url}/chat/completions` in the OpenAI chat shape. OpenAI, OpenRouter, and a company gateway that speaks that API all fit. Python still produces every number. The API only writes the note.
 

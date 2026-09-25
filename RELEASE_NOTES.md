@@ -1,5 +1,9 @@
 # Release notes
 
+## 0.9.1
+
+Each capture writes its own report folder. `filename_1.pcap` becomes `filename_1-report/` next to the file, so a second pcap in the same directory does not overwrite the first. Pass `-o` when you want a different path.
+
 ## 0.9.0
 
 The chart page and the report hand you a Wireshark filter for the row you are looking at.

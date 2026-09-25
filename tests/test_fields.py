@@ -11,9 +11,18 @@ def test_opcode_names_match_wireshark():
 import analyze_capture as ac
 
 
-def _row(magic, opcode, opaque, key="", status="", body="", ack="", raw_key=""):
+def _row(
+    magic, opcode, opaque, key="", status="", body="", ack="", raw_key="",
+    vbucket="", duration="", durability="", snap_memory="", snap_disk="",
+    snap_start="", snap_end="", bytes_ack="", ttp="", ttr="", replica_read="",
+):
     return "\t".join(
-        ["10", "1.5", "3", "10.0.0.2", "4000", "10.0.0.3", "11210", magic, opcode, opaque, key, raw_key, status, body, ack]
+        [
+            "10", "1.5", "3", "10.0.0.2", "4000", "10.0.0.3", "11210",
+            magic, opcode, opaque, key, raw_key, status, body, ack,
+            vbucket, duration, durability, snap_memory, snap_disk, snap_start, snap_end, bytes_ack,
+            ttp, ttr, replica_read,
+        ]
     )
 
 
@@ -69,6 +78,34 @@ def test_stat_key_comes_from_couchbase_key_when_the_logical_key_is_empty():
     assert bad is None
     assert messages[0]["key"] == "vbucket-seqno"
     assert ac.traffic_role(messages[0]["sport"], messages[0]["dport"], messages[0]["opcode"], messages[0]["key"]) == "cluster"
+
+
+def test_duration_vbucket_and_durability_stay_on_the_message():
+    line = _row(
+        "0x81", "0x01", "0x10", "doc", "0x0000", "24", "", "",
+        vbucket="689", duration="56.5", durability="0x02", bytes_ack="",
+    )
+    messages, bad, _loss = ac.messages_from_field_line(line)
+    assert bad is None
+    assert messages[0]["vbucket"] == 689
+    assert messages[0]["server_us"] == 56.5
+    assert messages[0]["durability"] == 2
+    assert messages[0]["bytes_to_ack"] is None
+    assert messages[0]["ttp"] is None
+    assert messages[0]["ttr"] is None
+    timed = _row("0x81", "0x01", "0x12", "doc", "0x0000", "8", ttp="0", ttr="40")
+    timed_messages, timed_bad, _loss = ac.messages_from_field_line(timed)
+    assert timed_bad is None
+    assert timed_messages[0]["ttp"] == 0
+    assert timed_messages[0]["ttr"] == 40
+    disk = _row("0x80", "0x56", "0x11", "", "", "20", "", "", snap_disk="True", snap_start="10", snap_end="40", bytes_ack="4096")
+    marker, marker_bad, _loss = ac.messages_from_field_line(disk)
+    assert marker_bad is None
+    assert marker[0]["snapshot_disk"] is True
+    assert marker[0]["snapshot_memory"] is False
+    assert marker[0]["snap_start"] == 10
+    assert marker[0]["snap_end"] == 40
+    assert marker[0]["bytes_to_ack"] == 4096
 
 
 def test_snapshot_ack_flag_marks_that_marker_as_wanting_a_reply():
@@ -128,14 +165,17 @@ def test_kv_port_is_either_side():
 
 
 def test_gap_flags_share_the_couchbase_row_and_other_ports_drop():
+    couchbase = ["0x18", "0x00", "0x3", "", "", "0x0", "24", ""] + [""] * (ac._CB_COLUMNS - 8)
     line = "\t".join(
-        ["20", "4.0", "1", "10.0.0.3", "11210", "10.0.0.2", "4000", "0x18", "0x00", "0x3", "", "", "0x0", "24", "", "1", "", "1"]
+        ["20", "4.0", "1", "10.0.0.3", "11210", "10.0.0.2", "4000", *couchbase, "1", "", "1"]
     )
     messages, bad, loss = ac.messages_from_field_line(line)
     assert bad is None
     assert len(messages) == 1
     assert loss["lost"] and loss["ack"] and not loss["retrans"]
-    only_gap = "\t".join(["21", "4.1", "9", "10.9.9.9", "80", "10.9.9.1", "443", "", "", "", "", "", "", "", "", "", "1", ""])
+    only_gap = "\t".join(
+        ["21", "4.1", "9", "10.9.9.9", "80", "10.9.9.1", "443", *[""] * ac._CB_COLUMNS, "", "1", ""]
+    )
     no_messages, no_bad, other = ac.messages_from_field_line(only_gap)
     assert no_messages == []
     assert no_bad is None

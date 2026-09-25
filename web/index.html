@@ -235,6 +235,9 @@
     }
     .tab.on { background: #1c2430; border-color: #1c2430; color: #f6f3ee; }
     .chart { height: 340px; }
+    .chart.tall { height: 460px; }
+    .card .switch { margin: 0 8px 8px; color: var(--muted); font-size: 13px; }
+    .card .switch select { margin-left: 6px; }
     .expand {
       position: absolute;
       top: 0;
@@ -423,6 +426,14 @@
     .glossary ol { margin: 8px 0 0; padding-left: 18px; color: var(--muted); }
     .glossary a { color: var(--teal); }
     .glossary li { margin: 6px 0; }
+    .glossary dd p { margin: 8px 0 0; }
+    a.fn {
+      color: var(--teal);
+      font-weight: 700;
+      text-decoration: none;
+    }
+    a.fn:hover { text-decoration: underline; }
+    .nowrap { white-space: nowrap; }
     .dock {
       position: fixed;
       z-index: 4;
@@ -486,13 +497,14 @@
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         cb_wireshark_analyzer
       </a>
-      <span class="version" id="app-version">v0.9.1</span>
+      <span class="version" id="app-version">v0.10.0</span>
     </div>
     </div>
     <div class="bar">
       <nav class="jump" id="sections" aria-label="On this page">
         <a href="#timings">Timings</a>
         <a href="#operations">Operations</a>
+        <a href="#diagnosis">Diagnosis</a>
         <a href="#packets-group">Packets</a>
         <a href="#clients">Clients</a>
         <a href="#documents">Documents</a>
@@ -597,8 +609,95 @@
         </div>
         <section class="card">
           <h2>Opcodes in this capture</h2>
-          <p class="note">The hex code and what each command does. The chart popup shows the command name and the count.</p>
+          <p class="note">The hex code and what each command does. The chart popup shows the command name and the count. A <sup><a class="fn" href="#not-expected">1</a></sup> after <a href="#not-expected">not expected</a> means that command does not want a reply.</p>
           <div id="opcodes-seen"></div>
+        </section>
+      </div>
+    </section>
+
+    <section class="group" id="diagnosis">
+      <div class="group-head">
+        <h2 class="group-title">Diagnosis</h2>
+        <p>Where a slow call waited, which replies are odd, and whether replication is catching up.</p>
+        <nav class="chips" aria-label="Diagnosis">
+          <a href="#slow-scatter">Slow calls</a>
+          <a href="#missing-heat">Missing replies</a>
+          <a href="#opcode-box">Spread by command</a>
+          <a href="#call-flow">Where calls went</a>
+          <a href="#reply-status">Reply status</a>
+          <a href="#durability-chart">Durability</a>
+          <a href="#persist-chart">Replicate and persist</a>
+          <a href="#vbucket-chart">VBucket</a>
+          <a href="#snapshot-chart">Snapshots</a>
+          <a href="#buffer-chart">Buffer ack</a>
+        </nav>
+      </div>
+      <div class="stack">
+        <div class="grid two">
+          <section class="card">
+            <h2 id="slow-scatter">Slow calls</h2>
+            <p class="switch"><label>Show <select id="scatter-mode" aria-label="Slow-call chart">
+              <option value="when">when it happened</option>
+              <option value="server">server time against round trip</option>
+            </select></label></p>
+            <p class="note" id="scatter-note">Dots are matched calls. <a href="#slow-scatter-word">How to read this</a>.</p>
+            <div id="scatter" class="chart"></div>
+          </section>
+          <section class="card">
+            <h2 id="missing-heat">Missing replies</h2>
+            <p class="switch"><label>Color <select id="heat-mode" aria-label="Missing-reply heatmap">
+              <option value="clients">by client</option>
+              <option value="opcodes">by command</option>
+            </select></label></p>
+            <p class="note">A cell is one time bucket. Color is how many requests got no reply. <a href="#missing-heat-word">How to read this</a>.</p>
+            <div id="heat" class="chart tall"></div>
+          </section>
+        </div>
+        <div class="grid two">
+          <section class="card">
+            <h2 id="opcode-box">Spread by command</h2>
+            <p class="note">One box per command that got a reply. <a href="#opcode-box-word">How to read this</a>.</p>
+            <div id="boxes" class="chart"></div>
+          </section>
+          <section class="card">
+            <h2 id="call-flow">Where calls went</h2>
+            <p class="note">The width of a band is the count. <a href="#call-flow-word">How to read this</a>.</p>
+            <div id="paths" class="chart tall"></div>
+          </section>
+        </div>
+        <div class="grid two">
+          <section class="card">
+            <h2 id="reply-status">Reply status</h2>
+            <p class="note" id="status-note">Statuses other than success. <a href="#reply-status-word">How to read this</a>.</p>
+            <div id="statuses" class="chart"></div>
+          </section>
+          <section class="card">
+            <h2 id="durability-chart">Durability</h2>
+            <p class="note" id="durability-note">p99 of calls that asked for a durability level. <a href="#durability-word">How to read this</a>.</p>
+            <div id="durable" class="chart"></div>
+          </section>
+        </div>
+        <section class="card">
+          <h2 id="persist-chart">Time to replicate and persist</h2>
+          <p class="note" id="persist-note">The server’s estimate, in milliseconds, until the write is replicated and until it is on disk. <a href="#persist-word">How to read this</a>.</p>
+          <div id="persist" class="chart"></div>
+        </section>
+        <div class="grid two">
+          <section class="card">
+            <h2 id="vbucket-chart">VBucket</h2>
+            <p class="note" id="vbucket-note">The vBuckets with the most missing replies. <a href="#vbucket-word">How to read this</a>.</p>
+            <div id="vbars" class="chart"></div>
+          </section>
+          <section class="card">
+            <h2 id="snapshot-chart">Snapshots</h2>
+            <p class="note">Memory is steady replication. Disk is a backfill. <a href="#snapshot-word">How to read this</a>.</p>
+            <div id="snaps" class="chart"></div>
+          </section>
+        </div>
+        <section class="card">
+          <h2 id="buffer-chart">Buffer acknowledgement</h2>
+          <p class="note">Mutations against the credit the consumer gave back. <a href="#buffer-word">How to read this</a>.</p>
+          <div id="buffer" class="chart"></div>
         </section>
       </div>
     </section>
@@ -706,12 +805,18 @@
         <h2 class="group-title">Documents</h2>
         <p>How big the calls were, which document ids were busiest, and which were slowest.</p>
         <nav class="chips" aria-label="Documents">
+          <a href="#nic">NIC headroom</a>
           <a href="#body">Total body length</a>
           <a href="#top-asked">Most requested</a>
           <a href="#top-slow">Slowest</a>
         </nav>
       </div>
       <div class="stack">
+        <section class="card">
+          <h2 id="nic">NIC headroom</h2>
+          <p class="note" id="nic-note">The busiest time bucket, document bytes in plus document bytes out, against a 1 Gbit and a 10 Gbit NIC. <a href="#nic-word">How to read this</a>.</p>
+          <div id="nic-gauge" class="chart"></div>
+        </section>
         <section class="card">
           <h2>Total body length</h2>
           <p class="note">The horizontal axis is the same seconds as the other time charts. The vertical axis is bytes. Bars are the largest <button type="button" class="term" data-tip="Bytes of extras, key, and value in one Couchbase packet. Wireshark labels this Total Body Length.">total body length</button> in that second: one document into Couchbase, and one document out. Dashed lines add every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC can carry about 125 MB/s. A 10 Gbit NIC can carry about 1,250 MB/s.</p>
@@ -771,6 +876,18 @@
           <a href="#left">Left</a>
           <a href="#where">Where</a>
           <a href="#lost-response">Lost response</a>
+          <a href="#not-expected">Not expected</a>
+          <a href="#slow-scatter-word">Slow-call scatter</a>
+          <a href="#server-time">Server time</a>
+          <a href="#missing-heat-word">Missing heatmap</a>
+          <a href="#opcode-box-word">Opcode box</a>
+          <a href="#call-flow-word">Call flow</a>
+          <a href="#reply-status-word">Reply status</a>
+          <a href="#durability-word">Durability</a>
+          <a href="#persist-word">Time to replicate and persist</a>
+          <a href="#vbucket-word">VBucket</a>
+          <a href="#snapshot-word">Snapshot kind</a>
+          <a href="#buffer-word">Buffer acknowledgement</a>
           <a href="#response-without-request">Response without request</a>
           <a href="#response-time">Response time</a>
           <a href="#latency-band">Latency band</a>
@@ -778,6 +895,7 @@
           <a href="#opcode">Opcode</a>
           <a href="#document-id">Document id</a>
           <a href="#total-body-length">Total body length</a>
+          <a href="#nic-word">NIC headroom</a>
           <a href="#tcp-loss">TCP loss</a>
           <a href="#retry">Retry</a>
           <a href="#capture-duplicate">Capture duplicate</a>
@@ -798,7 +916,39 @@
           <dt id="where">Where</dt>
           <dd>Inside means the packet is outside the in-flight window at the open or the close of the file. End of file means the request is still inside the longest completed round trip of the close, so a missing reply can be the capture stopping. Start of file means the reply is inside that window of the opening, so the request may have been sent before recording started.</dd>
           <dt id="lost-response">Lost response</dt>
-          <dd>The request is in the file and the reply is not. That happens when the recording stops while the call is still open, or when the reply packet was never captured.</dd>
+          <dd>The request is in the file and the reply is not. That happens when the recording stops while the call is still open, or when the reply packet was never captured. A cell that says <a href="#not-expected">not expected</a> is a command that does not want a reply.</dd>
+          <dt id="not-expected">Not expected <sup>1</sup></dt>
+          <dd>
+            <p>The Lost responses column counts a missing command reply, magic <code>0x81</code> or <code>0x18</code>. Not expected means this command does not want that reply, and none of these packets were left waiting for one.</p>
+            <p>A DCP mutation (<code>0x57</code>) is pushed by the producer. The consumer does not send a command reply. Flow control is a later buffer acknowledgement (<code>0x5d</code>). Opaque 0 on that acknowledgement covers the whole connection. A mutation with no <code>0x81</code> is the normal stream.</p>
+            <p>A snapshot marker (<code>0x56</code>) wants a reply only when the snapshot flag <code>0x08</code> (Ack) is set. When that bit is clear, the marker starts the snapshot and the mutations after it are the documents. They share the stream opaque, and that number is the stream id. A marker with the ack flag set is an ordinary call, so a missing reply shows as a number in this column.</p>
+            <p>Stream end (<code>0x55</code>), deletion (<code>0x58</code>), expiration (<code>0x59</code>), and the buffer acknowledgement are one-way in the same way. A DCP noop (<code>0x5c</code>) does want a reply: the producer drops the connection if the consumer stays silent. A stream request, Set with Meta, Get Meta, and a Statistics poll such as <code>vbucket-seqno</code> also want a reply. A missing one shows as a number.</p>
+          </dd>
+          <dt id="slow-scatter-word">Slow-call scatter</dt>
+          <dd>Each dot is one matched call that took 50 ms or more, up to the slowest 2,000. Horizontal is when the request started. Vertical is the round trip. Blue is an application call. Rust is cluster replication. A p99 line can be three calls or a cloud of them. The dots show which. A vertical stack is many slow calls in the same moment.</dd>
+          <dt id="server-time">Server time</dt>
+          <dd>Choose “server time against round trip” on the slow-call chart. Horizontal is <code>couchbase.flex_frame.frame.duration</code>, the microseconds the server held the command from receive to send. Vertical is the round trip in milliseconds. A dot near the diagonal means the server was doing the work. A dot high and to the left was waiting outside the server: the network, the client, or a durability hold. The chart keeps the slowest calls that reported a duration and a spread of the others, about 2,000 dots. An empty chart means this capture did not report that flex frame. That is “not reported,” not a duration of zero. Wireshark 4.6 prints the field in microseconds.</dd>
+          <dt id="missing-heat-word">Missing heatmap</dt>
+          <dd>Each cell is one time bucket and one address, or one command. Color is how many requests in that cell have no reply. A vertical stripe means every listed row failed in that second. A horizontal stripe means one address or one command was missing the whole way across. The list is the addresses and commands with the most missing replies, up to 12. DCP commands that do not want a reply are not in this grid. They are <a href="#not-expected">not expected</a>.</dd>
+          <dt id="opcode-box-word">Opcode box</dt>
+          <dd>One box per command that got a reply, the slower tails first. The line in the middle of the box is the median. The box is the middle half of those calls, from p25 to p75. The whisker runs from the fastest call to p99, so one extreme call does not squash the rest. A short box with a long whisker is usually fast, with a thin slow tail. A tall box is usually slow. The p99 bar elsewhere is only the end of that whisker.</dd>
+          <dt id="call-flow-word">Call flow</dt>
+          <dd>Left is application or cluster. Middle is the command. Right is where the call went: matched, not found, key exists, an error status, a missing reply, or not expected. The width of a band is the count. Not found is status <code>0x0001</code>, a normal Get. Key exists is status <code>0x0002</code>, a conditional write that found the document already there. An error status is a reply such as not my vbucket, locked, busy, temporary failure, or rollback. Not expected is a DCP message that does not want a command reply. The middle keeps the eight busiest commands and folds the rest into Other.</dd>
+          <dt id="reply-status-word">Reply status</dt>
+          <dd>A bar for each Couchbase status on a reply that is not success. Success is left off so it does not hide the rest. Key not found and key exists are normal results, drawn in green. Not my vbucket, locked, busy, temporary failure, and rollback are drawn in rust. Not my vbucket means the client talked to the wrong node and will try again. Busy and temporary failure mean the server told the client to back off. Rollback means a DCP stream has to restart. A reply with one of those statuses is a matched call, so it is not in the missing-reply count.</dd>
+          <dt id="durability-word">Durability</dt>
+          <dd>Requests grouped by <code>couchbase.flex_frame.frame.durability_req</code>. Majority (<code>0x01</code>) is in memory on a majority of nodes, with no disk wait. Majority and persist on master (<code>0x02</code>) also waits for disk on the active node. Persist to majority (<code>0x03</code>) waits for disk on a majority. The bar is the p99 of calls at that level that got a reply. The two disk levels are the ones that stretch a Set while the server duration stays tiny. No durability means the request did not ask. An empty set of disk levels means this capture did not ask for them. When a reply carries <a href="#persist-word">time to replicate or time to persist</a>, that estimate is how long the server said the durability step still needed.</dd>
+          <dt id="persist-word">Time to replicate and persist</dt>
+          <dd>
+            <p><code>couchbase.ttr</code> is time to replicate. <code>couchbase.ttp</code> is time to persist. Wireshark prints both in milliseconds. They are the server’s estimate of how long until that step is done, not the round trip. Zero means the step is already done. A high time to replicate means the write is still waiting for a majority of nodes to hold it in memory. A high time to persist means it is still waiting for disk. Either one holds a durable write, which is why a Set can be slow while the server duration stays tiny.</p>
+            <p>The solid lines are the median in each time bucket. The dashed lines are the p99. A bucket with no such field is blank. Wireshark writes these two numbers only on Observe (<code>0x92</code>). They replace the CAS field: the first four bytes are time to persist, the next four are time to replicate. A durable Set does not carry them. Its request carries the durability level, and the reply waits until that level is met.</p>
+          </dd>
+          <dt id="vbucket-word">VBucket</dt>
+          <dd>The vBuckets with the most missing replies, then the most calls over 100 ms. The number is <code>couchbase.vbucket</code>. One vBucket points at one active node or one replica. A spread across many vBuckets points at the client or the capture.</dd>
+          <dt id="snapshot-word">Snapshot kind</dt>
+          <dd>Each bar is a DCP snapshot marker (<code>0x56</code>). Memory (<code>couchbase.extras.flags.dcp_snapshot_marker_memory</code>) is steady replication. Disk (<code>couchbase.extras.flags.dcp_snapshot_marker_disk</code>) is a backfill from disk. A marker with both bits counts as disk. The line is the widest sequence span in that bucket, end seqno minus start seqno. A span of 0 is a snapshot of one sequence. A disk marker with a wide span is catch-up, not an application slowdown.</dd>
+          <dt id="buffer-word">Buffer acknowledgement</dt>
+          <dd>The bars are DCP mutations (<code>0x57</code>). The line is the bytes the consumer gave back with a buffer acknowledgement (<code>0x5d</code>, <code>couchbase.extras.bytes_to_ack</code>). Opaque 0 on that acknowledgement covers the whole connection. Mutations while the credit line is on the floor means the consumer is not keeping up. That is flow control. It is not a missing command reply.</dd>
           <dt id="response-without-request">Response without request</dt>
           <dd>The reply is in the file and the request is not. The request was usually sent before the recording started. Extra packets from a Statistics reply are not this: they repeat the opaque on purpose and stay with that request.</dd>
           <dt id="response-time">Response time</dt>
@@ -813,6 +963,8 @@
           <dd>The Couchbase key the operation named.</dd>
           <dt id="total-body-length">Total body length</dt>
           <dd>Bytes of extras, key, and value in one Couchbase packet. Into Couchbase is the request. Out of Couchbase is the reply. 1 MB is 1,048,576 bytes.</dd>
+          <dt id="nic-word">NIC headroom</dt>
+          <dd>The gauge uses the selected time bucket. For each bucket it adds document bytes in and document bytes out, then takes the busiest bucket and turns that sum into a rate. The needle is that rate. The scale ends at 10 Gbit, which is 1,250 MB/s. The color changes at 1 Gbit, which is 125 MB/s. Green is under a 1 Gbit NIC. Gold is between 1 Gbit and 10 Gbit. If the busiest bucket is past 10 Gbit, the scale grows and the extra range is red. These are Couchbase body bytes, extras plus key plus value, so the NIC carried the frames around them as well. A needle past a mark means the documents alone filled that pipe. A needle sitting in the green means document size was not filling a 1 Gbit NIC in that bucket.</dd>
           <dt id="tcp-loss">TCP loss</dt>
           <dd>A hole in the recorded TCP byte stream. Toward the client means the server’s packets are missing, often the reply. Toward the server means the client’s packets are missing, often the request.</dd>
           <dt id="retry">Retry</dt>
@@ -831,6 +983,7 @@
           <li><a href="#packets">Packets on port 11210</a> is a bar for each Couchbase command, split into request and response. <a href="#capture-duplicate">Capture duplicate</a>, TCP data, and TCP ACK start hidden.</li>
           <li><a href="#body">Total body length</a> uses bars for the largest request and the largest reply, and dashed lines for every document byte in that second. A high bar is one large document. A high line is a busy second. A 1 Gbit NIC carries about 125 MB/s, and a 10 Gbit NIC about 1,250 MB/s.</li>
           <li>The tables are the <a href="#top-asked">busiest document ids</a>, and the <a href="#top-slow">ten slowest matched calls</a>. Set Stake on a slow call marks that second on the time charts, including the body-length chart.</li>
+          <li><a href="#diagnosis">Diagnosis</a> is the scatter, heatmap, box, and flow for slowness, missing replies, and odd statuses. Each chart links to its reading above.</li>
         </ol>
       </section>
       <section class="card glossary" id="data-source">
@@ -844,7 +997,7 @@
     const palette = ["#c45c26", "#24576e", "#1c2430", "#6e8b74", "#d4a017", "#8c4a6f", "#3d6b8c", "#a35b3a"];
     const stakeColors = ["#1a8cff", "#ff8a00", "#22a06b", "#c45c26", "#7a5cff", "#d4a017", "#e23b6a", "#14919b"];
     const charts = {};
-    const timeChartIds = ["mix", "rtt", "tail", "range", "issues", "body"];
+    const timeChartIds = ["mix", "rtt", "tail", "range", "issues", "body", "snaps", "buffer", "persist"];
     const STAKE_SERIES = "__stake";
     let clientPick = "";
     let gapTab = "sdk-request";
@@ -1241,7 +1394,406 @@
           { name: scopedName("body", "All bytes out"), type: "line", showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.body_out_bytes)) }
         ], rows)
       }, true);
+      drawSnapshots(rows, names);
+      drawBuffer(rows, names);
+      drawPersist(rows, names);
+      drawGauge();
       if (lightboxHome) requestAnimationFrame(() => Object.values(charts).forEach((chart) => chart.resize()));
+    }
+
+    function emptyChart(text) {
+      return {
+        title: { text: text, left: "center", top: "middle", textStyle: { color: "#8a8175", fontSize: 14, fontWeight: "normal" } },
+        series: []
+      };
+    }
+
+    function drawScatter() {
+      const server = document.getElementById("scatter-mode") && document.getElementById("scatter-mode").value === "server";
+      const points = (server ? data.scatter_server : data.scatter) || [];
+      const note = document.getElementById("scatter-note");
+      if (note) {
+        note.innerHTML = server
+          ? 'Horizontal is server microseconds. Vertical is the round trip. A dot high and to the left waited outside the server. <a href="#server-time">How to read this</a>.'
+          : 'Dots are matched calls of 50 ms or more. <a href="#slow-scatter-word">How to read this</a>.';
+      }
+      if (!charts.scatter) return;
+      if (!points.length) {
+        charts.scatter.setOption(emptyChart(server ? "No call reported a server duration" : "No matched call reached 50 ms"), true);
+        return;
+      }
+      const groups = [
+        ["sdk", "Application", "#1a5276"],
+        ["cluster", "Cluster", "#c45c26"]
+      ];
+      charts.scatter.setOption({
+        tooltip: {
+          trigger: "item",
+          formatter: (item) => {
+            const point = item.data || {};
+            const lines = [item.seriesName + " " + (point.command || "")];
+            lines.push("round trip " + item.value[1] + " ms");
+            lines.push(server ? "server " + item.value[0] + " µs" : "at " + item.value[0] + " s");
+            if (!server && point.server_us != null) lines.push("server " + point.server_us + " µs");
+            if (point.durability) lines.push("durability 0x0" + point.durability);
+            if (point.vbucket != null) lines.push("vBucket " + point.vbucket);
+            return lines.join("<br/>");
+          }
+        },
+        legend: { data: ["Application", "Cluster"] },
+        grid: { left: 64, right: 24, top: 36, bottom: 48 },
+        xAxis: { type: server ? yType() : "value", name: server ? "server µs" : "seconds", nameLocation: "middle", nameGap: 28 },
+        yAxis: { type: yType(), name: "ms" },
+        series: groups.map((group) => ({
+          name: group[1],
+          type: "scatter",
+          itemStyle: { color: group[2] },
+          symbolSize: 9,
+          data: points.filter((point) => {
+            if (point.role !== group[0]) return false;
+            if (scale() !== "log") return true;
+            if (!(point.rtt > 0)) return false;
+            return !server || point.server_us > 0;
+          }).map((point) => ({
+            value: server ? [point.server_us, point.rtt] : [point.t, point.rtt],
+            command: point.name,
+            durability: point.durability,
+            vbucket: point.vbucket,
+            server_us: point.server_us
+          }))
+        }))
+      }, true);
+    }
+
+    function drawHeat() {
+      if (!charts.heat) return;
+      const width = document.getElementById("bucket").value;
+      const board = (data.heatmap && data.heatmap[width]) || {};
+      const mode = document.getElementById("heat-mode") && document.getElementById("heat-mode").value === "opcodes" ? "opcodes" : "clients";
+      const rows = board[mode] || [];
+      const times = labels(currentRows());
+      if (!rows.length) {
+        charts.heat.setOption(emptyChart("No requests were missing a reply"), true);
+        return;
+      }
+      const cells = [];
+      let max = 1;
+      rows.forEach((row, y) => {
+        (row.values || []).forEach((value, x) => {
+          if (!value) return;
+          cells.push([x, y, value]);
+          if (value > max) max = value;
+        });
+      });
+      charts.heat.setOption({
+        tooltip: {
+          position: "top",
+          formatter: (item) => (times[item.value[0]] || "") + "<br/>" + rows[item.value[1]].name + "<br/>" + item.value[2] + " missing"
+        },
+        grid: { left: 148, right: 24, top: 16, bottom: 72 },
+        xAxis: { type: "category", data: times, splitArea: { show: true } },
+        yAxis: { type: "category", data: rows.map((row) => row.name), splitArea: { show: true } },
+        visualMap: {
+          min: 0,
+          max: max,
+          calculable: true,
+          orient: "horizontal",
+          left: "center",
+          bottom: 0,
+          inRange: { color: ["#f4efe6", "#1a5276"] },
+          textStyle: { color: "#5c564e" }
+        },
+        series: [{ type: "heatmap", data: cells }]
+      }, true);
+    }
+
+    function drawBoxes() {
+      if (!charts.boxes) return;
+      let rows = data.boxplot || [];
+      if (scale() === "log") rows = rows.filter((row) => (row.box || []).length === 5 && row.box.every((value) => value > 0));
+      if (!rows.length) {
+        charts.boxes.setOption(emptyChart("No matched calls"), true);
+        return;
+      }
+      charts.boxes.setOption({
+        tooltip: {
+          trigger: "item",
+          formatter: (item) => {
+            const row = rows[item.dataIndex];
+            const box = row.box || [];
+            return row.name + " · " + row.n + " calls<br/>fastest " + box[0] + " ms<br/>p25 " + box[1] + " ms<br/>median " + box[2] + " ms<br/>p75 " + box[3] + " ms<br/>p99 " + box[4] + " ms";
+          }
+        },
+        grid: { left: 168, right: 24, top: 16, bottom: 32 },
+        xAxis: { type: yType(), name: "ms" },
+        yAxis: { type: "category", data: rows.map((row) => row.name || row.opcode), inverse: true },
+        series: [{ type: "boxplot", data: rows.map((row) => row.box), itemStyle: { color: "#d6e2ea", borderColor: "#1a5276" } }]
+      }, true);
+    }
+
+    function drawPaths() {
+      if (!charts.paths) return;
+      const flow = data.sankey || {};
+      if (!flow.links || !flow.links.length) {
+        charts.paths.setOption(emptyChart("No calls"), true);
+        return;
+      }
+      charts.paths.setOption({
+        tooltip: { trigger: "item" },
+        series: [{
+          type: "sankey",
+          data: flow.nodes,
+          links: flow.links,
+          emphasis: { focus: "adjacency" },
+          nodeAlign: "justify",
+          nodeWidth: 14,
+          nodeGap: 10,
+          lineStyle: { color: "gradient", curveness: 0.5 },
+          label: { color: "#1c2430", fontSize: 12 }
+        }]
+      }, true);
+    }
+
+    function drawStatuses() {
+      if (!charts.statuses) return;
+      const all = data.status_counts || [];
+      const success = all.filter((row) => row.status === "0x0000").reduce((sum, row) => sum + row.count, 0);
+      const rows = all.filter((row) => row.status && row.status !== "0x0000");
+      const note = document.getElementById("status-note");
+      if (note) {
+        const lead = success ? success.toLocaleString() + " replies were success. " : "";
+        note.innerHTML = lead + 'The bars are every other status. <a href="#reply-status-word">How to read this</a>.';
+      }
+      if (!rows.length) {
+        charts.statuses.setOption(emptyChart(success ? "Every reply was success" : "No reply statuses"), true);
+        return;
+      }
+      charts.statuses.setOption({
+        tooltip: { trigger: "axis" },
+        grid: { left: 168, right: 24, top: 16, bottom: 28 },
+        xAxis: { type: yType(), name: "replies" },
+        yAxis: { type: "category", data: rows.map((row) => row.status + " " + row.name), inverse: true },
+        series: [{
+          type: "bar",
+          data: rows.map((row) => ({
+            value: yValue(row.count),
+            itemStyle: { color: row.status === "0x0001" || row.status === "0x0002" ? "#1f8a4c" : "#a33b3b" }
+          }))
+        }]
+      }, true);
+    }
+
+    function drawDurability() {
+      if (!charts.durable) return;
+      const rows = (data.durability || []).filter((row) => row.p99_ms != null);
+      const disk = (data.durability || []).some((row) => row.level === 2 || row.level === 3);
+      const note = document.getElementById("durability-note");
+      if (note) {
+        const lead = disk
+          ? "The bar is p99. Disk levels hold the reply. "
+          : "This capture did not ask for a disk durability level. ";
+        note.innerHTML = lead + '<a href="#durability-word">How to read this</a>.';
+      }
+      if (!rows.length) {
+        charts.durable.setOption(emptyChart("No matched calls"), true);
+        return;
+      }
+      charts.durable.setOption({
+        tooltip: {
+          trigger: "axis",
+          formatter: (items) => {
+            const row = rows[items[0].dataIndex];
+            return row.name + "<br/>p99 " + row.p99_ms + " ms<br/>median " + (row.median_ms == null ? "—" : row.median_ms + " ms") + "<br/>" + row.requests.toLocaleString() + " requests, " + row.matched.toLocaleString() + " matched";
+          }
+        },
+        grid: { left: 56, right: 16, top: 16, bottom: 78 },
+        xAxis: { type: "category", data: rows.map((row) => row.name), axisLabel: { interval: 0, width: 110, overflow: "break" } },
+        yAxis: { type: yType(), name: "p99 ms" },
+        series: [{
+          type: "bar",
+          data: rows.map((row) => ({ value: yValue(row.p99_ms), itemStyle: { color: row.level >= 2 ? "#c45c26" : "#1a5276" } }))
+        }]
+      }, true);
+    }
+
+    function drawVbuckets() {
+      if (!charts.vbars) return;
+      const rows = data.vbuckets || [];
+      const missing = rows.some((row) => row.unanswered);
+      const slow = rows.some((row) => row.over_100);
+      const field = missing ? "unanswered" : (slow ? "over_100" : "requests");
+      const label = missing ? "missing replies" : (slow ? "calls over 100 ms" : "requests");
+      const note = document.getElementById("vbucket-note");
+      if (note) {
+        note.innerHTML = (rows.length ? "Bar length is " + label + ". " : "No vBucket was reported. ") + '<a href="#vbucket-word">How to read this</a>.';
+      }
+      if (!rows.length) {
+        charts.vbars.setOption(emptyChart("No vBucket was reported"), true);
+        return;
+      }
+      charts.vbars.setOption({
+        tooltip: {
+          trigger: "axis",
+          formatter: (items) => {
+            const row = rows[items[0].dataIndex];
+            return "vBucket " + row.vbucket + "<br/>" + row.unanswered + " missing<br/>" + row.over_100 + " over 100 ms<br/>" + row.requests.toLocaleString() + " requests<br/>median " + (row.median_ms == null ? "—" : row.median_ms + " ms");
+          }
+        },
+        grid: { left: 72, right: 24, top: 16, bottom: 28 },
+        xAxis: { type: yType(), name: label },
+        yAxis: { type: "category", data: rows.map((row) => "vb " + row.vbucket), inverse: true },
+        series: [{ type: "bar", data: rows.map((row) => yValue(row[field])), itemStyle: { color: "#1a5276" } }]
+      }, true);
+    }
+
+    function drawSnapshots(rows, names) {
+      if (!charts.snaps) return;
+      charts.snaps.setOption({
+        color: ["#1a5276", "#c45c26", "#b7b1a8", "#e0a100"],
+        ...cross(),
+        legend: scopedLegend("snaps", ["Memory", "Disk", "Other", "Widest span"]),
+        grid: baseGrid(),
+        dataZoom: axisZoom(),
+        xAxis: { type: "category", data: names },
+        yAxis: [
+          { type: yType(), name: "markers" },
+          { type: yType(), name: "seqnos", splitLine: { show: false } }
+        ],
+        series: pin([
+          { name: scopedName("snaps", "Memory"), type: "bar", stack: "snap", data: rows.map((row) => yValue(row.snap_memory)) },
+          { name: scopedName("snaps", "Disk"), type: "bar", stack: "snap", data: rows.map((row) => yValue(row.snap_disk)) },
+          { name: scopedName("snaps", "Other"), type: "bar", stack: "snap", data: rows.map((row) => yValue(row.snap_other)) },
+          { name: scopedName("snaps", "Widest span"), type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.snap_span_max)) }
+        ], rows)
+      }, true);
+    }
+
+    function drawBuffer(rows, names) {
+      if (!charts.buffer) return;
+      charts.buffer.setOption({
+        color: ["#c45c26", "#1a5276"],
+        ...cross(),
+        legend: scopedLegend("buffer", ["Mutations", "Bytes acknowledged"]),
+        grid: baseGrid(),
+        dataZoom: axisZoom(),
+        xAxis: { type: "category", data: names },
+        yAxis: [
+          { type: yType(), name: "mutations" },
+          { type: yType(), name: "bytes", splitLine: { show: false } }
+        ],
+        series: pin([
+          { name: scopedName("buffer", "Mutations"), type: "bar", data: rows.map((row) => yValue(row.mutations)) },
+          { name: scopedName("buffer", "Bytes acknowledged"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { width: 2 }, data: rows.map((row) => yValue(row.ack_bytes)) }
+        ], rows)
+      }, true);
+    }
+
+    function drawPersist(rows, names) {
+      if (!charts.persist) return;
+      const summary = data.persist || {};
+      const ttr = summary.ttr || {};
+      const ttp = summary.ttp || {};
+      const note = document.getElementById("persist-note");
+      const none = !ttr.n && !ttp.n;
+      if (note) {
+        const lead = none
+          ? "No reply in this capture reported time to replicate or time to persist. "
+          : "Median replicate " + (ttr.median == null ? "—" : ttr.median + " ms")
+            + " across " + (ttr.n || 0).toLocaleString() + " replies. Median persist "
+            + (ttp.median == null ? "—" : ttp.median + " ms")
+            + " across " + (ttp.n || 0).toLocaleString() + ". ";
+        note.innerHTML = lead + '<a href="#persist-word">How to read this</a>.';
+      }
+      if (none) {
+        charts.persist.setOption(emptyChart("No reply reported time to replicate or time to persist"), true);
+        return;
+      }
+      charts.persist.setOption({
+        color: ["#1a5276", "#5d8aa8", "#c45c26", "#e59866"],
+        ...cross(),
+        legend: scopedLegend("persist", ["Replicate median", "Replicate p99", "Persist median", "Persist p99"]),
+        grid: baseGrid(),
+        dataZoom: axisZoom(),
+        xAxis: { type: "category", data: names },
+        yAxis: { type: yType(), name: "ms" },
+        series: pin([
+          { name: scopedName("persist", "Replicate median"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.ttr_median)) },
+          { name: scopedName("persist", "Replicate p99"), type: "line", showSymbol: false, lineStyle: { type: "dashed" }, data: rows.map((row) => yValue(row.ttr_p99)) },
+          { name: scopedName("persist", "Persist median"), type: "line", showSymbol: false, data: rows.map((row) => yValue(row.ttp_median)) },
+          { name: scopedName("persist", "Persist p99"), type: "line", showSymbol: false, lineStyle: { type: "dashed" }, data: rows.map((row) => yValue(row.ttp_p99)) }
+        ], rows)
+      }, true);
+    }
+
+    function drawGauge() {
+      if (!charts["nic-gauge"]) return;
+      const width = Number(document.getElementById("bucket").value) || 1;
+      const rows = currentRows();
+      let best = null;
+      rows.forEach((row) => {
+        const inn = row.body_in_bytes || 0;
+        const out = row.body_out_bytes || 0;
+        const sum = inn + out;
+        if (!best || sum > best.sum) best = { sum: sum, inn: inn, out: out, t: row.t };
+      });
+      const oneG = 125000000;
+      const tenG = 1250000000;
+      const rate = best && width ? best.sum / width : 0;
+      const mb = rate / 1000000;
+      let max = tenG;
+      if (rate > tenG) max = rate * 1.15;
+      const stops = [[Math.min(oneG, max) / max, "#1f8a4c"]];
+      if (max > oneG) stops.push([Math.min(tenG, max) / max, "#e0a100"]);
+      if (max > tenG) stops.push([1, "#a33b3b"]);
+      const note = document.getElementById("nic-note");
+      if (note) {
+        const bucketLabel = width === 0.5 ? "half-second" : width + " second";
+        let reading = "No document bytes in this capture.";
+        if (best && best.sum) {
+          const share = rate / oneG;
+          const where = share < 1 ? "under a 1 Gbit NIC" : (rate < tenG ? "between 1 Gbit and 10 Gbit" : "past a 10 Gbit NIC");
+          reading = "Busiest " + bucketLabel + " starts at " + best.t + "s. "
+            + formatBytes(best.inn) + " in, " + formatBytes(best.out) + " out, "
+            + formatBytes(best.sum) + " together, " + mb.toFixed(mb >= 100 ? 0 : 1) + " MB/s. "
+            + "That rate is " + where + ".";
+        }
+        note.innerHTML = reading + ' <a href="#nic-word">How to read this</a>.';
+      }
+      const widthName = width === 0.5 ? "0.5s" : width + "s";
+      charts["nic-gauge"].setOption({
+        series: [{
+          type: "gauge",
+          min: 0,
+          max: max / 1000000,
+          splitNumber: 10,
+          radius: "88%",
+          center: ["50%", "58%"],
+          axisLine: { lineStyle: { width: 18, color: stops } },
+          pointer: { itemStyle: { color: "#1c2430" }, width: 6 },
+          anchor: { show: true, showAbove: true, size: 14, itemStyle: { color: "#1c2430" } },
+          axisTick: { distance: -18, length: 6, lineStyle: { color: "#f7f4ef", width: 1 } },
+          splitLine: { distance: -18, length: 18, lineStyle: { color: "#f7f4ef", width: 2 } },
+          axisLabel: {
+            distance: 22,
+            color: "#5c564e",
+            fontSize: 11,
+            formatter: (value) => {
+              if (Math.abs(value - 125) < 0.6) return "1 Gbit";
+              if (Math.abs(value - 1250) < 0.6) return "10 Gbit";
+              if (value === 0) return "0";
+              return "";
+            }
+          },
+          title: { offsetCenter: [0, "78%"], color: "#5c564e", fontSize: 13 },
+          detail: {
+            offsetCenter: [0, "52%"],
+            color: "#1c2430",
+            fontSize: 22,
+            formatter: (value) => value.toFixed(value >= 100 ? 0 : 1) + " MB/s"
+          },
+          data: [{ value: mb, name: "busiest " + widthName }]
+        }]
+      }, true);
     }
 
     function formatBytes(value) {
@@ -1533,7 +2085,7 @@
         charts["cluster-conns"].setOption({
           tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
           grid: { left: 16, right: 24, top: 16, bottom: 28, containLabel: true },
-          xAxis: { type: "value", name: "missing replies", minInterval: 1 },
+          xAxis: { type: yType(), name: "missing replies", minInterval: scale() === "log" ? undefined : 1 },
           yAxis: {
             type: "category",
             data: top.map((row) => row.ip + ":" + row.port),
@@ -1542,7 +2094,7 @@
           },
           series: [{
             type: "bar",
-            data: top.map((row) => row.unanswered || 0),
+            data: top.map((row) => yValue(row.unanswered || 0)),
             itemStyle: { color: "#c45c26" },
             barMaxWidth: 22
           }]
@@ -1587,16 +2139,17 @@
           axisPointer: { type: "shadow" },
           formatter: (items) => {
             const item = items[0];
-            const share = counted.length ? Math.round(1000 * item.value / counted.length) / 10 : 0;
-            return item.name + "<br/>" + item.value + " clients (" + share + "%)";
+            const count = item.value == null ? 0 : item.value;
+            const share = counted.length ? Math.round(1000 * count / counted.length) / 10 : 0;
+            return item.name + "<br/>" + count + " clients (" + share + "%)";
           }
         },
         grid: { left: 16, right: 24, top: 16, bottom: 28, containLabel: true },
         xAxis: { type: "category", data: bandRows.map((row) => row.label) },
-        yAxis: { type: "value", name: "clients", minInterval: 1 },
+        yAxis: { type: yType(), name: "clients", minInterval: scale() === "log" ? undefined : 1 },
         series: [{
           type: "bar",
-          data: bandRows.map((row) => ({ value: row.count, itemStyle: { color: row.color } })),
+          data: bandRows.map((row) => ({ value: yValue(row.count), itemStyle: { color: row.color } })),
           barMaxWidth: 42
         }]
       }, true);
@@ -2034,8 +2587,15 @@
       table(
         "opcodes-seen",
         ["Opcode", "Command", "Side", "What it does", "Requests", "Lost responses"],
-        (data.by_opcode || []).map((row) => [copyButton(opcodeFilter(row.opcode), row.opcode), row.name, row.role || "", row.description || "", row.requests, row.expects_reply === false && !row.unanswered ? "not expected" : row.unanswered])
+        (data.by_opcode || []).map((row) => [copyButton(opcodeFilter(row.opcode), row.opcode), row.name, row.role || "", row.description || "", row.requests, row.expects_reply === false && !row.unanswered ? '<span class="nowrap">not expected<sup><a class="fn" href="#not-expected">1</a></sup></span>' : row.unanswered])
       );
+      drawScatter();
+      drawHeat();
+      drawBoxes();
+      drawPaths();
+      drawStatuses();
+      drawDurability();
+      drawVbuckets();
     }
 
     function openLightbox(wrap) {
@@ -2065,10 +2625,10 @@
     }
 
     function boot() {
-      ["spread", "mix", "rtt", "tail", "range", "issues", "body", "flow", "opcodes", "packets", "client-share", "client-rate", "client-port-share", "cluster-ops", "cluster-conns"].forEach((id) => {
+      ["spread", "mix", "rtt", "tail", "range", "issues", "body", "flow", "opcodes", "packets", "client-share", "client-rate", "client-port-share", "cluster-ops", "cluster-conns", "scatter", "heat", "boxes", "paths", "statuses", "durable", "vbars", "snaps", "buffer", "persist", "nic-gauge"].forEach((id) => {
         charts[id] = echarts.init(document.getElementById(id));
       });
-      echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body, charts.flow]);
+      echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body, charts.flow, charts.snaps, charts.buffer, charts.persist]);
       const clientOpen = document.getElementById("client-open");
       const clientMenu = document.getElementById("client-menu");
       const clientFind = document.getElementById("client-find");
@@ -2130,7 +2690,14 @@
         });
       });
       window.addEventListener("resize", () => Object.values(charts).forEach((chart) => chart.resize()));
-      document.getElementById("bucket").addEventListener("change", drawTime);
+      document.getElementById("bucket").addEventListener("change", () => {
+        drawTime();
+        drawHeat();
+      });
+      const scatterMode = document.getElementById("scatter-mode");
+      if (scatterMode) scatterMode.addEventListener("change", drawScatter);
+      const heatMode = document.getElementById("heat-mode");
+      if (heatMode) heatMode.addEventListener("change", drawHeat);
       document.getElementById("scale").addEventListener("change", () => {
         drawFixed();
         drawTime();

@@ -143,7 +143,36 @@
     }
     .report-button:hover { background: var(--teal); }
     .client-label { color: var(--ink); font-size: 14px; }
-    .client-label select { margin-left: 8px; }
+    .client-find {
+      margin-left: 8px;
+      width: 220px;
+      padding: 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font: inherit;
+    }
+    .client-matches {
+      list-style: none;
+      margin: 0 0 12px;
+      padding: 0;
+      max-width: 280px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .client-matches button {
+      display: block;
+      width: 100%;
+      padding: 6px 10px;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .client-matches button:hover { background: var(--paper); }
+    #client-trouble td:first-child { cursor: pointer; color: var(--teal); }
     .stack { display: grid; gap: 14px; }
     .group, .stack, .grid, .tables, .card, .chart-wrap, .chart { min-width: 0; }
     .chart { overflow: hidden; }
@@ -429,7 +458,7 @@
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         cb_wireshark_analyzer
       </a>
-      <span class="version" id="app-version">v0.6.0</span>
+      <span class="version" id="app-version">v0.7.0</span>
     </div>
     </div>
     <div class="bar">
@@ -580,15 +609,34 @@
     <section class="group" id="clients">
       <div class="group-head">
         <h2 class="group-title">Clients</h2>
-        <p>The machines that sent the requests. The fleet first, then one address.</p>
+        <p>In-cluster replication first, then application clients.</p>
         <nav class="chips" aria-label="Clients">
+          <a href="#cluster">Cluster</a>
+          <a href="#flow">Over time</a>
           <a href="#client-fleet">Fleet</a>
           <a href="#client-share">Missing replies</a>
           <a href="#client-rate">Unanswered percent</a>
-          <a href="#client-one">One client</a>
+          <a href="#client-one">Look up</a>
         </nav>
       </div>
       <div class="stack">
+        <section class="card" id="cluster">
+          <h2>Cluster</h2>
+          <p class="note" id="cluster-note"></p>
+          <p class="note">Same seconds as the other time charts. Bars are requests. Dashed lines are missing replies. Solid lines are TCP retransmissions. Blue is the application. Rust is the cluster. Hide a line in the legend to read one side.</p>
+          <div id="flow" class="chart"></div>
+          <div class="grid two">
+            <div>
+              <p class="note" id="cluster-ops-note"></p>
+              <div id="cluster-ops" class="chart"></div>
+            </div>
+            <div>
+              <p class="note" id="cluster-conn-note"></p>
+              <div id="cluster-conns" class="chart"></div>
+            </div>
+          </div>
+          <div id="cluster-table"></div>
+        </section>
         <section class="card">
           <h2>Client fleet</h2>
           <p class="note" id="client-fleet"></p>
@@ -605,11 +653,12 @@
           <div id="client-trouble"></div>
         </section>
         <section class="card">
-          <h2 id="client-one">One client</h2>
-          <p class="note">Pick an address. The pie is that client's connections, eight with the most missing replies and one slice for the rest. The table under it is the first 12.</p>
-          <p class="note"><label class="client-label">Client
-            <select id="client-pick"></select>
+          <h2 id="client-one">Look up a client</h2>
+          <p class="note">Type part of an address, or click a client in the fleet table. Matches stay to a short list. Cluster connections stay in the section above. The pie is this client's SDK connections, eight with the most missing replies and one slice for the rest. The table under it is the first 12.</p>
+          <p class="note"><label class="client-label">Address
+            <input id="client-find" class="client-find" type="search" placeholder="10.227..." autocomplete="off" spellcheck="false">
           </label></p>
+          <ul id="client-matches" class="client-matches" hidden></ul>
           <p class="note" id="client-detail"></p>
           <p class="note" id="client-port-note"></p>
           <div id="client-port-share" class="chart"></div>
@@ -1091,6 +1140,26 @@
           { name: scopedName("issues", "Retries"), type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.retrans)) }
         ], rows)
       }, true);
+      if (charts.flow) charts.flow.setOption({
+        color: ["#1a5276", "#c45c26", "#5d8aa8", "#e59866", "#1a5276", "#c0392b"],
+        ...cross(),
+        legend: scopedLegend("flow", ["SDK requests", "Cluster requests", "SDK missing", "Cluster missing", "SDK retrans", "Cluster retrans"], { type: "scroll" }),
+        grid: baseGrid(),
+        dataZoom: axisZoom(),
+        xAxis: { type: "category", data: names },
+        yAxis: [
+          { type: kind, name: "requests" },
+          { type: kind, name: "packets", splitLine: { show: false } }
+        ],
+        series: pin([
+          { name: scopedName("flow", "SDK requests"), type: "bar", stack: "req", data: rows.map((row) => yValue(row.sdk_requests)) },
+          { name: scopedName("flow", "Cluster requests"), type: "bar", stack: "req", data: rows.map((row) => yValue(row.cluster_requests)) },
+          { name: scopedName("flow", "SDK missing"), type: "line", showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.sdk_unanswered)) },
+          { name: scopedName("flow", "Cluster missing"), type: "line", showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.cluster_unanswered)) },
+          { name: scopedName("flow", "SDK retrans"), type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.sdk_retrans)) },
+          { name: scopedName("flow", "Cluster retrans"), type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.cluster_retrans)) }
+        ], rows)
+      }, true);
       charts.body.setOption({
         color: palette,
         ...cross(),
@@ -1236,23 +1305,36 @@
       }
     }
 
-    function clientRows() {
-      if (data.clients && data.clients.length) return data.clients;
-      const connections = {};
+    function sdkClients() {
+      const clusterIps = new Set();
+      const byIp = {};
       (data.by_connection || []).forEach((row) => {
-        connections[row.ip] = (connections[row.ip] || 0) + 1;
+        if (row.role === "cluster") {
+          clusterIps.add(row.ip);
+          return;
+        }
+        const item = byIp[row.ip] || { ip: row.ip, requests: 0, unanswered: 0, connections: 0 };
+        item.requests += row.requests || 0;
+        item.unanswered += row.unanswered || 0;
+        item.connections += 1;
+        byIp[row.ip] = item;
       });
-      return (data.by_requester_ip || []).map((row) => ({
-        ip: row.ip,
-        requests: row.requests,
-        unanswered: row.unanswered,
-        unanswered_pct: row.requests ? Math.round(1000 * row.unanswered / row.requests) / 10 : 0,
-        connections: connections[row.ip] || 0,
-        matched: null,
-        median_ms: null,
-        p99_ms: null,
-        over_100: null
-      }));
+      const known = {};
+      (data.clients || []).forEach((row) => { known[row.ip] = row; });
+      return Object.values(byIp).map((row) => {
+        const prior = known[row.ip];
+        const pure = prior && !clusterIps.has(row.ip);
+        return {
+          ip: row.ip,
+          requests: row.requests,
+          unanswered: row.unanswered,
+          unanswered_pct: row.requests ? Math.round(1000 * row.unanswered / row.requests) / 10 : 0,
+          connections: row.connections,
+          median_ms: pure ? prior.median_ms : null,
+          p99_ms: pure ? prior.p99_ms : null,
+          over_100: pure ? prior.over_100 : null
+        };
+      });
     }
 
     function clientPct(row) {
@@ -1263,22 +1345,21 @@
     function drawClientFleet() {
       const fleet = document.getElementById("client-fleet");
       const trouble = document.getElementById("client-trouble");
-      const pick = document.getElementById("client-pick");
-      if (!fleet || !trouble || !pick) return;
-      const clients = clientRows();
+      if (!fleet || !trouble) return;
+      drawCluster();
+      const clients = sdkClients();
       const requests = clients.reduce((sum, row) => sum + (row.requests || 0), 0);
       const unanswered = clients.reduce((sum, row) => sum + (row.unanswered || 0), 0);
       const connections = clients.reduce((sum, row) => sum + (row.connections || 0), 0);
       const fleetPct = requests ? Math.round(1000 * unanswered / requests) / 10 : 0;
       if (!clients.length) {
-        fleet.textContent = "No client addresses in this capture.";
+        fleet.textContent = "No application clients in this capture.";
         trouble.innerHTML = "";
-        pick.innerHTML = "";
         return;
       }
       if (clients.length === 1) {
         const only = clients[0];
-        fleet.textContent = "One client, " + only.ip + ", sent every request: " + only.requests + " requests, " + only.unanswered + " missing replies (" + clientPct(only) + "%), across " + (only.connections || 0) + " connections.";
+        fleet.textContent = "Application clients only. One client, " + only.ip + ", sent every SDK request: " + only.requests + " requests, " + only.unanswered + " missing replies (" + clientPct(only) + "%), across " + (only.connections || 0) + " connections.";
       } else {
         const rich = clients.filter((row) => row.requests >= 5);
         const pool = rich.length ? rich : clients;
@@ -1289,7 +1370,7 @@
         const shareRequests = requests ? Math.round(1000 * aboveRequests / requests) / 10 : 0;
         const shareMisses = unanswered ? Math.round(1000 * aboveMisses / unanswered) / 10 : 0;
         const bar = rich.length ? " A client counts here when it sent at least 5 requests." : "";
-        fleet.textContent = clients.length + " clients opened " + connections + " connections and sent " + requests + " requests. " + unanswered + " replies are missing (" + fleetPct + "%). " + above.length + " of " + clients.length + " clients (" + shareClients + "%) are above that rate." + bar + " Those clients sent " + shareRequests + "% of the requests and hold " + shareMisses + "% of the missing replies.";
+        fleet.textContent = "Application clients only. " + clients.length + " clients opened " + connections + " connections and sent " + requests + " requests. " + unanswered + " replies are missing (" + fleetPct + "%). " + above.length + " of " + clients.length + " clients (" + shareClients + "%) are above that rate." + bar + " Those clients sent " + shareRequests + "% of the requests and hold " + shareMisses + "% of the missing replies.";
       }
       const ranked = clients.slice().sort((a, b) => (b.unanswered || 0) - (a.unanswered || 0) || (b.requests || 0) - (a.requests || 0));
       const rich = clients.filter((row) => row.requests >= 5);
@@ -1310,10 +1391,10 @@
         row.median_ms == null ? "—" : row.median_ms,
         row.p99_ms == null ? "—" : row.p99_ms
       ]));
-      const previous = clientPick || pick.value;
-      pick.innerHTML = ranked.map((row) => '<option value="' + escapeHtml(row.ip) + '">' + escapeHtml(row.ip) + "</option>").join("");
-      pick.value = ranked.some((row) => row.ip === previous) ? previous : ranked[0].ip;
-      clientPick = pick.value;
+      const previous = clientPick;
+      clientPick = ranked.some((row) => row.ip === previous) ? previous : ranked[0].ip;
+      const finder = document.getElementById("client-find");
+      if (finder && document.activeElement !== finder) finder.value = clientPick;
       drawClientCharts(clients);
       drawOneClient();
     }
@@ -1363,6 +1444,65 @@
       ["25%+", (pct) => pct > 25, "#c0392b"]
     ];
 
+    function isClusterOpcode(row) {
+      const name = row.name || "";
+      return name.startsWith("DCP") || name.includes("Meta");
+    }
+
+    function drawCluster() {
+      const note = document.getElementById("cluster-note");
+      const cluster = (data.traffic || {}).cluster || {};
+      const requests = cluster.requests || 0;
+      const unanswered = cluster.unanswered || 0;
+      const pct = requests ? Math.round(1000 * unanswered / requests) / 10 : 0;
+      if (note) {
+        note.textContent = "Node-to-node traffic only. Both ends on port 11210 or 11207, or a DCP or replication-meta command. "
+          + requests + " requests, " + unanswered + " without a reply (" + pct + "%). Median "
+          + (cluster.median_ms == null ? "—" : cluster.median_ms + " ms") + ". Retransmissions on these flows: "
+          + (cluster.retrans || 0) + ". Lost segments: " + (cluster.lost || 0) + ".";
+      }
+      const ops = (data.by_opcode || []).filter(isClusterOpcode);
+      const opNote = document.getElementById("cluster-ops-note");
+      if (opNote) opNote.textContent = "Cluster commands. Eight with the most requests, then the rest in one slice.";
+      if (charts["cluster-ops"]) {
+        charts["cluster-ops"].setOption(pieWithLegend(chartSlices(ops, (row) => row.name, (row) => row.requests || 0, 8)), true);
+        charts["cluster-ops"].resize();
+      }
+      const conns = (data.by_connection || []).filter((row) => row.role === "cluster")
+        .slice()
+        .sort((a, b) => (b.unanswered || 0) - (a.unanswered || 0) || (b.requests || 0) - (a.requests || 0));
+      const connNote = document.getElementById("cluster-conn-note");
+      if (connNote) connNote.textContent = "Cluster connections, the ones with the most missing replies. At most 12.";
+      if (charts["cluster-conns"]) {
+        const top = conns.slice(0, 12);
+        charts["cluster-conns"].setOption({
+          tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+          grid: { left: 16, right: 24, top: 16, bottom: 28, containLabel: true },
+          xAxis: { type: "value", name: "missing replies", minInterval: 1 },
+          yAxis: {
+            type: "category",
+            data: top.map((row) => row.ip + ":" + row.port),
+            inverse: true,
+            axisLabel: { width: 160, overflow: "truncate" }
+          },
+          series: [{
+            type: "bar",
+            data: top.map((row) => row.unanswered || 0),
+            itemStyle: { color: "#c45c26" },
+            barMaxWidth: 22
+          }]
+        }, true);
+        charts["cluster-conns"].resize();
+      }
+      table("cluster-table", ["Connection", "Stream", "Requests", "Lost responses", "Unanswered %"], conns.slice(0, 12).map((row) => [
+        escapeHtml(row.ip + ":" + row.port),
+        escapeHtml(row.stream),
+        row.requests,
+        row.unanswered,
+        (row.unanswered_pct != null ? row.unanswered_pct : 0) + "%"
+      ]));
+    }
+
     function drawClientCharts(clients) {
       const shareNote = document.getElementById("client-share-note");
       const rateNote = document.getElementById("client-rate-note");
@@ -1371,9 +1511,9 @@
       const shareValue = (row) => misses ? (row.unanswered || 0) : (row.requests || 0);
       const slices = chartSlices(clients, (row) => row.ip, shareValue, 8);
       if (shareNote) {
-        shareNote.textContent = misses
-          ? "Missing replies by client. Eight clients with the most, then every other client in one slice. The legend names them. The chart stays this size for thousands of clients."
-          : "No missing replies. Slices are requests. Eight clients with the most, then every other client in one slice.";
+        shareNote.textContent = "Application clients only. " + (misses
+          ? "Missing replies by client. Eight with the most, then every other client in one slice."
+          : "No missing replies. Slices are requests. Eight clients with the most, then every other client in one slice.");
       }
       charts["client-share"].setOption(pieWithLegend(slices), true);
       const rich = clients.filter((row) => row.requests >= 5);
@@ -1423,12 +1563,25 @@
       charts["client-port-share"].resize();
     }
 
+    function chooseClient(ip) {
+      const row = sdkClients().find((item) => item.ip === ip);
+      if (!row) return;
+      clientPick = ip;
+      const finder = document.getElementById("client-find");
+      if (finder) finder.value = ip;
+      const matches = document.getElementById("client-matches");
+      if (matches) {
+        matches.hidden = true;
+        matches.innerHTML = "";
+      }
+      drawOneClient();
+    }
+
     function drawOneClient() {
       const detail = document.getElementById("client-detail");
-      const pick = document.getElementById("client-pick");
-      if (!detail || !pick) return;
-      const ip = pick.value;
-      const row = clientRows().find((item) => item.ip === ip);
+      if (!detail) return;
+      const ip = clientPick;
+      const row = sdkClients().find((item) => item.ip === ip);
       if (!row) {
         detail.textContent = "";
         table("client-ports", ["Connection", "Requests", "Lost responses", "Unanswered %"], []);
@@ -1437,7 +1590,7 @@
       const slow = row.over_100 == null ? "" : " " + row.over_100 + " matched calls were 100 ms or slower.";
       const pace = row.median_ms == null ? "" : " Median " + row.median_ms + " ms, p99 " + (row.p99_ms == null ? "—" : row.p99_ms + " ms.");
       detail.textContent = row.ip + " sent " + row.requests + " requests. " + row.unanswered + " replies are missing (" + clientPct(row) + "%)." + pace + slow;
-      const ports = (data.by_connection || []).filter((item) => item.ip === ip).sort((a, b) => {
+      const ports = (data.by_connection || []).filter((item) => item.ip === ip && item.role !== "cluster").sort((a, b) => {
         const rateA = a.requests ? a.unanswered / a.requests : 0;
         const rateB = b.requests ? b.unanswered / b.requests : 0;
         if (rateB !== rateA) return rateB - rateA;
@@ -1447,10 +1600,15 @@
       if (ports.length > shown.length) {
         detail.textContent += " Showing 12 of " + ports.length + " connections.";
       }
+      const clusterN = ports.filter((item) => item.role === "cluster").reduce((sum, item) => sum + (item.requests || 0), 0);
+      const sdkN = ports.filter((item) => item.role !== "cluster").reduce((sum, item) => sum + (item.requests || 0), 0);
+      if (clusterN || sdkN) {
+        detail.textContent += " SDK " + sdkN + " requests. Cluster " + clusterN + " requests.";
+      }
       drawPortChart(ip, ports);
-      table("client-ports", ["Connection", "Stream", "Requests", "Lost responses", "Unanswered %"], shown.map((item) => {
+      table("client-ports", ["Connection", "Role", "Stream", "Requests", "Lost responses", "Unanswered %"], shown.map((item) => {
         const pct = item.unanswered_pct != null ? item.unanswered_pct : (item.requests ? Math.round(1000 * item.unanswered / item.requests) / 10 : 0);
-        return [escapeHtml(item.ip + ":" + item.port), escapeHtml(item.stream), item.requests, item.unanswered, pct + "%"];
+        return [escapeHtml(item.ip + ":" + item.port), item.role || "sdk", escapeHtml(item.stream), item.requests, item.unanswered, pct + "%"];
       }));
     }
 
@@ -1512,6 +1670,7 @@
           term("Left", "Seconds of capture still remaining after this packet. A small Left means the file was about to end."),
           term("Stream", "The TCP connection number. Opaque is only unique inside this stream."),
           "Opaque",
+          "Role",
           "Opcode",
           "Document id",
           term("Where", "Inside is away from the open and the close. End of file and Start of file are inside the in-flight window, so the missing half of the call may be the capture cutting it off."),
@@ -1522,6 +1681,7 @@
           cellText(row.seconds_left),
           escapeHtml(cellText(row.stream)),
           copyCell("opaque", row.opaque),
+          escapeHtml(cellText(row.role || "")),
           escapeHtml(cellText(row.opcode)),
           copyCell("key", row.key),
           gapPlace(row, atStart),
@@ -1653,7 +1813,9 @@
         tile(term("Max", "The slowest matched call in the capture."), msText(overall.rtt_max), "slowest matched call", true),
         tile(term("≥ 100 ms", "Matched calls whose response time was 100 milliseconds or more."), slow.over_100 == null ? "—" : slow.over_100, share(slow.over_100 || 0), true),
         tile(term("≥ 250 ms", "Matched calls whose response time was 250 milliseconds or more."), slow.over_250 == null ? "—" : slow.over_250, share(slow.over_250 || 0)),
-        tile("Requests", requests, lost + " " + term("lost responses", "Requests whose replies are not in this file."))
+        tile("Requests", requests, lost + " " + term("lost responses", "Requests whose replies are not in this file.")),
+        tile("SDK median", msText((data.traffic && data.traffic.sdk && data.traffic.sdk.median_ms)), "application calls"),
+        tile("Cluster median", msText((data.traffic && data.traffic.cluster && data.traffic.cluster.median_ms)), "replication calls")
       ].join("");
     }
 
@@ -1690,6 +1852,7 @@
       table("top-asked", [term("Document id", "The Couchbase key the operation named."), "Requests", term("Lost responses", "Requests for that document whose replies are not in this file.")], (data.top_requested || []).map((row) => [copyCell("key", row.key), row.count, row.unanswered]));
       table("top-slow", [
         term("Document id", "The Couchbase key the operation named."),
+        "Role",
         term("Stream", "The TCP connection number. Opaque is only unique inside this stream."),
         term("Opaque", "The client’s semi-transaction number. The request and the matching response carry this same value."),
         term("Time ms", "Milliseconds from the request packet to its matching reply for this call."),
@@ -1698,6 +1861,7 @@
         "Stake"
       ], (data.top_slowest || []).map((row) => [
         copyCell("key", row.key),
+        escapeHtml(cellText(row.role || "")),
         cellText(row.stream),
         copyCell("opaque", row.opaque),
         cellText(row.time_ms),
@@ -1718,8 +1882,8 @@
       document.getElementById("subtitle").textContent = bits.join(" · ") || "No matched calls";
       table(
         "opcodes-seen",
-        ["Opcode", "Command", "What it does", "Requests", "Lost responses"],
-        (data.by_opcode || []).map((row) => [row.opcode, row.name, row.description || "", row.requests, row.unanswered])
+        ["Opcode", "Command", "Side", "What it does", "Requests", "Lost responses"],
+        (data.by_opcode || []).map((row) => [row.opcode, row.name, row.role || "", row.description || "", row.requests, row.unanswered])
       );
     }
 
@@ -1750,15 +1914,36 @@
     }
 
     function boot() {
-      ["spread", "mix", "rtt", "tail", "range", "issues", "body", "opcodes", "packets", "client-share", "client-rate", "client-port-share"].forEach((id) => {
+      ["spread", "mix", "rtt", "tail", "range", "issues", "body", "flow", "opcodes", "packets", "client-share", "client-rate", "client-port-share", "cluster-ops", "cluster-conns"].forEach((id) => {
         charts[id] = echarts.init(document.getElementById(id));
       });
-      echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body]);
-      const clientSelect = document.getElementById("client-pick");
-      if (clientSelect) {
-        clientSelect.addEventListener("change", () => {
-          clientPick = clientSelect.value;
-          drawOneClient();
+      echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body, charts.flow]);
+      const clientFind = document.getElementById("client-find");
+      const clientMatches = document.getElementById("client-matches");
+      if (clientFind && clientMatches) {
+        clientFind.addEventListener("input", () => {
+          const query = clientFind.value.trim();
+          if (query.length < 2) {
+            clientMatches.hidden = true;
+            clientMatches.innerHTML = "";
+            return;
+          }
+          const hits = sdkClients().filter((row) => row.ip.includes(query)).slice(0, 8);
+          clientMatches.hidden = hits.length === 0;
+          clientMatches.innerHTML = hits.map((row) => '<li><button type="button" data-client="' + escapeHtml(row.ip) + '">' + escapeHtml(row.ip) + "</button></li>").join("");
+        });
+        clientMatches.addEventListener("click", (event) => {
+          const button = event.target.closest("[data-client]");
+          if (!button) return;
+          chooseClient(button.dataset.client);
+        });
+      }
+      const trouble = document.getElementById("client-trouble");
+      if (trouble) {
+        trouble.addEventListener("click", (event) => {
+          const cell = event.target.closest("td");
+          if (!cell || cell.cellIndex !== 0) return;
+          chooseClient(cell.textContent.trim());
         });
       }
       document.querySelectorAll("[data-gap-tab]").forEach((button) => {

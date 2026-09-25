@@ -8,6 +8,8 @@ tcp.port == 11210
 
 `tcp.port` is either side. A request has destination 11210. The reply has source 11210. A capture filter of `dst port 11210` keeps the requests and drops the replies, so the report can show no round trips. Use `port 11210` when recording if you want both directions. The tcpdump command, including the other Couchbase service ports, is in [CB_TCPDUMP.md](CB_TCPDUMP.md).
 
+The analyzer marks two kinds of KV traffic. **Cluster** is port 11210 or 11207 on both ends, or a DCP command (`0x50`–`0x67`) or a replication meta command (`0xa0`, `0xa2`, `0xa8`). **SDK** is an application port talking to 11210 for the other commands. A retransmission of the reply stays with that same flow.
+
 The chart page’s slow-call table gives the `tcp.stream` and `couchbase.opaque` for each slow row. Those two fields together are one call.
 
 ## One document

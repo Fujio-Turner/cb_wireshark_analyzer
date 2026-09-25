@@ -21,6 +21,46 @@ def msg(time, stream="0", opaque="0x1", opcode="0x00", key="doc", src="10.0.0.2"
     }
 
 
+def test_node_port_and_dcp_are_cluster_and_an_app_port_is_sdk():
+    assert ac.traffic_role("11210", "11210", "0x01") == "cluster"
+    assert ac.traffic_role("4000", "11210", "0x57") == "cluster"
+    assert ac.traffic_role("4000", "11210", "0xa2") == "cluster"
+    assert ac.traffic_role("4000", "11210", "0x00") == "sdk"
+    app = msg(0.2, opaque="0x1")
+    node = msg(1.0, opaque="0x9", opcode="0x57", src="10.0.0.9")
+    node["sport"] = "11210"
+    node["dport"] = "11210"
+    paired = ac.pair_messages([app, node], [])
+    charts = ac.build_charts(
+        [app, node],
+        paired,
+        [{"time": 1.0, "stream": "1", "sport": "11210", "dport": "11210", "lost": False, "retrans": True, "ack": False}],
+        ["11210"],
+        5.0,
+    )
+    assert charts["traffic"]["sdk"]["requests"] == 1
+    assert charts["traffic"]["cluster"]["requests"] == 1
+    assert charts["traffic"]["cluster"]["retrans"] == 1
+    dcp = msg(2.0, opaque="0x8", opcode="0x57", src="10.0.0.7")
+    dcp["sport"] = "5000"
+    paired_dcp = ac.pair_messages([dcp], [])
+    reply_retrans = ac.build_charts(
+        [dcp],
+        paired_dcp,
+        [{"time": 2.1, "stream": "2", "sport": "11210", "dport": "5000", "lost": False, "retrans": True, "ack": False}],
+        ["11210"],
+        5.0,
+    )
+    assert reply_retrans["traffic"]["cluster"]["retrans"] == 1
+    assert reply_retrans["traffic"]["sdk"]["retrans"] == 0
+    roles = {(row["ip"], row["port"]): row["role"] for row in charts["by_connection"]}
+    assert roles[("10.0.0.2", "4000")] == "sdk"
+    assert roles[("10.0.0.9", "11210")] == "cluster"
+    assert charts["buckets"]["1"][0]["sdk_requests"] == 1
+    assert charts["buckets"]["1"][1]["cluster_requests"] == 1
+    assert charts["by_opcode"][0]["role"] in {"sdk", "cluster"}
+
+
 def test_missing_rows_are_spaced_across_the_capture():
     requests = [msg(float(i), opaque=f"0x{i:x}", key=f"k{i}") for i in range(1, 31)]
     paired = ac.pair_messages(requests, [])

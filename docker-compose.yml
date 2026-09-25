@@ -7,7 +7,7 @@
 services:
   analyze:
     build: .
-    image: cb_wireshark_analyzer:0.6.0
+    image: cb_wireshark_analyzer:0.7.0
     volumes:
       - ${CAPTURE_DIR:-./captures}:/captures:ro
       - ${OUT_DIR:-./orphan-report}:/out
@@ -23,5 +23,5 @@ services:
 
   test:
     build: .
-    image: cb_wireshark_analyzer:0.6.0
+    image: cb_wireshark_analyzer:0.7.0
     entrypoint: ["python3", "-m", "pytest", "-q"]

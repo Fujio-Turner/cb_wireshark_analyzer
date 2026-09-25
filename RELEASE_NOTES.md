@@ -1,12 +1,22 @@
 # Release notes
 
+## 0.9.0
+
+The chart page and the report hand you a Wireshark filter for the row you are looking at.
+
+- The time-bucket menu adds 0.5 seconds next to 1 second.
+- Missing calls have an **Errors** column. A dash means no TCP hole within half a second. **possible** copies one filter: the document and the opaque on their stream, or the lost segments and lost acks to and from that requester in the surrounding time.
+- Copy icons sit on the stream, the opaque (stream and opaque together, which is one call), the opcode, the client address, and the half-second around **Set Stake**. Click a bar on **Packets on port 11210** to copy that command. [CB_WIRESHARK.md](CB_WIRESHARK.md) lists each of these.
+- The report ends with a counted **Wireshark filters** section. Each line has a Copy button.
+- **Choose a client** opens the application addresses, missing replies first, with a box that narrows the list as you type.
+
 ## 0.8.0
 
 DCP is read as replication, not as lost calls, and a second copy of the same TCP segment is no longer called a retry.
 
 - Command names and DCP flags come from Wireshark’s dissector, `epan/dissectors/packet-couchbase.c`. There is no separate Couchbase decoder tree. The GitHub copy is a read-only mirror of the GitLab file. The protocol is Couchbase kv_engine’s binary protocol and DCP docs. [CB_WIRESHARK.md](CB_WIRESHARK.md) names both.
 - DCP is full duplex. The opaque on a stream request is copied onto every later snapshot and mutation. That number is the stream, not one call. Those packets do not expect a command reply. A snapshot marker wants a reply only when the ack flag is set. A buffer acknowledgement does not get a reply. A noop does. A later packet with the same opaque is the next change, not a retry. Statistics key `vbucket-seqno` is many packets on one opaque and counts as one call. Get All VBucket Seqnos and that statistics key are cluster setup, not application calls.
-- The timing charts draw the application and the cluster separately: tiles, histogram, round trip, tail, candles, and the opcode-mix lines. Blue is the application. Rust is the cluster.
+- The timing charts draw the application and the cluster separately: tiles, histogram, round trip, tail, candles, and the opcode-mix lines. Blue is the application. Rust is the cluster. The time-bucket menu adds 0.5 seconds next to 1 second.
 - Missing calls are four tabs. Application requests and application replies come first, then the cluster tabs.
 - **Capture duplicate** is the same TCP segment recorded again within a millisecond. Wireshark calls that a retransmission. The bar starts hidden. The glossary holds the explanation, and the dotted words on the chart point there. A red Retransmission bar is a resend that waited out a timeout. A packet with a Couchbase header is counted as that command even when TCP also flags it.
 - The note sent to the model stays bounded. The stream list is the 12 busiest connections, and the reply is capped. The brief includes the DCP rules and the capture-duplicate count.

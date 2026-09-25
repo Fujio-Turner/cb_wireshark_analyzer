@@ -142,10 +142,33 @@
       text-decoration: none;
     }
     .report-button:hover { background: var(--teal); }
-    .client-label { color: var(--ink); font-size: 14px; }
+    .client-picker { position: relative; display: inline-block; }
+    .client-open {
+      min-width: 260px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+    }
+    .client-menu {
+      position: absolute;
+      z-index: 4;
+      top: calc(100% + 4px);
+      left: 0;
+      width: min(360px, 80vw);
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 8px 24px rgba(28, 36, 48, 0.12);
+    }
     .client-find {
-      margin-left: 8px;
-      width: 220px;
+      width: 100%;
+      margin: 0 0 8px;
       padding: 6px 8px;
       border: 1px solid var(--line);
       border-radius: 6px;
@@ -153,17 +176,18 @@
     }
     .client-matches {
       list-style: none;
-      margin: 0 0 12px;
+      margin: 0;
       padding: 0;
-      max-width: 280px;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: #fff;
+      max-height: 280px;
+      overflow: auto;
     }
-    .client-matches button {
-      display: block;
-      width: 100%;
-      padding: 6px 10px;
+    .client-matches li { display: flex; align-items: center; gap: 4px; }
+    .client-matches button[data-client] {
+      display: flex;
+      flex: 1;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 8px;
       border: 0;
       background: transparent;
       color: var(--ink);
@@ -171,7 +195,10 @@
       text-align: left;
       cursor: pointer;
     }
-    .client-matches button:hover { background: var(--paper); }
+    .client-matches button[data-client]:hover,
+    .client-matches button[data-client].on { background: var(--paper); }
+    .client-matches .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .client-more { padding: 6px 8px; color: var(--muted); font-size: 12px; }
     #client-trouble td:first-child { cursor: pointer; color: var(--teal); }
     .stack { display: grid; gap: 14px; }
     .group, .stack, .grid, .tables, .card, .chart-wrap, .chart { min-width: 0; }
@@ -459,7 +486,7 @@
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         cb_wireshark_analyzer
       </a>
-      <span class="version" id="app-version">v0.8.0</span>
+      <span class="version" id="app-version">v0.9.0</span>
     </div>
     </div>
     <div class="bar">
@@ -481,9 +508,10 @@
     </div>
   </header>
   <aside class="dock">
-    <label><button type="button" class="term" data-tip="How wide each point on the time charts is. One second shows more detail. Five and ten seconds smooth a long capture.">Time bucket</button>
+    <label><button type="button" class="term" data-tip="How wide each point on the time charts is. Half a second and one second show more detail. Five and ten seconds smooth a long capture.">Time bucket</button>
       <select id="bucket">
-        <option value="1">1 second</option>
+        <option value="0.5">0.5 seconds</option>
+        <option value="1" selected>1 second</option>
         <option value="5">5 seconds</option>
         <option value="10">10 seconds</option>
       </select>
@@ -588,7 +616,7 @@
       <div class="stack">
         <section class="card">
           <h2>Packets on port 11210</h2>
-          <p class="note">Each bar is one packet on port 11210, counted once. A Couchbase header is counted as that command. Requests are blue, responses are green. <a class="term" href="#capture-duplicate">Capture duplicate</a>, TCP data segment, and TCP ACK start hidden.</p>
+          <p class="note">Each bar is one packet on port 11210, counted once. A Couchbase header is counted as that command. Requests are blue, responses are green. Click a bar to copy its Wireshark filter. <a class="term" href="#capture-duplicate">Capture duplicate</a>, TCP data segment, and TCP ACK start hidden.</p>
           <div id="packets" class="chart"></div>
         </section>
         <section class="card">
@@ -657,11 +685,14 @@
         </section>
         <section class="card">
           <h2 id="client-one">Look up a client</h2>
-          <p class="note">Type part of an address, or click a client in the fleet table. Matches stay to a short list. Cluster connections stay in the section above. The pie is this client's SDK connections, eight with the most missing replies and one slice for the rest. The table under it is the first 12.</p>
-          <p class="note"><label class="client-label">Address
-            <input id="client-find" class="client-find" type="search" placeholder="10.227..." autocomplete="off" spellcheck="false">
-          </label></p>
-          <ul id="client-matches" class="client-matches" hidden></ul>
+          <p class="note">Click Choose a client. The list is every application address, the ones with missing replies first. Type in the box to narrow it. Click a row in the fleet table to open that client too. Cluster connections stay in the section above. The pie is this client's SDK connections, eight with the most missing replies and one slice for the rest. The table under it is the first 12.</p>
+          <div class="client-picker" id="client-picker">
+            <button type="button" id="client-open" class="client-open" aria-expanded="false" aria-controls="client-menu">Choose a client</button>
+            <div id="client-menu" class="client-menu" hidden>
+              <input id="client-find" class="client-find" type="search" placeholder="Filter addresses" autocomplete="off" spellcheck="false" aria-label="Filter addresses">
+              <ul id="client-matches" class="client-matches"></ul>
+            </div>
+          </div>
           <p class="note" id="client-detail"></p>
           <p class="note" id="client-port-note"></p>
           <div id="client-port-share" class="chart"></div>
@@ -804,7 +835,7 @@
       </section>
       <section class="card glossary" id="data-source">
         <h2>Data source</h2>
-        <p class="note">The charts and tables on this page are drawn from <a href="charts.json" target="_blank" rel="noopener noreferrer">charts.json</a>. Python writes that file before a model runs. tshark reads the packets whose source or destination is TCP port 11210. A call is one TCP stream plus the Couchbase opaque. The file holds the capture length, the server address, one-, five-, and ten-second buckets, percentiles, opcodes, body sizes, TCP loss in each direction, client connections, the busiest document ids, the ten slowest calls, a sample of missing requests and replies with the full counts, the points of interest, and the next questions. When a model runs, it writes <code>summary.md</code> from these counts. It does not change this file. <code>facts.json</code> beside it is the same counts in the shape the note uses.</p>
+        <p class="note">The charts and tables on this page are drawn from <a href="charts.json" target="_blank" rel="noopener noreferrer">charts.json</a>. Python writes that file before a model runs. tshark reads the packets whose source or destination is TCP port 11210. A call is one TCP stream plus the Couchbase opaque. The file holds the capture length, the server address, half-, one-, five-, and ten-second buckets, percentiles, opcodes, body sizes, TCP loss in each direction, client connections, the busiest document ids, the ten slowest calls, a sample of missing requests and replies with the full counts, the points of interest, and the next questions. When a model runs, it writes <code>summary.md</code> from these counts. It does not change this file. <code>facts.json</code> beside it is the same counts in the shape the note uses.</p>
       </section>
     </section>
   </main>
@@ -1307,6 +1338,11 @@
           barMaxWidth: 36
         }))
       }, true);
+      charts.packets.off("click");
+      charts.packets.on("click", (params) => {
+        const filter = packetBarFilter(params.name);
+        if (filter) copyFilter(filter);
+      });
       if (!charts.packets.__packetLegend) {
         charts.packets.__packetLegend = true;
         charts.packets.on("legendselectchanged", (event) => {
@@ -1400,7 +1436,7 @@
         fleet.textContent += " No client is above the fleet rate. The table is the ones with the most missing replies.";
       }
       table("client-trouble", ["Client", "Requests", "Lost responses", "Unanswered %", "Connections", "Median ms", "p99 ms"], focus.map((row) => [
-        escapeHtml(row.ip),
+        copyButton(hostFilter(row.ip), row.ip),
         row.requests,
         row.unanswered,
         clientPct(row) + "%",
@@ -1514,8 +1550,8 @@
         charts["cluster-conns"].resize();
       }
       table("cluster-table", ["Connection", "Stream", "Requests", "Lost responses", "Unanswered %"], conns.slice(0, 12).map((row) => [
-        escapeHtml(row.ip + ":" + row.port),
-        escapeHtml(row.stream),
+        copyButton(hostFilter(row.ip), row.ip + ":" + row.port),
+        copyButton(streamFilter(row.stream), cellText(row.stream)),
         row.requests,
         row.unanswered,
         (row.unanswered_pct != null ? row.unanswered_pct : 0) + "%"
@@ -1586,12 +1622,12 @@
       const row = sdkClients().find((item) => item.ip === ip);
       if (!row) return;
       clientPick = ip;
-      const finder = document.getElementById("client-find");
-      if (finder) finder.value = ip;
-      const matches = document.getElementById("client-matches");
-      if (matches) {
-        matches.hidden = true;
-        matches.innerHTML = "";
+      const opener = document.getElementById("client-open");
+      if (opener) opener.textContent = ip;
+      const menu = document.getElementById("client-menu");
+      if (menu) {
+        menu.hidden = true;
+        if (opener) opener.setAttribute("aria-expanded", "false");
       }
       drawOneClient();
     }
@@ -1627,7 +1663,7 @@
       drawPortChart(ip, ports);
       table("client-ports", ["Connection", "Role", "Stream", "Requests", "Lost responses", "Unanswered %"], shown.map((item) => {
         const pct = item.unanswered_pct != null ? item.unanswered_pct : (item.requests ? Math.round(1000 * item.unanswered / item.requests) / 10 : 0);
-        return [escapeHtml(item.ip + ":" + item.port), item.role || "sdk", escapeHtml(item.stream), item.requests, item.unanswered, pct + "%"];
+        return [copyButton(hostFilter(item.ip), item.ip + ":" + item.port), item.role || "sdk", copyButton(streamFilter(item.stream), cellText(item.stream)), item.requests, item.unanswered, pct + "%"];
       }));
     }
 
@@ -1700,19 +1736,21 @@
           "Role",
           "Opcode",
           "Document id",
+          term("Errors", "possible means a TCP lost segment or lost ack is within half a second of this row. The copy icon shows this document and the holes to and from that requester, so you can see how far apart they are. A dash means no hole that close."),
           term("Where", "Inside is away from the open and the close. End of file and Start of file are inside the in-flight window, so the missing half of the call may be the capture cutting it off."),
           "Stake"
         ],
         items.map((row) => [
           cellText(row.seconds),
           cellText(row.seconds_left),
-          escapeHtml(cellText(row.stream)),
-          copyCell("opaque", row.opaque),
+          copyButton(streamFilter(row.stream), cellText(row.stream)),
+          copyButton(callFilter(row), cellText(row.opaque)),
           escapeHtml(cellText(row.role || "")),
-          escapeHtml(cellText(row.opcode)),
+          copyButton(opcodeFilter(opcodeHex(row.opcode)), cellText(row.opcode)),
           copyCell("key", row.key),
+          errorCell(row),
           gapPlace(row, atStart),
-          row.seconds == null ? "" : '<button type="button" class="set-stake" data-seconds="' + row.seconds + '">Set Stake</button>'
+          aroundCell(row)
         ])
       );
       markStakeButtons();
@@ -1737,7 +1775,7 @@
             cellText(bucket.lost_s2c),
             cellText(bucket.lost_c2s),
             cellText(bucket.unanswered),
-            row.seconds == null ? "" : '<button type="button" class="set-stake" data-seconds="' + row.seconds + '">Set Stake</button>'
+            aroundCell(row)
           ];
         })
       );
@@ -1768,7 +1806,87 @@
       return 'couchbase && couchbase.key.logical_key == "' + String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"') + '"';
     }
 
+    function addrField(ip) {
+      return String(ip).includes(":") ? "ipv6.addr" : "ip.addr";
+    }
+
+    function callFilter(row) {
+      if (!row || !row.stream || !row.opaque) return "";
+      return "tcp.stream == " + row.stream + " && couchbase.opaque == " + row.opaque;
+    }
+
+    function streamFilter(stream) {
+      if (stream == null || stream === "" || stream === "—") return "";
+      return "tcp.stream == " + stream;
+    }
+
+    function hostFilter(ip) {
+      if (!ip || ip === "—") return "";
+      return "tcp.port == 11210 && " + addrField(ip) + " == " + ip;
+    }
+
+    function windowFilter(row) {
+      const t = Number(row && row.seconds);
+      if (!Number.isFinite(t)) return "";
+      const start = Math.max(0, Math.round((t - 0.25) * 1000) / 1000);
+      const end = Math.round((t + 0.25) * 1000) / 1000;
+      const who = row.requester ? " && " + addrField(row.requester) + " == " + row.requester : "";
+      return "tcp.port == 11210" + who + " && frame.time_relative >= " + start + " && frame.time_relative <= " + end;
+    }
+
+    function opcodeFilter(opcode) {
+      if (!opcode) return "";
+      return "couchbase.opcode == " + opcode;
+    }
+
+    function opcodeHex(nameOrHex) {
+      const text = String(nameOrHex || "");
+      if (text.startsWith("0x")) return text;
+      const found = (data.by_opcode || []).find((item) => item.name === text);
+      return found ? found.opcode : "";
+    }
+
+    function packetBarFilter(name) {
+      if (name === "Lost segment") return "tcp.port == 11210 && tcp.analysis.lost_segment";
+      if (name === "Ack lost segment") return "tcp.port == 11210 && tcp.analysis.ack_lost_segment";
+      if (name === "Retransmission") return "tcp.port == 11210 && tcp.analysis.retransmission && tcp.analysis.rto >= 0.001";
+      if (name === "Capture duplicate") return "tcp.port == 11210 && tcp.analysis.retransmission && tcp.analysis.rto < 0.001";
+      if (name === "TCP ACK") return "tcp.port == 11210 && tcp.len == 0";
+      if (name === "TCP data segment") return "tcp.port == 11210 && tcp.len > 0 && !couchbase";
+      if (name === "Couchbase request") return "tcp.port == 11210 && (couchbase.magic == 0x80 || couchbase.magic == 0x08)";
+      if (name === "Couchbase response") return "tcp.port == 11210 && (couchbase.magic == 0x81 || couchbase.magic == 0x18)";
+      const request = name.endsWith(" request");
+      const response = name.endsWith(" response");
+      const command = request ? name.slice(0, -8) : response ? name.slice(0, -9) : "";
+      const found = (data.by_opcode || []).find((item) => item.name === command);
+      if (!found) return "";
+      const magic = request
+        ? "(couchbase.magic == 0x80 || couchbase.magic == 0x08)"
+        : "(couchbase.magic == 0x81 || couchbase.magic == 0x18)";
+      return "tcp.port == 11210 && couchbase.opcode == " + found.opcode + " && " + magic;
+    }
+
+    function copyButton(filter, label) {
+      if (!filter) return escapeHtml(label == null ? "" : label);
+      const button = '<button type="button" class="copy-filter" data-filter="' + escapeHtml(filter) + '" aria-label="Copy Wireshark filter" title="Copy Wireshark filter">' + copyIcon + "</button>";
+      return '<span class="copy-pair copy-inline">' + escapeHtml(label == null ? "" : label) + button + "</span>";
+    }
+
+    function aroundCell(row) {
+      const filter = windowFilter(row);
+      const stake = row.seconds == null ? "" : '<button type="button" class="set-stake" data-seconds="' + row.seconds + '">Set Stake</button>';
+      if (!filter) return stake;
+      const button = '<button type="button" class="copy-filter" data-filter="' + escapeHtml(filter) + '" aria-label="Copy the half-second around this row" title="Copy the half-second around this row">' + copyIcon + "</button>";
+      return button + stake;
+    }
+
     const copyIcon = '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    function errorCell(row) {
+      if (row.error !== "possible" || !row.error_filter) return "-";
+      const button = '<button type="button" class="copy-filter" data-filter="' + escapeHtml(row.error_filter) + '" aria-label="Copy Wireshark filter" title="Copy Wireshark filter">' + copyIcon + "</button>";
+      return '<span class="copy-pair copy-inline">possible' + button + "</span>";
+    }
 
     function copyCell(kind, value) {
       if (value == null || value === "" || value === "—") return "—";
@@ -1885,8 +2003,9 @@
       table("top-slow", [
         term("Document id", "The Couchbase key the operation named."),
         "Role",
-        term("Stream", "The TCP connection number. Opaque is only unique inside this stream."),
-        term("Opaque", "The client’s semi-transaction number. The request and the matching response carry this same value."),
+        term("Opcode", "The Couchbase command. The copy icon is couchbase.opcode for this call."),
+        term("Stream", "The TCP connection number. The copy icon is this stream alone."),
+        term("Opaque", "The copy icon is this stream and this opaque together, which is one call."),
         term("Time ms", "Milliseconds from the request packet to its matching reply for this call."),
         term("Seconds", "Seconds from the start of the capture, when the request was sent. Set Stake marks this moment."),
         term("Body bytes", "The larger of the request and reply total body lengths for this call. Extras, key, and value."),
@@ -1894,12 +2013,13 @@
       ], (data.top_slowest || []).map((row) => [
         copyCell("key", row.key),
         escapeHtml(cellText(row.role || "")),
-        cellText(row.stream),
-        copyCell("opaque", row.opaque),
+        copyButton(opcodeFilter(row.opcode), cellText(row.opcode)),
+        copyButton(streamFilter(row.stream), cellText(row.stream)),
+        copyButton(callFilter(row), cellText(row.opaque)),
         cellText(row.time_ms),
         cellText(row.seconds),
         cellText(row.body_bytes),
-        row.seconds == null ? "" : '<button type="button" class="set-stake" data-seconds="' + row.seconds + '">Set Stake</button>'
+        aroundCell(row)
       ]));
       markStakeButtons();
       drawInterest();
@@ -1914,7 +2034,7 @@
       table(
         "opcodes-seen",
         ["Opcode", "Command", "Side", "What it does", "Requests", "Lost responses"],
-        (data.by_opcode || []).map((row) => [row.opcode, row.name, row.role || "", row.description || "", row.requests, row.expects_reply === false && !row.unanswered ? "not expected" : row.unanswered])
+        (data.by_opcode || []).map((row) => [copyButton(opcodeFilter(row.opcode), row.opcode), row.name, row.role || "", row.description || "", row.requests, row.expects_reply === false && !row.unanswered ? "not expected" : row.unanswered])
       );
     }
 
@@ -1949,32 +2069,55 @@
         charts[id] = echarts.init(document.getElementById(id));
       });
       echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body, charts.flow]);
+      const clientOpen = document.getElementById("client-open");
+      const clientMenu = document.getElementById("client-menu");
       const clientFind = document.getElementById("client-find");
       const clientMatches = document.getElementById("client-matches");
-      if (clientFind && clientMatches) {
-        clientFind.addEventListener("input", () => {
-          const query = clientFind.value.trim();
-          if (query.length < 2) {
-            clientMatches.hidden = true;
-            clientMatches.innerHTML = "";
-            return;
+      function renderClientMenu() {
+        if (!clientMatches) return;
+        const query = clientFind ? clientFind.value.trim() : "";
+        let rows = sdkClients().slice().sort((a, b) => (b.unanswered || 0) - (a.unanswered || 0) || (b.requests || 0) - (a.requests || 0));
+        if (query) rows = rows.filter((row) => row.ip.includes(query));
+        const shown = rows.slice(0, 80);
+        const more = rows.length > shown.length
+          ? '<li class="client-more">Showing ' + shown.length + " of " + rows.length + ". Type to narrow.</li>"
+          : "";
+        clientMatches.innerHTML = shown.map((row) => {
+          const meta = (row.unanswered || 0) + " missing · " + (row.requests || 0) + " requests";
+          const on = row.ip === clientPick ? " on" : "";
+          return '<li><button type="button" class="' + on.trim() + '" data-client="' + escapeHtml(row.ip) + '"><span>' + escapeHtml(row.ip) + '</span><span class="meta">' + meta + '</span></button><button type="button" class="copy-filter" data-filter="' + escapeHtml(hostFilter(row.ip)) + '" aria-label="Copy Wireshark filter" title="Copy Wireshark filter">' + copyIcon + "</button></li>";
+        }).join("") + more;
+      }
+      if (clientOpen && clientMenu && clientFind && clientMatches) {
+        clientOpen.addEventListener("click", () => {
+          const opening = clientMenu.hidden;
+          clientMenu.hidden = !opening;
+          clientOpen.setAttribute("aria-expanded", opening ? "true" : "false");
+          if (opening) {
+            clientFind.value = "";
+            renderClientMenu();
+            clientFind.focus();
           }
-          const hits = sdkClients().filter((row) => row.ip.includes(query)).slice(0, 8);
-          clientMatches.hidden = hits.length === 0;
-          clientMatches.innerHTML = hits.map((row) => '<li><button type="button" data-client="' + escapeHtml(row.ip) + '">' + escapeHtml(row.ip) + "</button></li>").join("");
         });
+        clientFind.addEventListener("input", renderClientMenu);
         clientMatches.addEventListener("click", (event) => {
           const button = event.target.closest("[data-client]");
           if (!button) return;
           chooseClient(button.dataset.client);
+        });
+        document.addEventListener("click", (event) => {
+          if (document.getElementById("client-picker").contains(event.target)) return;
+          clientMenu.hidden = true;
+          clientOpen.setAttribute("aria-expanded", "false");
         });
       }
       const trouble = document.getElementById("client-trouble");
       if (trouble) {
         trouble.addEventListener("click", (event) => {
           const cell = event.target.closest("td");
-          if (!cell || cell.cellIndex !== 0) return;
-          chooseClient(cell.textContent.trim());
+          if (!cell || cell.cellIndex !== 0 || event.target.closest(".copy-filter")) return;
+          const address = (cell.textContent || "").trim().split(/\s+/)[0];
+          chooseClient(address);
         });
       }
       document.querySelectorAll("[data-gap-tab]").forEach((button) => {
@@ -2000,6 +2143,7 @@
       document.addEventListener("click", (event) => {
         const button = event.target.closest(".copy-filter");
         if (!button) return;
+        event.stopPropagation();
         copyFilter(button.dataset.filter || "");
       });
       document.getElementById("remove-stake").addEventListener("click", () => {

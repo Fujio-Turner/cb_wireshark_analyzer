@@ -1453,6 +1453,38 @@ def _call_point(req: dict, resp: dict, gap: float) -> dict:
     }
 
 
+def _packet_errors(loss_events: list[dict], ports: list[str], cluster_ends: set[str] | None = None) -> list[dict]:
+    """Packet holes and real retries, one mark per frame, spread across the capture."""
+    portset = set(ports)
+    ends = cluster_ends or set()
+    rows = []
+    for event in loss_events:
+        if event.get("time") is None or event.get("duplicate"):
+            continue
+        sport = str(event.get("sport") or "")
+        dport = str(event.get("dport") or "")
+        if portset and sport not in portset and dport not in portset:
+            continue
+        kinds = []
+        if event.get("lost"):
+            kinds.append("lost")
+        if event.get("ack"):
+            kinds.append("ack")
+        if event.get("retrans") and not event.get("duplicate"):
+            kinds.append("retrans")
+        if not kinds:
+            continue
+        rows.append({
+            "t": round(float(event["time"]), 3),
+            "kind": kinds[0],
+            "kinds": kinds,
+            "stream": str(event.get("stream") or ""),
+            "toward": "client" if sport in portset else "server",
+            "role": "cluster" if flow_role(sport, dport, ends) == "cluster" else "sdk",
+        })
+    return _spread_points(rows, _SCATTER_CAP)
+
+
 def _spread_points(points: list[dict], cap: int) -> list[dict]:
     if len(points) <= cap:
         return points
@@ -1998,6 +2030,10 @@ def build_charts(
     key_unanswered: Counter = Counter()
     key_body_sum: Counter = Counter()
     key_body_n: Counter = Counter()
+    by_key_role = {"sdk": Counter(), "cluster": Counter()}
+    key_unanswered_role = {"sdk": Counter(), "cluster": Counter()}
+    key_body_sum_role = {"sdk": Counter(), "cluster": Counter()}
+    key_body_n_role = {"sdk": Counter(), "cluster": Counter()}
     opcode_rtts: dict[str, list[float]] = defaultdict(list)
     opcode_role_rtts: dict[tuple[str, str], list[float]] = defaultdict(list)
     unanswered_keys = {id(msg) for msg in paired["unanswered"]}
@@ -2012,27 +2048,37 @@ def build_charts(
             conn = [0, 0, str(msg.get("stream") or ""), 0, 0]
             by_conn[(ip, port)] = conn
         conn[0] += 1
-        if traffic_role(port, msg.get("dport") or "", opcode, msg.get("key") or "") == "cluster":
+        side = "cluster" if traffic_role(port, msg.get("dport") or "", opcode, msg.get("key") or "") == "cluster" else "sdk"
+        if side == "cluster":
             conn[4] += 1
         else:
             conn[3] += 1
         key = msg.get("key") or ""
         if key:
             by_key[key] += 1
+            by_key_role[side][key] += 1
         if id(msg) in unanswered_keys:
             by_ip[ip][1] += 1
             by_opcode[opcode][1] += 1
             conn[1] += 1
             if key:
+                body = int(msg.get("body") or 0)
                 key_unanswered[key] += 1
-                key_body_sum[key] += int(msg.get("body") or 0)
+                key_unanswered_role[side][key] += 1
+                key_body_sum[key] += body
                 key_body_n[key] += 1
+                key_body_sum_role[side][key] += body
+                key_body_n_role[side][key] += 1
     for _when, gap, key, opcode, body_in, body_out, _opaque, _stream, _requester, role in matched_rtts:
         opcode_rtts[opcode].append(gap)
         opcode_role_rtts[(role, opcode)].append(gap)
         if key:
-            key_body_sum[key] += max(body_in, body_out)
+            larger = max(body_in, body_out)
+            key_body_sum[key] += larger
             key_body_n[key] += 1
+            side = "cluster" if role == "cluster" else "sdk"
+            key_body_sum_role[side][key] += larger
+            key_body_n_role[side][key] += 1
 
     ranked_calls = sorted(
         (
@@ -2042,20 +2088,38 @@ def build_charts(
         ),
         key=lambda item: (-item[1], item[0]),
     )
-    slowest = [
-        {
-            "key": key,
-            "time_ms": _ms(gap),
-            "seconds": round(when, 3),
-            "body_bytes": max(body_in, body_out),
-            "opaque": opaque,
-            "opcode": opcode,
-            "stream": stream,
-            "requester": requester,
-            "role": role,
-        }
-        for when, gap, key, opcode, body_in, body_out, opaque, stream, requester, role in ranked_calls[:10]
-    ]
+
+    def slow_rows(calls: list[tuple]) -> list[dict]:
+        return [
+            {
+                "key": key,
+                "time_ms": _ms(gap),
+                "seconds": round(when, 3),
+                "body_bytes": max(body_in, body_out),
+                "opaque": opaque,
+                "opcode": opcode,
+                "stream": stream,
+                "requester": requester,
+                "role": role,
+            }
+            for when, gap, key, opcode, body_in, body_out, opaque, stream, requester, role in calls
+        ]
+
+    def top_keys(counter: Counter, unanswered: Counter, body_sum: Counter, body_n: Counter) -> list[dict]:
+        return [
+            {
+                "key": key,
+                "count": count,
+                "unanswered": unanswered[key],
+                "per_second": round(count / capture_end, 1) if capture_end else None,
+                "avg_body_bytes": round(body_sum[key] / body_n[key]) if body_n[key] else None,
+            }
+            for key, count in counter.most_common(10)
+        ]
+
+    slowest = slow_rows(ranked_calls[:10])
+    slowest_sdk = slow_rows([item for item in ranked_calls if item[-1] != "cluster"][:10])
+    slowest_cluster = slow_rows([item for item in ranked_calls if item[-1] == "cluster"][:10])
     all_rtts = [gap for _when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, _requester, _role in matched_rtts]
     overall = _rtt_summary(all_rtts)
     all_ms = [gap * 1000 for gap in all_rtts]
@@ -2079,6 +2143,7 @@ def build_charts(
     loss_marks = _loss_marks(timed_loss, ports)
     return {
         "capture_seconds": round(capture_end, 3),
+        "in_flight_window": round(gap_window, 6),
         "buckets": series,
         "rtt_overall_ms": overall,
         "slow_ms": {
@@ -2120,17 +2185,12 @@ def build_charts(
             }
             for opcode, counts in sorted(by_opcode.items(), key=lambda item: item[1][0], reverse=True)
         ],
-        "top_requested": [
-            {
-                "key": key,
-                "count": count,
-                "unanswered": key_unanswered[key],
-                "per_second": round(count / capture_end, 1) if capture_end else None,
-                "avg_body_bytes": round(key_body_sum[key] / key_body_n[key]) if key_body_n[key] else None,
-            }
-            for key, count in by_key.most_common(10)
-        ],
+        "top_requested": top_keys(by_key, key_unanswered, key_body_sum, key_body_n),
+        "top_requested_sdk": top_keys(by_key_role["sdk"], key_unanswered_role["sdk"], key_body_sum_role["sdk"], key_body_n_role["sdk"]),
+        "top_requested_cluster": top_keys(by_key_role["cluster"], key_unanswered_role["cluster"], key_body_sum_role["cluster"], key_body_n_role["cluster"]),
         "top_slowest": slowest,
+        "top_slowest_sdk": slowest_sdk,
+        "top_slowest_cluster": slowest_cluster,
         "missing_response": _annotate_gap_errors(_ten_gaps(paired["unanswered"], capture_end, gap_window, at_start=False), loss_marks),
         "missing_response_total": len(paired["unanswered"]),
         "missing_request": _annotate_gap_errors(_ten_gaps(paired["resp_only"], capture_end, gap_window, at_start=True), loss_marks),
@@ -2151,6 +2211,7 @@ def build_charts(
         ],
         "scatter": (scatter := _scatters(paired))[0],
         "scatter_server": scatter[1],
+        "packet_errors": _packet_errors(loss_events, ports, ends),
         "heatmap": _heatmaps(paired["unanswered"], capture_end),
         "boxplot": _boxplot(opcode_role_rtts),
         "sankey": _sankey(requests, paired),
@@ -2264,12 +2325,19 @@ def _client_rows(
     return rows
 
 
-def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_start: bool) -> list[dict]:
-    """Up to ten missing calls, spaced across the file.
+_GAP_LIMIT = 10
+# A capture always cuts calls at the open and the close. Two examples show
+# that shape. The rest of the ten stays with calls that had time to finish.
+_EDGE_SAMPLE = 2
 
-    Interior rows are preferred. Edge rows fill in only when fewer than ten
-    calls sit away from the open or the close. A long list is not copied into
-    the page.
+
+def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_start: bool) -> list[dict]:
+    """Up to ten missing calls.
+
+    A response in the opening window, and a request in the closing window,
+    are the file starting or stopping. At most two of those are shown.
+    Everything else had time for the other half of the call, including a
+    request near the start whose reply had the rest of the capture.
     """
     rows = []
     for msg in messages:
@@ -2298,13 +2366,18 @@ def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_sta
             "where": where,
             "role": traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or ""),
         })
-    interior = [row for row in rows if not row["at_edge"]]
-    edge = [row for row in rows if row["at_edge"]]
-    interior.sort(key=lambda row: row["seconds"])
+    if at_start:
+        investigate = [row for row in rows if row["where"] != "start"]
+        edge = [row for row in rows if row["where"] == "start"]
+    else:
+        investigate = [row for row in rows if row["where"] != "end"]
+        edge = [row for row in rows if row["where"] == "end"]
+    investigate.sort(key=lambda row: row["seconds"])
     edge.sort(key=lambda row: row["seconds"])
-    chosen = _spread_rows(interior, 10)
-    if len(chosen) < 10:
-        chosen.extend(_spread_rows(edge, 10 - len(chosen)))
+    chosen = _spread_rows(investigate, _GAP_LIMIT)
+    room = _GAP_LIMIT - len(chosen)
+    if room > 0 and edge:
+        chosen.extend(_spread_rows(edge, min(_EDGE_SAMPLE, room)))
     chosen.sort(key=lambda row: row["seconds"])
     return chosen
 
@@ -2340,13 +2413,15 @@ def _loss_marks(events: list[dict], ports: list[str]) -> list[tuple]:
 def _annotate_gap_errors(rows: list[dict], marks: list[tuple], window: float = _ERROR_WINDOW_SECONDS) -> list[dict]:
     """Mark a missing call when a TCP hole sits within half a second of it.
 
-    Same stream is preferred. Otherwise any hole in that half-second still
-    counts, because the chart shows the loss and the missing call together.
+    A hole on the same stream is the one that can explain the missing half.
+    The copied filter names that stream. A hole only on another connection
+    of the same machine stays on that requester's address.
     """
     for row in rows:
         when = float(row["seconds"])
         near = [mark for mark in marks if abs(mark[0] - when) <= window]
-        same = [mark for mark in near if mark[1] and mark[1] == str(row.get("stream") or "")]
+        stream = str(row.get("stream") or "")
+        same = [mark for mark in near if mark[1] and mark[1] == stream]
         chosen = same or near
         if not chosen:
             row["error"] = ""
@@ -2361,14 +2436,17 @@ def _annotate_gap_errors(rows: list[dict], marks: list[tuple], window: float = _
                 if flag not in flags:
                     flags.append(flag)
         flag_text = flags[0] if len(flags) == 1 else "(" + " || ".join(flags) + ")"
-        # Errors to and from this machine, both directions, not every host in the file.
-        hole = ["tcp.port == 11210"]
-        requester = str(row.get("requester") or "")
-        if requester:
-            addr = "ipv6.addr" if ":" in requester else "ip.addr"
-            hole.append(f"{addr} == {requester}")
-        elif same:
-            hole.append(f"tcp.stream == {row['stream']}")
+        if same and stream:
+            hole = [f"tcp.stream == {stream}"]
+        else:
+            # Another connection of this machine, not every host in the file.
+            hole = ["tcp.port == 11210"]
+            requester = str(row.get("requester") or "")
+            if requester:
+                addr = "ipv6.addr" if ":" in requester else "ip.addr"
+                hole.append(f"{addr} == {requester}")
+            elif stream:
+                hole.append(f"tcp.stream == {stream}")
         hole.append(f"frame.time_relative >= {start}")
         hole.append(f"frame.time_relative <= {end}")
         hole.append(flag_text)
@@ -3077,7 +3155,9 @@ def render_summary(facts: dict) -> str:
             else ""
         )
         + f"The other **{edge['interior_unanswered']}** unanswered requests and "
-        f"**{edge['interior_responses_without_request']}** unmatched responses sit further inside the file."
+        f"**{edge['interior_responses_without_request']}** unmatched responses sit further inside the file. "
+        "Responses at the open and requests at the close are expected on both SDK and cluster: the capture cut through calls already on the wire. "
+        "A request in the opening that still had time for a reply, and the unmatched calls further inside, are the ones to trace."
     )
     traffic = facts.get("traffic") or {}
     cluster = traffic.get("cluster") or {}
@@ -3507,16 +3587,20 @@ def next_questions(facts: dict, charts: dict | None = None) -> list[dict]:
         )
     edge = facts["edge"]
     opening = edge.get("opening_requests") or 0
-    if opening:
+    start_n = edge.get("start_responses") or 0
+    end_n = edge.get("end_requests") or 0
+    if start_n or end_n:
         steps.append(
             {
-                "title": "The recording opened in the middle of live calls",
+                "title": "The open and the close are the capture",
                 "text": (
-                    f"{opening} requests in the first {edge['window_seconds']:.3f}s have no reply, and "
-                    f"{edge['start_responses']} replies in that window have no request. "
-                    "On a replication connection the opaque counts upward. The missing reply and the extra reply "
-                    "are neighbors that were already on the wire when the file started. "
-                    "Read later matched calls on that stream before treating the command as failed."
+                    f"{start_n} responses in the first {edge['window_seconds']:.3f}s have no request, "
+                    f"and {end_n} requests in the last {edge['window_seconds']:.3f}s have no reply. "
+                    "That is the file starting and stopping, on both SDK and cluster. "
+                    f"{opening} requests in the opening still had time for a reply, "
+                    f"{edge['interior_unanswered']} unanswered requests sit further inside, and "
+                    f"{edge['interior_responses_without_request']} responses after the opening have no request. "
+                    "Trace those. The open and the close are expected."
                 ),
             }
         )
@@ -3556,21 +3640,6 @@ def next_questions(facts: dict, charts: dict | None = None) -> list[dict]:
                     f"{gap_clause} "
                     "Ask about the span port, snap length, and whether the capture disk kept up. "
                     "Do not treat the whole unanswered set as Couchbase timeouts."
-                ),
-            }
-        )
-    if edge["interior_unanswered"] > edge["end_requests"] + edge["start_responses"]:
-        steps.append(
-            {
-                "title": "The open and close of the file are not the missing calls",
-                "text": (
-                    f"{edge['start_responses']} "
-                    f"{'response has' if edge['start_responses'] == 1 else 'responses have'} "
-                    "no request at the start, and "
-                    f"{edge['end_requests']} "
-                    f"{'request is' if edge['end_requests'] == 1 else 'requests are'} "
-                    "still in flight at the end. "
-                    f"{edge['interior_unanswered']} unanswered requests sit further inside the file."
                 ),
             }
         )
@@ -3719,12 +3788,42 @@ def chart_digest(charts: dict) -> list[str]:
             f"median_ms={row.get('median_ms')} p99_ms={row.get('p99_ms')} "
             f"{row.get('description') or ''}".rstrip()
         )
-    lines.append("Ten slowest matched calls (ms, seconds from start, body bytes, key):")
-    for row in charts.get("top_slowest") or []:
-        lines.append(
-            f"- {row.get('time_ms')} ms at {row.get('seconds')}s side={row.get('role') or ''} "
+    def busy_line(row: dict) -> str:
+        return (
+            f"- {row.get('count')} requests, {row.get('per_second')}/s, "
+            f"avg body {row.get('avg_body_bytes')} bytes, lost {row.get('unanswered')}: {row.get('key')}"
+        )
+
+    def slow_line(row: dict) -> str:
+        return (
+            f"- {row.get('time_ms')} ms at {row.get('seconds')}s "
             f"body={row.get('body_bytes')} stream {row.get('stream')} opaque {row.get('opaque')} {row.get('key')}"
         )
+
+    sdk_busy = charts.get("top_requested_sdk") or []
+    cluster_busy = charts.get("top_requested_cluster") or []
+    sdk_slow = charts.get("top_slowest_sdk") or []
+    cluster_slow = charts.get("top_slowest_cluster") or []
+    if sdk_busy or cluster_busy or sdk_slow or cluster_slow:
+        lines.append(
+            "Busiest and slowest document ids are counted separately for SDK and for cluster. "
+            "Each list is that side's own ten."
+        )
+        for title, rows, line in (
+            ("Ten busiest SDK document ids:", sdk_busy, busy_line),
+            ("Ten busiest cluster document ids:", cluster_busy, busy_line),
+            ("Ten slowest SDK calls:", sdk_slow, slow_line),
+            ("Ten slowest cluster calls:", cluster_slow, slow_line),
+        ):
+            if not rows:
+                continue
+            lines.append(title)
+            for row in rows:
+                lines.append(line(row))
+    else:
+        lines.append("Ten slowest matched calls (ms, seconds from start, body bytes, key):")
+        for row in charts.get("top_slowest") or []:
+            lines.append(slow_line(row))
     return lines
 
 
@@ -3741,7 +3840,7 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
         "- The opaque on a DCP stream request is copied onto every later command for that stream. A snapshot marker and a mutation often share one packet and that opaque. A later packet is the next change, not a retry. Do not call no_reply messages lost responses.",
         "- These producer messages do not expect a command reply: stream end 0x55, snapshot marker 0x56 unless snapshot-type flag 0x08 Ack is set, mutation 0x57, deletion 0x58, expiration 0x59, buffer acknowledgement 0x5d (its response is unused; opaque 0 means the whole connection), and 0x5f-0x67. Noop 0x5c does expect a reply: the producer disconnects if the consumer stays silent.",
         "- Statistics 0x10 with key vbucket-seqno, and Get All VBucket Seqnos 0x48, are how a DCP consumer learns the high sequence number before a stream request. Statistics is one request and many response packets on one opaque. Continuation packets folded into the request are one call.",
-        "- Replies with no request in the opening window, and requests with no reply in that same window, are calls the capture cut through. Requests in the closing window were still in flight when recording stopped.",
+        "- A response with no request in the opening window is expected on both SDK and cluster: the request was sent before recording started. A request with no response in the closing window is expected on both sides: recording stopped before the reply. Do not make either one a point of interest. A request that still had more than that window of capture left, including one near the start, had time for a reply. A response after the opening window with no request is a request packet missing from the file. Those are the missing calls to look at.",
         "- Quote the SDK median and the cluster median. The blended round-trip median mixes them and hides the slower side.",
         "- Capture duplicates are the same TCP segment seen twice within 1 ms. Do not call them retransmissions or DCP retries. A retransmission waited out a timeout.",
         "- Observe (opcode 0x92) is the only command where Wireshark fills couchbase.ttp and couchbase.ttr. They replace the CAS field and are milliseconds: approximate time still needed to persist the key, then to replicate it. Zero means that step is already done. A durable Set does not carry these fields. Its request carries durability_req.",
@@ -3791,6 +3890,10 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
     for row in facts["magics"]:
         lines.append(f"- {row['magic']} {row['role']}: {row['messages']}")
     lines.append("")
+    lines.append(
+        "The rows below are the capture edges. They are expected on SDK and on cluster. "
+        "Do not choose them as points of interest. Use the interior counts and the later sections for that."
+    )
     lines.append("Opening-window responses:")
     for row in edge["start_examples"]:
         lines.append(
@@ -3933,7 +4036,7 @@ Write GitHub-flavored markdown with these headings, in this order:
 ## Next questions and steps
 
 The opening states the Couchbase host and IP, the unanswered-request count, the unique key count, and the responses that have no request.
-Then state the round trip and the in-flight window. Separate three groups: responses already on the wire when the file opened, requests still on the wire when the file closed, and the interior rows that had more than that window of capture left.
+Then state the round trip and the in-flight window. Responses already on the wire when the file opened, and requests still on the wire when the file closed, are expected on both SDK and cluster. Give their counts in one sentence. Do not make that open or close a point of interest or an application failure. Write about calls that had time for the other half: a request with more than that window of capture left, including one near the start, and a response after the opening window whose request packet is missing.
 When slow-call counts and body lengths are present, put them in the round-trip section. A short tail of calls over 100 ms, with a maximum well under a second, is not a server timeout.
 When lost-segment markers are present in both directions and retransmissions are rare, say the missing packets fit a recorder that did not see them. Do not call the whole unanswered set Couchbase timeouts.
 Name the stream and key family that hold most of the unanswered requests. Mention duplicate keys and any opaque that also appears on a different stream.
@@ -4012,6 +4115,7 @@ INTEREST_SYSTEM = """You mark points of interest on a Couchbase capture chart.
 Return only a JSON array. No markdown. Each object has "seconds", "title", and "why".
 "seconds" must be one of the candidate seconds in the user message. Do not invent a time.
 Pick 4 to 6 moments that are worth a vertical line: where slowness, a large body, and TCP loss line up, plus a moment that is only a loss spike or only a large body when those are different seconds.
+A response with no request at the start of the file, and a request with no response at the end, are the capture cutting a live call. Do not pick those seconds. Pick other seconds.
 "title" is at most 6 words. "why" is one sentence and cites a number from that candidate.
 """
 
@@ -4068,8 +4172,22 @@ def interest_candidates(charts: dict) -> list[dict]:
                 "Largest request",
                 f"{peak_in.get('body_in_max')} bytes into Couchbase",
             )
-        peak_miss = max(rows, key=lambda row: row.get("unanswered") or 0)
-        if peak_miss.get("unanswered"):
+        window = float(charts.get("in_flight_window") or 0)
+        capture_end = float(charts.get("capture_seconds") or 0)
+
+        def closing_bucket(row: dict) -> bool:
+            """The bucket starts inside the closing in-flight window."""
+            if window <= 0 or capture_end <= 0:
+                return False
+            try:
+                start = float(row.get("t"))
+            except (TypeError, ValueError):
+                return False
+            return start >= capture_end - window - 1e-9
+
+        open_rows = [row for row in rows if not closing_bucket(row)]
+        peak_miss = max(open_rows, key=lambda row: row.get("unanswered") or 0) if open_rows else None
+        if peak_miss and peak_miss.get("unanswered"):
             add(
                 peak_miss.get("t"),
                 "Most lost responses",

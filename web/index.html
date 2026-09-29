@@ -310,6 +310,7 @@
     th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
     th { color: var(--muted); font-weight: 600; }
     td.key { word-break: break-all; }
+    .lost-many { color: #c0392b; font-weight: 700; }
     .set-stake {
       padding: 4px 10px;
       border: 0;
@@ -502,7 +503,7 @@
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         cb_wireshark_analyzer
       </a>
-      <span class="version" id="app-version">v0.10.2</span>
+      <span class="version" id="app-version">v0.10.3</span>
     </div>
     </div>
     <div class="bar">
@@ -541,7 +542,7 @@
     </label>
     <button type="button" class="action" id="reset-zoom">Reset chart zoom</button>
     <button type="button" class="action quiet" id="remove-stake">Remove stake</button>
-    <p class="hint">Double-click a time chart to drop a stake. Each new stake keeps the next color.</p>
+    <p class="hint">Double-click a time chart, Slow calls, or Missing replies to drop a stake. Each new stake keeps the next color.</p>
   </aside>
   <div id="toast" role="status"></div>
   <div id="lightbox" hidden>
@@ -645,7 +646,7 @@
               <option value="when">when it happened</option>
               <option value="server">server time against round trip</option>
             </select></label></p>
-            <p class="note" id="scatter-note">Dots are matched calls. <a href="#slow-scatter-word">How to read this</a>.</p>
+            <p class="note" id="scatter-note">Dots are matched calls. Diamonds are packet errors. The slider moves with the other time charts. <a href="#slow-scatter-word">How to read this</a>.</p>
             <div id="scatter" class="chart"></div>
           </section>
           <section class="card">
@@ -654,7 +655,7 @@
               <option value="clients">by client</option>
               <option value="opcodes">by command</option>
             </select></label></p>
-            <p class="note">A cell is one time bucket. Color is how many requests got no reply. <a href="#missing-heat-word">How to read this</a>.</p>
+            <p class="note">A cell is one time bucket. Color is how many requests got no reply. Double-click a column to drop a stake. The slider moves with the other time charts. <a href="#missing-heat-word">How to read this</a>.</p>
             <div id="heat" class="chart tall"></div>
           </section>
         </div>
@@ -770,7 +771,7 @@
         <section class="card" id="cluster">
           <h2>Cluster</h2>
           <p class="note" id="cluster-note"></p>
-          <p class="note">Same seconds as the other time charts. Bars are requests. Dashed lines are missing replies. Solid lines are TCP retransmissions. Blue is the application. Rust is the cluster. Hide a line in the legend to read one side.</p>
+          <p class="note">Same seconds as the other time charts. Bars are requests, on the left axis. Dashed lines are missing replies and solid lines are TCP retransmissions, both on the right axis, so a few missing calls stay visible beside thousands of requests. A dot on a dashed line is a second with at least one missing reply. Blue is the application. Rust is the cluster. Hide a line in the legend to read one side.</p>
           <div id="flow" class="chart"></div>
           <div class="grid two">
             <div>
@@ -842,12 +843,20 @@
         <div class="tables">
           <section class="card">
             <h2>Ten most requested document ids</h2>
-            <p class="note">Average body is the mean <button type="button" class="term" data-tip="Bytes of extras, key, and value in one Couchbase packet. Wireshark labels this Total Body Length.">total body length</button> for that document id. Each call contributes the larger of the request and the reply. Per second is that count divided by the length of the capture. A key asked for hundreds of times a second at about 1 MB moves a lot of bytes, even when only a few keys look slow.</p>
+            <div class="tabs" id="asked-tabs">
+              <button type="button" class="tab on" data-asked-tab="sdk">SDK</button>
+              <button type="button" class="tab" data-asked-tab="cluster">Cluster</button>
+            </div>
+            <p class="note">SDK is application calls. Cluster is replication. Each list is that side’s ten busiest document ids. Average body is the mean <button type="button" class="term" data-tip="Bytes of extras, key, and value in one Couchbase packet. Wireshark labels this Total Body Length.">total body length</button> for that document id. Each call contributes the larger of the request and the reply. Per second is that count divided by the length of the capture. A key asked for hundreds of times a second at about 1 MB moves a lot of bytes, even when only a few keys look slow.</p>
             <div id="top-asked"></div>
           </section>
           <section class="card">
             <h2>Ten slowest document ids</h2>
-            <p class="note">Each row is one matched call. <button type="button" class="term" data-tip="The client’s semi-transaction number. The request and its reply carry the same opaque. The same number on another TCP stream is a different call.">Opaque</button> is how that request is tied to its response, together with the TCP stream. <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">Time ms</button> is how long that call took. <button type="button" class="term" data-tip="Seconds from the start of the capture, when the request was sent. Set Stake marks this moment on the time charts.">Seconds</button> is when it was sent. <button type="button" class="term" data-tip="The larger of the request and reply total body lengths for this call, in bytes. Extras, key, and value.">Body bytes</button> is how big that call was. Set Stake draws that moment. Clicking it again does not add another line.</p>
+            <div class="tabs" id="slow-tabs">
+              <button type="button" class="tab on" data-slow-tab="sdk">SDK</button>
+              <button type="button" class="tab" data-slow-tab="cluster">Cluster</button>
+            </div>
+            <p class="note">SDK is application calls. Cluster is replication. Each list is that side’s ten slowest matched calls. <button type="button" class="term" data-tip="The client’s semi-transaction number. The request and its reply carry the same opaque. The same number on another TCP stream is a different call.">Opaque</button> is how that request is tied to its response, together with the TCP stream. <button type="button" class="term" data-tip="Milliseconds from the request packet to its matching reply.">Time ms</button> is how long that call took. <button type="button" class="term" data-tip="Seconds from the start of the capture, when the request was sent. Set Stake marks this moment on the time charts.">Seconds</button> is when it was sent. <button type="button" class="term" data-tip="The larger of the request and reply total body lengths for this call, in bytes. Extras, key, and value.">Body bytes</button> is how big that call was. Set Stake draws that moment. Clicking it again does not add another line.</p>
             <div id="top-slow"></div>
           </section>
         </div>
@@ -892,6 +901,7 @@
           <a href="#opaque">Opaque</a>
           <a href="#stream">Stream</a>
           <a href="#left">Left</a>
+          <a href="#since-start">Since Start</a>
           <a href="#where">Where</a>
           <a href="#lost-response">Lost response</a>
           <a href="#not-expected">Not expected</a>
@@ -930,9 +940,11 @@
           <dt id="stream">Stream</dt>
           <dd>The TCP connection number Wireshark assigns. Opaque is only unique inside one stream. The same opaque on stream 0 and stream 1 is two calls.</dd>
           <dt id="left">Left</dt>
-          <dd>Seconds of capture still remaining after this packet. A small Left means the file was about to end. A request with a large Left had time for a reply to appear.</dd>
+          <dd>Seconds of capture still remaining after a request that has no reply. A small Left means the file was about to end, so the reply may have been cut off. A large Left means the request had time for a reply to appear. The requests-missing-a-response tables use this column.</dd>
+          <dt id="since-start">Since Start</dt>
+          <dd>Seconds from the first packet to a reply that has no request. A small Since Start means the reply is near the opening, so the request may have been sent before recording started. A large Since Start means the reply is later in the file and the request packet is missing from the capture. The responses-missing-a-request tables use this column.</dd>
           <dt id="where">Where</dt>
-          <dd>Inside means the packet is outside the in-flight window at the open or the close of the file. End of file means the request is still inside the longest completed round trip of the close, so a missing reply can be the capture stopping. Start of file means the reply is inside that window of the opening, so the request may have been sent before recording started.</dd>
+          <dd>Inside means the packet is outside the in-flight window at the open or the close of the file. End of file means the request is still inside the longest completed round trip of the close, so a missing reply can be the capture stopping. Start of file on a reply means that reply is inside the opening window, so the request may have been sent before recording started. A request marked Start of file still had the rest of the capture for a reply.</dd>
           <dt id="lost-response">Lost response</dt>
           <dd>The request is in the file and the reply is not. That happens when the recording stops while the call is still open, or when the reply packet was never captured. A cell that says <a href="#not-expected">not expected</a> is a command that does not want a reply.</dd>
           <dt id="not-expected">Not expected <sup>1</sup></dt>
@@ -943,11 +955,11 @@
             <p>Stream end (<code>0x55</code>), deletion (<code>0x58</code>), expiration (<code>0x59</code>), and the buffer acknowledgement are one-way in the same way. A DCP noop (<code>0x5c</code>) does want a reply: the producer drops the connection if the consumer stays silent. A stream request, Set with Meta, Get Meta, and a Statistics poll such as <code>vbucket-seqno</code> also want a reply. A missing one shows as a number.</p>
           </dd>
           <dt id="slow-scatter-word">Slow-call scatter</dt>
-          <dd>Each dot is one matched call that took 50 ms or more, up to the slowest 2,000. Horizontal is when the request started. Vertical is the round trip. Blue is an application call. Rust is cluster replication. A p99 line can be three calls or a cloud of them. The dots show which. A vertical stack is many slow calls in the same moment.</dd>
+          <dd>Each dot is one matched call that took 50 ms or more, up to the slowest 2,000. Horizontal is when the request started. Vertical is the round trip. Blue is an application call. Rust is cluster replication. A diamond is a packet error at that same second: a lost segment, a lost acknowledgement, or a retry that waited out a timeout. Bright blue is an application error. Bright red is a cluster error. The diamond sits low in the chart so it lines up in time with the calls. Its height is not a round trip. A second copy of the same segment within a millisecond is a capture duplicate and is left off. In this time view, double-click drops a stake, the same line the other time charts use. The slider under the chart is that same time window: drag it here or on any other time chart and this one follows. Server time uses a different horizontal axis, so that view keeps its own scale. A p99 line can be three calls or a cloud of them. The dots show which. A vertical stack is many slow calls in the same moment.</dd>
           <dt id="server-time">Server time</dt>
           <dd>Choose “server time against round trip” on the slow-call chart. Horizontal is <code>couchbase.flex_frame.frame.duration</code>, the microseconds the server held the command from receive to send. Vertical is the round trip in milliseconds. A dot near the diagonal means the server was doing the work. A dot high and to the left was waiting outside the server: the network, the client, or a durability hold. The chart keeps the slowest calls that reported a duration and a spread of the others, about 2,000 dots. An empty chart means this capture did not report that flex frame. That is “not reported,” not a duration of zero. Wireshark 4.6 prints the field in microseconds.</dd>
           <dt id="missing-heat-word">Missing heatmap</dt>
-          <dd>Each cell is one time bucket and one address, or one command. Color is how many requests in that cell have no reply. A vertical stripe means every listed row failed in that second. A horizontal stripe means one address or one command was missing the whole way across. The list is the addresses and commands with the most missing replies, up to 12. DCP commands that do not want a reply are not in this grid. They are <a href="#not-expected">not expected</a>.</dd>
+          <dd>Each cell is one time bucket and one address, or one command. Color is how many requests in that cell have no reply. A vertical stripe means every listed row failed in that second. A horizontal stripe means one address or one command was missing the whole way across. The list is the addresses and commands with the most missing replies, up to 12. DCP commands that do not want a reply are not in this grid. They are <a href="#not-expected">not expected</a>. Double-click a column to drop a stake on this chart and on the other time charts. The slider under the chart is that same time window.</dd>
           <dt id="opcode-box-word">Opcode box</dt>
           <dd>One box per command that got a reply, the slower tails first. The line in the middle of the box is the median. The box is the middle half of those calls, from p25 to p75. The whisker runs from the fastest call to p99, so one extreme call does not squash the rest. A short box with a long whisker is usually fast, with a thin slow tail. A tall box is usually slow. The p99 bar elsewhere is only the end of that whisker. Blue is an application command. Rust is cluster. The menu can show one side. Each side keeps the sixteen slowest tails, so a fast application command stays on the list when cluster calls are slower.</dd>
           <dt id="call-flow-word">Call flow</dt>
@@ -968,7 +980,7 @@
           <dt id="buffer-word">Buffer acknowledgement</dt>
           <dd>The bars are DCP mutations (<code>0x57</code>). The line is the bytes the consumer gave back with a buffer acknowledgement (<code>0x5d</code>, <code>couchbase.extras.bytes_to_ack</code>). Opaque 0 on that acknowledgement covers the whole connection. Mutations while the credit line is on the floor means the consumer is not keeping up. That is flow control. It is not a missing command reply.</dd>
           <dt id="response-without-request">Response without request</dt>
-          <dd>The reply is in the file and the request is not. The request was usually sent before the recording started. Extra packets from a Statistics reply are not this: they repeat the opaque on purpose and stay with that request.</dd>
+          <dd>The reply is in the file and the request is not. <a href="#since-start">Since Start</a> on that table is seconds from the first packet to the reply. A reply near the opening usually means the request was sent before recording started. A reply later in the file means the request packet is missing from the capture. Extra packets from a Statistics reply stay with that request: they repeat the opaque on purpose.</dd>
           <dt id="response-time">Response time</dt>
           <dd>Milliseconds from the request packet to the matching reply. Only matched calls have one.</dd>
           <dt id="latency-band">Latency band</dt>
@@ -1015,10 +1027,12 @@
     const palette = ["#c45c26", "#24576e", "#1c2430", "#6e8b74", "#d4a017", "#8c4a6f", "#3d6b8c", "#a35b3a"];
     const stakeColors = ["#1a8cff", "#ff8a00", "#22a06b", "#c45c26", "#7a5cff", "#d4a017", "#e23b6a", "#14919b"];
     const charts = {};
-    const timeChartIds = ["mix", "rtt", "tail", "range", "issues", "body", "snaps", "buffer", "persist"];
+    const timeChartIds = ["mix", "rtt", "tail", "range", "issues", "body", "flow", "snaps", "buffer", "persist"];
     const STAKE_SERIES = "__stake";
     let clientPick = "";
     let gapTab = "sdk-request";
+    let askedSide = "sdk";
+    let slowSide = "sdk";
     const hiddenPacketBars = new Set(["TCP data segment", "TCP ACK", "Capture duplicate"]);
     let data = null;
     let stakes = [];
@@ -1142,21 +1156,66 @@
       };
     }
 
+    function stakeMarkValue() {
+      const marks = stakes.map((second, index) => {
+        const color = stakeColors[index % stakeColors.length];
+        const pi = interestIndex(second);
+        const flag = "Stake " + (index + 1) + (pi ? "(pi:" + pi + ")" : "");
+        return {
+          xAxis: snappedStake(Number(second)),
+          lineStyle: { color: color, type: "dashed", width: 1.75 },
+          label: {
+            show: true,
+            formatter: flag,
+            position: "insideEndTop",
+            color: "#ffffff",
+            backgroundColor: color,
+            borderRadius: 3,
+            padding: [3, 6],
+            fontSize: 11,
+            fontWeight: 600
+          }
+        };
+      });
+      if (!marks.length) return undefined;
+      return { symbol: ["none", "none"], silent: true, animation: false, data: marks };
+    }
+
+    function stakeCarrierValue() {
+      return {
+        name: STAKE_SERIES,
+        type: "line",
+        data: [],
+        showSymbol: false,
+        silent: true,
+        legendHoverLink: false,
+        tooltip: { show: false },
+        lineStyle: { width: 0, opacity: 0 },
+        emphasis: { disabled: true },
+        markLine: stakeMarkValue() || { data: [], silent: true },
+        z: 5
+      };
+    }
+
+    function paintStake(chart, markLine) {
+      if (!chart) return;
+      const series = chart.getOption().series || [];
+      const index = series.findIndex((item) => item.name === STAKE_SERIES);
+      if (index === -1) return;
+      chart.setOption({
+        series: series.map((item, itemIndex) => ({
+          markLine: itemIndex === index ? markLine : { data: [] }
+        }))
+      });
+    }
+
     function applyStakes() {
       const rows = currentRows();
       const markLine = stakeMark(rows) || { data: [], silent: true };
-      timeChartIds.forEach((id) => {
-        const chart = charts[id];
-        if (!chart) return;
-        const series = chart.getOption().series || [];
-        const index = series.findIndex((item) => item.name === STAKE_SERIES);
-        if (index === -1) return;
-        chart.setOption({
-          series: series.map((item, itemIndex) => ({
-            markLine: itemIndex === index ? markLine : { data: [] }
-          }))
-        });
-      });
+      timeChartIds.forEach((id) => paintStake(charts[id], markLine));
+      paintStake(charts.heat, markLine);
+      const server = document.getElementById("scatter-mode") && document.getElementById("scatter-mode").value === "server";
+      paintStake(charts.scatter, server ? { data: [], silent: true } : (stakeMarkValue() || { data: [], silent: true }));
     }
 
     function pin(series, rows) {
@@ -1175,9 +1234,127 @@
         if (current && current.end != null) end = current.end;
       }
       return [
-        { type: "inside", start: start, end: end },
-        { type: "slider", height: 18, bottom: 8, start: start, end: end }
+        { type: "inside", xAxisIndex: 0, start: start, end: end },
+        { type: "slider", xAxisIndex: 0, height: 18, bottom: 8, start: start, end: end }
       ];
+    }
+
+    let applyingZoom = false;
+
+    function captureSpan() {
+      const rows = currentRows();
+      const width = Number(document.getElementById("bucket").value) || 1;
+      if (!rows.length) return null;
+      let step = width;
+      if (rows.length > 1 && rows[rows.length - 1].t > rows[0].t) {
+        step = (rows[rows.length - 1].t - rows[0].t) / (rows.length - 1);
+      }
+      return { first: rows[0].t, last: rows[rows.length - 1].t, step: step, n: rows.length };
+    }
+
+    function scatterTimeMode() {
+      const mode = document.getElementById("scatter-mode");
+      return !mode || mode.value !== "server";
+    }
+
+    function categoryZoom() {
+      const chart = charts.rtt;
+      if (!chart || typeof chart.getOption !== "function") return { start: 0, end: 100 };
+      const option = chart.getOption();
+      const current = option && option.dataZoom && option.dataZoom[0];
+      return {
+        start: current && current.start != null ? current.start : 0,
+        end: current && current.end != null ? current.end : 100
+      };
+    }
+
+    function scatterBounds(span) {
+      return { min: span.first - span.step / 2, max: span.last + span.step / 2 };
+    }
+
+    function scatterWindow(span, zoom) {
+      if (!zoom || (zoom.start <= 0.05 && zoom.end >= 99.95)) return null;
+      const denom = Math.max(span.n - 1, 1);
+      let i0 = Math.round(zoom.start / 100 * denom);
+      let i1 = Math.round(zoom.end / 100 * denom);
+      if (i1 < i0) {
+        const swap = i0;
+        i0 = i1;
+        i1 = swap;
+      }
+      if (i1 <= i0) i1 = Math.min(span.n - 1, i0 + 1);
+      if (i1 <= i0) i0 = Math.max(0, i1 - 1);
+      return {
+        startValue: span.first + (i0 - 0.5) * span.step,
+        endValue: span.first + (i1 + 0.5) * span.step
+      };
+    }
+
+    function scatterZoom(span) {
+      const window = span ? scatterWindow(span, categoryZoom()) : null;
+      const range = window
+        ? { startValue: window.startValue, endValue: window.endValue }
+        : { start: 0, end: 100 };
+      return [
+        Object.assign({ type: "inside", xAxisIndex: 0 }, range),
+        Object.assign({ type: "slider", xAxisIndex: 0, height: 18, bottom: 8 }, range)
+      ];
+    }
+
+    function scatterExtent() {
+      if (!charts.scatter || typeof charts.scatter.getModel !== "function") return null;
+      const model = charts.scatter.getModel().getComponent("xAxis", 0);
+      const axis = model && model.axis;
+      return axis && axis.scale ? axis.scale.getExtent() : null;
+    }
+
+    function syncScatterToCategory() {
+      if (!charts.scatter || !scatterTimeMode()) return;
+      const span = captureSpan();
+      const option = charts.scatter.getOption && charts.scatter.getOption();
+      if (!span || !option || !option.dataZoom || !option.dataZoom.length) return;
+      const window = scatterWindow(span, categoryZoom());
+      const extent = scatterExtent();
+      const eps = Math.max(span.step * 0.02, 1e-6);
+      const bounds = scatterBounds(span);
+      const already = window
+        ? extent && Math.abs(extent[0] - window.startValue) <= eps && Math.abs(extent[1] - window.endValue) <= eps
+        : extent && Math.abs(extent[0] - bounds.min) <= eps && Math.abs(extent[1] - bounds.max) <= eps;
+      if (already) return;
+      applyingZoom = true;
+      charts.scatter.dispatchAction(window
+        ? { type: "dataZoom", startValue: window.startValue, endValue: window.endValue }
+        : { type: "dataZoom", start: 0, end: 100 });
+      applyingZoom = false;
+    }
+
+    function syncCategoryFromScatter() {
+      if (applyingZoom || !charts.scatter || !charts.rtt || !scatterTimeMode()) return;
+      const span = captureSpan();
+      const extent = scatterExtent();
+      if (!span || !extent) return;
+      const bounds = scatterBounds(span);
+      const eps = Math.max(span.step * 0.02, 1e-6);
+      let start = 0;
+      let end = 100;
+      const atFull = Math.abs(extent[0] - bounds.min) <= eps && Math.abs(extent[1] - bounds.max) <= eps;
+      if (!atFull) {
+        const denom = Math.max(span.n - 1, 1);
+        start = ((extent[0] - span.first) / span.step + 0.5) / denom * 100;
+        end = ((extent[1] - span.first) / span.step - 0.5) / denom * 100;
+        start = Math.max(0, Math.min(100, start));
+        end = Math.max(0, Math.min(100, end));
+        if (end < start) {
+          const swap = start;
+          start = end;
+          end = swap;
+        }
+      }
+      const current = categoryZoom();
+      if (Math.abs(current.start - start) < 0.15 && Math.abs(current.end - end) < 0.15) return;
+      applyingZoom = true;
+      charts.rtt.dispatchAction({ type: "dataZoom", start: start, end: end });
+      applyingZoom = false;
     }
 
     function baseGrid() {
@@ -1372,10 +1549,10 @@
         series: pin([
           { name: scopedName("flow", "SDK requests"), type: "bar", stack: "req", data: rows.map((row) => yValue(row.sdk_requests)) },
           { name: scopedName("flow", "Cluster requests"), type: "bar", stack: "req", data: rows.map((row) => yValue(row.cluster_requests)) },
-          { name: scopedName("flow", "SDK missing"), type: "line", showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.sdk_unanswered)) },
-          { name: scopedName("flow", "Cluster missing"), type: "line", showSymbol: false, lineStyle: { type: "dashed", width: 2 }, data: rows.map((row) => yValue(row.cluster_unanswered)) },
-          { name: scopedName("flow", "SDK retrans"), type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.sdk_retrans)) },
-          { name: scopedName("flow", "Cluster retrans"), type: "line", yAxisIndex: 1, showSymbol: false, data: rows.map((row) => yValue(row.cluster_retrans)) }
+          { name: scopedName("flow", "SDK missing"), type: "line", yAxisIndex: 1, showSymbol: true, symbol: "circle", symbolSize: 8, lineStyle: { type: "dashed", width: 2, color: "#1a8cff" }, itemStyle: { color: "#1a8cff" }, data: rows.map((row) => yValue(row.sdk_unanswered)) },
+          { name: scopedName("flow", "Cluster missing"), type: "line", yAxisIndex: 1, showSymbol: true, symbol: "circle", symbolSize: 8, lineStyle: { type: "dashed", width: 2, color: "#ff8a00" }, itemStyle: { color: "#ff8a00" }, data: rows.map((row) => yValue(row.cluster_unanswered)) },
+          { name: scopedName("flow", "SDK retrans"), type: "line", yAxisIndex: 1, showSymbol: true, symbol: "circle", symbolSize: 7, data: rows.map((row) => yValue(row.sdk_retrans)) },
+          { name: scopedName("flow", "Cluster retrans"), type: "line", yAxisIndex: 1, showSymbol: true, symbol: "circle", symbolSize: 7, data: rows.map((row) => yValue(row.cluster_retrans)) }
         ], rows)
       }, true);
       charts.body.setOption({
@@ -1426,17 +1603,33 @@
       };
     }
 
+    const packetErrorNames = { lost: "Lost segment", ack: "Ack lost", retrans: "Retry" };
+
+    function packetErrorFilter(point) {
+      const flags = {
+        lost: "tcp.analysis.lost_segment",
+        ack: "tcp.analysis.ack_lost_segment",
+        retrans: "tcp.analysis.retransmission && tcp.analysis.rto >= 0.001"
+      };
+      const kinds = point.kinds && point.kinds.length ? point.kinds : [point.kind];
+      const body = kinds.map((kind) => flags[kind]).filter(Boolean);
+      if (!body.length) return "";
+      const test = body.length > 1 ? "(" + body.join(" || ") + ")" : body[0];
+      return point.stream ? "tcp.stream == " + point.stream + " && " + test : "tcp.port == 11210 && " + test;
+    }
+
     function drawScatter() {
+      if (!charts.scatter) return;
       const server = document.getElementById("scatter-mode") && document.getElementById("scatter-mode").value === "server";
       const points = (server ? data.scatter_server : data.scatter) || [];
+      const errors = server ? [] : (data.packet_errors || []);
       const note = document.getElementById("scatter-note");
       if (note) {
         note.innerHTML = server
           ? 'Horizontal is server microseconds. Vertical is the round trip. A dot high and to the left waited outside the server. <a href="#server-time">How to read this</a>.'
-          : 'Dots are matched calls of 50 ms or more. <a href="#slow-scatter-word">How to read this</a>.';
+          : 'Blue is an application call. Rust is cluster. Bright blue diamonds are application packet errors. Bright red diamonds are cluster packet errors. The slider moves with the other time charts. <a href="#slow-scatter-word">How to read this</a>.';
       }
-      if (!charts.scatter) return;
-      if (!points.length) {
+      if (!points.length && !errors.length) {
         charts.scatter.setOption(emptyChart(server ? "No call reported a server duration" : "No matched call reached 50 ms"), true);
         return;
       }
@@ -1444,11 +1637,69 @@
         ["sdk", "Application", "#1a5276"],
         ["cluster", "Cluster", "#c45c26"]
       ];
-      charts.scatter.setOption({
+      const series = groups.map((group) => ({
+        name: group[1],
+        type: "scatter",
+        itemStyle: { color: group[2] },
+        symbolSize: 9,
+        data: points.filter((point) => {
+          if (point.role !== group[0]) return false;
+          if (scale() !== "log") return true;
+          if (!(point.rtt > 0)) return false;
+          return !server || point.server_us > 0;
+        }).map((point) => ({
+          value: server ? [point.server_us, point.rtt] : [point.t, point.rtt],
+          command: point.name,
+          durability: point.durability,
+          vbucket: point.vbucket,
+          server_us: point.server_us
+        }))
+      }));
+      const legend = ["Application", "Cluster"];
+      const yAxis = { type: yType(), name: "ms" };
+      if (errors.length) {
+        [
+          ["sdk", "Application error", "#1a8cff", 0.18],
+          ["cluster", "Cluster error", "#ff2d2d", 0.08]
+        ].forEach((group) => {
+          legend.push(group[1]);
+          series.push({
+            name: group[1],
+            type: "scatter",
+            yAxisIndex: 1,
+            symbol: "diamond",
+            symbolSize: 12,
+            itemStyle: { color: group[2] },
+            z: 10,
+            data: errors.filter((point) => (point.role === "cluster" ? "cluster" : "sdk") === group[0]).map((point) => ({
+              value: [point.t, group[3]],
+              kind: point.kind,
+              kinds: point.kinds,
+              stream: point.stream,
+              toward: point.toward,
+              role: point.role,
+              filter: packetErrorFilter(point)
+            }))
+          });
+        });
+      }
+      if (!server) series.push(stakeCarrierValue());
+      const span = server ? null : captureSpan();
+      const bounds = span ? scatterBounds(span) : null;
+      const option = {
         tooltip: {
           trigger: "item",
           formatter: (item) => {
             const point = item.data || {};
+            if (item.seriesName === "Application error" || item.seriesName === "Cluster error") {
+              const kinds = (point.kinds || [point.kind]).map((kind) => packetErrorNames[kind] || kind);
+              const way = point.toward === "client" ? "toward the client" : "toward the server";
+              const lines = [item.seriesName + ": " + kinds.join(", ")];
+              lines.push(way);
+              lines.push("at " + item.value[0] + " s");
+              if (point.stream) lines.push("stream " + point.stream);
+              return lines.join("<br/>");
+            }
             const lines = [item.seriesName + " " + (point.command || "")];
             lines.push("round trip " + item.value[1] + " ms");
             lines.push(server ? "server " + item.value[0] + " µs" : "at " + item.value[0] + " s");
@@ -1458,29 +1709,30 @@
             return lines.join("<br/>");
           }
         },
-        legend: { data: ["Application", "Cluster"] },
-        grid: { left: 64, right: 24, top: 36, bottom: 48 },
-        xAxis: { type: server ? yType() : "value", name: server ? "server µs" : "seconds", nameLocation: "middle", nameGap: 28 },
-        yAxis: { type: yType(), name: "ms" },
-        series: groups.map((group) => ({
-          name: group[1],
-          type: "scatter",
-          itemStyle: { color: group[2] },
-          symbolSize: 9,
-          data: points.filter((point) => {
-            if (point.role !== group[0]) return false;
-            if (scale() !== "log") return true;
-            if (!(point.rtt > 0)) return false;
-            return !server || point.server_us > 0;
-          }).map((point) => ({
-            value: server ? [point.server_us, point.rtt] : [point.t, point.rtt],
-            command: point.name,
-            durability: point.durability,
-            vbucket: point.vbucket,
-            server_us: point.server_us
-          }))
-        }))
-      }, true);
+        legend: { data: legend },
+        grid: { left: 64, right: 24, top: 36, bottom: server ? 48 : 78 },
+        xAxis: Object.assign({
+          type: server ? yType() : "value",
+          name: server ? "server µs" : "seconds",
+          nameLocation: "middle",
+          nameGap: 28,
+          axisLabel: server ? {} : {
+            formatter: (value) => {
+              const whole = Math.round(value);
+              return Math.abs(value - whole) < 0.001 ? String(whole) : "";
+            }
+          }
+        }, bounds ? { min: bounds.min, max: bounds.max } : {}),
+        yAxis: errors.length ? [yAxis, { type: "value", min: 0, max: 1, show: false }] : yAxis,
+        series: series
+      };
+      if (!server) option.dataZoom = scatterZoom(span);
+      charts.scatter.setOption(option, true);
+      charts.scatter.off("click");
+      charts.scatter.on("click", (params) => {
+        const filter = params.data && params.data.filter;
+        if (filter) copyFilter(filter);
+      });
     }
 
     function drawHeat() {
@@ -1508,20 +1760,22 @@
           position: "top",
           formatter: (item) => (times[item.value[0]] || "") + "<br/>" + rows[item.value[1]].name + "<br/>" + item.value[2] + " missing"
         },
-        grid: { left: 148, right: 24, top: 16, bottom: 72 },
+        grid: { left: 148, right: 24, top: 12, bottom: 108 },
+        dataZoom: axisZoom(),
         xAxis: { type: "category", data: times, splitArea: { show: true } },
         yAxis: { type: "category", data: rows.map((row) => row.name), splitArea: { show: true } },
         visualMap: {
+          seriesIndex: 0,
           min: 0,
           max: max,
           calculable: true,
           orient: "horizontal",
           left: "center",
-          bottom: 0,
+          bottom: 32,
           inRange: { color: ["#f4efe6", "#1a5276"] },
           textStyle: { color: "#5c564e" }
         },
-        series: [{ type: "heatmap", data: cells }]
+        series: [{ type: "heatmap", data: cells }, stakeCarrier(currentRows())]
       }, true);
     }
 
@@ -2417,38 +2671,49 @@
       const note = document.getElementById("gap-note");
       if (note) {
         const sample = items.length < total
-          ? "Showing " + items.length + " of " + total + ", spaced from the earliest to the latest. These are not the first rows. "
+          ? "Showing " + items.length + " of " + total + ". "
           : "All " + total + " are listed. ";
+        const edge = "The rows are calls that had time for the other half, up to ten, plus at most two examples from the open or the close. A response with no request at the start, and a request with no response at the end, are the capture cutting a live call. ";
         note.textContent = atStart
-          ? sample + "Start of file means the reply arrived inside the longest completed round trip of the opening, so the request may have been sent before recording started. A Statistics reply (vbucket-seqno) is many packets on one opaque; those packets are one call and are not listed here."
-          : sample + "Start of file means this request is inside that same opening window: the connection was already mid-call, and the reply in the file may belong to the next opaque. End of file means the request is still inside the longest completed round trip of the close, so the reply may have been cut off. Inside is away from both edges.";
+          ? sample + edge + "Seconds and Since Start are both seconds from the first packet to this reply. Start of file means the reply arrived inside the longest completed round trip of the opening, so the request may have been sent before recording started. A Statistics reply (vbucket-seqno) is many packets on one opaque; those packets are one call and are not listed here."
+          : sample + edge + "A request near the start with a large Left had time for a reply. End of file means the request is still inside the longest completed round trip of the close, so the reply may have been cut off. Inside is away from both edges.";
       }
+      const timeHead = atStart
+        ? [
+            "Seconds",
+            term("Since Start", "Seconds from the start of the capture to this reply. A small value means the request may have been sent before recording started.")
+          ]
+        : [
+            "Seconds",
+            term("Left", "Seconds of capture still remaining after this packet. A small Left means the file was about to end.")
+          ];
       table(
         "gaps",
-        [
-          "Seconds",
-          term("Left", "Seconds of capture still remaining after this packet. A small Left means the file was about to end."),
+        timeHead.concat([
           term("Stream", "The TCP connection number. Opaque is only unique inside this stream."),
           "Opaque",
           "Role",
           "Opcode",
           "Document id",
-          term("Errors", "possible means a TCP lost segment or lost ack is within half a second of this row. The copy icon shows this document and the holes to and from that requester, so you can see how far apart they are. A dash means no hole that close."),
-          term("Where", "Inside is away from the open and the close. End of file and Start of file are inside the in-flight window, so the missing half of the call may be the capture cutting it off."),
+          term("Errors", "possible means a TCP lost segment or lost ack is within half a second of this row. When that hole is on this stream, the copy is the call and those errors on the stream. Otherwise it is the holes to and from that requester. A dash means no hole that close."),
+          term("Where", "Inside is away from the open and the close. End of file is a request still inside the closing window. Start of file on a reply is the opening window. A request at the start with time left had room for a reply."),
           "Stake"
-        ],
-        items.map((row) => [
-          cellText(row.seconds),
-          cellText(row.seconds_left),
-          copyButton(streamFilter(row.stream), cellText(row.stream)),
-          copyButton(callFilter(row), cellText(row.opaque)),
-          escapeHtml(cellText(row.role || "")),
-          copyButton(opcodeFilter(opcodeHex(row.opcode)), cellText(row.opcode)),
-          copyCell("key", row.key),
-          errorCell(row),
-          gapPlace(row, atStart),
-          aroundCell(row)
-        ])
+        ]),
+        items.map((row) => {
+          const timeCells = atStart
+            ? [cellText(row.seconds), cellText(row.seconds)]
+            : [cellText(row.seconds), cellText(row.seconds_left)];
+          return timeCells.concat([
+            copyButton(streamFilter(row.stream), cellText(row.stream)),
+            copyButton(callFilter(row), cellText(row.opaque)),
+            escapeHtml(cellText(row.role || "")),
+            copyButton(opcodeFilter(opcodeHex(row.opcode)), cellText(row.opcode)),
+            copyCell("key", row.key),
+            errorCell(row),
+            gapPlace(row, atStart),
+            aroundCell(row)
+          ]);
+        })
       );
       markStakeButtons();
     }
@@ -2471,7 +2736,7 @@
             cellText(bucket.body_out_bytes),
             cellText(bucket.lost_s2c),
             cellText(bucket.lost_c2s),
-            cellText(bucket.unanswered),
+            lostCount(bucket.unanswered, 0),
             aroundCell(row)
           ];
         })
@@ -2625,6 +2890,78 @@
       return value == null || value === "" ? "—" : value;
     }
 
+    function sideRows(splitName, combinedName, side) {
+      if (Array.isArray(data[splitName])) return data[splitName];
+      const rows = data[combinedName] || [];
+      if (rows.some((row) => row.role)) return rows.filter((row) => row.role === side);
+      return rows;
+    }
+
+    function lostCount(value, above) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return escapeHtml(cellText(value));
+      const limit = above == null ? 1 : above;
+      if (n > limit) return '<span class="lost-many">' + n + "</span>";
+      return String(n);
+    }
+
+    function opcodeLost(row) {
+      if (row.expects_reply === false && !row.unanswered) {
+        return '<span class="nowrap">not expected<sup><a class="fn" href="#not-expected">1</a></sup></span>';
+      }
+      return lostCount(row.unanswered);
+    }
+
+    function drawAsked() {
+      const rows = sideRows("top_requested_" + askedSide, "top_requested", askedSide);
+      const hasRate = rows.some((row) => row.per_second != null || row.avg_body_bytes != null);
+      const headers = [
+        term("Document id", "The Couchbase key the operation named."),
+        "Requests"
+      ];
+      if (hasRate) {
+        headers.push(
+          term("Per second", "Requests for this document id divided by the length of the capture."),
+          term("Average body", "Mean total body length for this document id. Each call contributes the larger of the request and the reply: extras, key, and value.")
+        );
+      }
+      headers.push(term("Lost responses", "Requests for that document whose replies are not in this file."));
+      table("top-asked", headers, rows.map((row) => {
+        const cells = [copyCell("key", row.key), row.count];
+        if (hasRate) {
+          cells.push(
+            row.per_second == null ? "—" : row.per_second.toLocaleString() + "/s",
+            row.avg_body_bytes == null ? "—" : formatBytes(row.avg_body_bytes)
+          );
+        }
+        cells.push(lostCount(row.unanswered));
+        return cells;
+      }));
+    }
+
+    function drawSlow() {
+      table("top-slow", [
+        term("Document id", "The Couchbase key the operation named."),
+        term("Opcode", "The Couchbase command. The copy icon is couchbase.opcode for this call."),
+        term("Stream", "The TCP connection number. The copy icon is this stream alone."),
+        term("Opaque", "The copy icon is this stream and this opaque together, which is one call."),
+        term("Time ms", "Milliseconds from the request packet to its matching reply for this call."),
+        term("Seconds", "Seconds from the start of the capture, when the request was sent. Set Stake marks this moment."),
+        term("Body bytes", "The larger of the request and reply total body lengths for this call. Extras, key, and value."),
+        "Stake"
+      ], sideRows("top_slowest_" + slowSide, "top_slowest", slowSide).map((row) => [
+        copyCell("key", row.key),
+        copyButton(opcodeFilter(row.opcode), cellText(row.opcode)),
+        copyButton(streamFilter(row.stream), cellText(row.stream)),
+        copyButton(callFilter(row), cellText(row.opaque)),
+        cellText(row.time_ms),
+        cellText(row.seconds),
+        cellText(row.body_bytes),
+        aroundCell(row)
+      ]));
+      markStakeButtons();
+    }
+
     function table(id, headers, rows) {
       const head = "<tr>" + headers.map((cell) => "<th>" + cell + "</th>").join("") + "</tr>";
       const body = rows.map((row) => "<tr>" + row.map((cell) => "<td class=\"key\">" + cell + "</td>").join("") + "</tr>").join("");
@@ -2696,40 +3033,8 @@
           { name: "Cluster", type: "bar", data: bands.map((row) => yValue(row.cluster)), itemStyle: { color: "#c45c26" } }
         ]
       }, true);
-      table("top-asked", [
-        term("Document id", "The Couchbase key the operation named."),
-        "Requests",
-        term("Per second", "Requests for this document id divided by the length of the capture."),
-        term("Average body", "Mean total body length for this document id. Each call contributes the larger of the request and the reply: extras, key, and value."),
-        term("Lost responses", "Requests for that document whose replies are not in this file.")
-      ], (data.top_requested || []).map((row) => [
-        copyCell("key", row.key),
-        row.count,
-        row.per_second == null ? "—" : row.per_second.toLocaleString() + "/s",
-        row.avg_body_bytes == null ? "—" : formatBytes(row.avg_body_bytes),
-        row.unanswered
-      ]));
-      table("top-slow", [
-        term("Document id", "The Couchbase key the operation named."),
-        "Role",
-        term("Opcode", "The Couchbase command. The copy icon is couchbase.opcode for this call."),
-        term("Stream", "The TCP connection number. The copy icon is this stream alone."),
-        term("Opaque", "The copy icon is this stream and this opaque together, which is one call."),
-        term("Time ms", "Milliseconds from the request packet to its matching reply for this call."),
-        term("Seconds", "Seconds from the start of the capture, when the request was sent. Set Stake marks this moment."),
-        term("Body bytes", "The larger of the request and reply total body lengths for this call. Extras, key, and value."),
-        "Stake"
-      ], (data.top_slowest || []).map((row) => [
-        copyCell("key", row.key),
-        escapeHtml(cellText(row.role || "")),
-        copyButton(opcodeFilter(row.opcode), cellText(row.opcode)),
-        copyButton(streamFilter(row.stream), cellText(row.stream)),
-        copyButton(callFilter(row), cellText(row.opaque)),
-        cellText(row.time_ms),
-        cellText(row.seconds),
-        cellText(row.body_bytes),
-        aroundCell(row)
-      ]));
+      drawAsked();
+      drawSlow();
       markStakeButtons();
       drawInterest();
       drawNext();
@@ -2743,7 +3048,7 @@
       table(
         "opcodes-seen",
         ["Opcode", "Command", "Side", "What it does", "Requests", "Lost responses"],
-        (data.by_opcode || []).map((row) => [copyButton(opcodeFilter(row.opcode), row.opcode), row.name, row.role || "", row.description || "", row.requests, row.expects_reply === false && !row.unanswered ? '<span class="nowrap">not expected<sup><a class="fn" href="#not-expected">1</a></sup></span>' : row.unanswered])
+        (data.by_opcode || []).map((row) => [copyButton(opcodeFilter(row.opcode), row.opcode), row.name, row.role || "", row.description || "", row.requests, opcodeLost(row)])
       );
       drawScatter();
       drawHeat();
@@ -2784,7 +3089,9 @@
       ["spread", "mix", "rtt", "tail", "range", "issues", "body", "flow", "opcodes", "packets", "client-share", "client-rate", "client-port-share", "cluster-ops", "cluster-conns", "scatter", "heat", "boxes", "paths", "statuses", "durable", "vbars", "snaps", "buffer", "persist", "nic-gauge"].forEach((id) => {
         charts[id] = echarts.init(document.getElementById(id));
       });
-      echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body, charts.flow, charts.snaps, charts.buffer, charts.persist]);
+      echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body, charts.flow, charts.snaps, charts.buffer, charts.persist, charts.heat]);
+      charts.rtt.on("datazoom", () => syncScatterToCategory());
+      charts.scatter.on("datazoom", () => syncCategoryFromScatter());
       const clientOpen = document.getElementById("client-open");
       const clientMenu = document.getElementById("client-menu");
       const clientFind = document.getElementById("client-find");
@@ -2845,10 +3152,29 @@
           drawGaps();
         });
       });
+      document.querySelectorAll("[data-asked-tab]").forEach((button) => {
+        button.addEventListener("click", () => {
+          askedSide = button.dataset.askedTab;
+          document.querySelectorAll("[data-asked-tab]").forEach((item) => {
+            item.classList.toggle("on", item === button);
+          });
+          drawAsked();
+        });
+      });
+      document.querySelectorAll("[data-slow-tab]").forEach((button) => {
+        button.addEventListener("click", () => {
+          slowSide = button.dataset.slowTab;
+          document.querySelectorAll("[data-slow-tab]").forEach((item) => {
+            item.classList.toggle("on", item === button);
+          });
+          drawSlow();
+        });
+      });
       window.addEventListener("resize", () => Object.values(charts).forEach((chart) => chart.resize()));
       document.getElementById("bucket").addEventListener("change", () => {
         drawTime();
         drawHeat();
+        drawScatter();
       });
       const scatterMode = document.getElementById("scatter-mode");
       if (scatterMode) scatterMode.addEventListener("change", drawScatter);
@@ -2862,11 +3188,14 @@
         drawFixed();
         drawTime();
         drawBoxes();
+        drawScatter();
       });
       document.getElementById("reset-zoom").addEventListener("click", () => {
         timeChartIds.forEach((id) => {
           charts[id].dispatchAction({ type: "dataZoom", start: 0, end: 100 });
         });
+        if (charts.heat) charts.heat.dispatchAction({ type: "dataZoom", start: 0, end: 100 });
+        syncScatterToCategory();
       });
       document.addEventListener("click", (event) => {
         const button = event.target.closest(".copy-filter");
@@ -2887,6 +3216,31 @@
           if (!button || button.disabled) return;
           addStake(button.dataset.seconds);
         });
+      });
+      charts.scatter.getZr().on("dblclick", (event) => {
+        const mode = document.getElementById("scatter-mode");
+        if (mode && mode.value === "server") return;
+        const point = [event.offsetX, event.offsetY];
+        if (!charts.scatter.containPixel("grid", point)) return;
+        const raw = charts.scatter.convertFromPixel({ gridIndex: 0 }, point);
+        const second = Array.isArray(raw) ? raw[0] : raw;
+        if (typeof second !== "number" || !Number.isFinite(second)) return;
+        addStake(second);
+      });
+      charts.heat.getZr().on("dblclick", (event) => {
+        const point = [event.offsetX, event.offsetY];
+        if (!charts.heat.containPixel("grid", point)) return;
+        const raw = charts.heat.convertFromPixel({ gridIndex: 0 }, point);
+        const index = Array.isArray(raw) ? raw[0] : raw;
+        const rows = currentRows();
+        let second = null;
+        if (typeof index === "number" && rows[Math.round(index)]) second = rows[Math.round(index)].t;
+        else {
+          const found = rows.find((row) => row.t + "s" === String(index));
+          if (found) second = found.t;
+        }
+        if (second == null) return;
+        addStake(second);
       });
       timeChartIds.forEach((id) => {
         charts[id].getZr().on("dblclick", (event) => {
@@ -2943,6 +3297,8 @@
       drawTiles();
       drawFixed();
       drawTime();
+      drawHeat();
+      drawScatter();
     }
 
     const glossaryJump = {
@@ -2967,6 +3323,7 @@
       "body bytes": "total-body-length",
       "stream": "stream",
       "left": "left",
+      "since start": "since-start",
       "where": "where",
       "document id": "document-id"
     };

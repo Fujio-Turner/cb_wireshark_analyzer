@@ -238,6 +238,11 @@
     .chart.tall { height: 460px; }
     .card .switch { margin: 0 8px 8px; color: var(--muted); font-size: 13px; }
     .card .switch select { margin-left: 6px; }
+    .side-key { display: inline-flex; gap: 12px; margin-left: 14px; color: var(--ink); }
+    .side-key b { font-weight: 500; }
+    .side-key i { display: inline-block; width: 10px; height: 10px; margin-right: 5px; border-radius: 2px; vertical-align: -1px; }
+    .side-key .app i { background: #1a5276; }
+    .side-key .cluster i { background: #c45c26; }
     .expand {
       position: absolute;
       top: 0;
@@ -497,7 +502,7 @@
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         cb_wireshark_analyzer
       </a>
-      <span class="version" id="app-version">v0.10.1</span>
+      <span class="version" id="app-version">v0.10.2</span>
     </div>
     </div>
     <div class="bar">
@@ -656,12 +661,24 @@
         <div class="grid two">
           <section class="card">
             <h2 id="opcode-box">Spread by command</h2>
+            <p class="switch"><label>Show <select id="box-mode" aria-label="Spread by command">
+              <option value="all" selected>All</option>
+              <option value="application">Application Only</option>
+              <option value="cluster">Cluster Only</option>
+            </select></label><span class="side-key"><b class="app"><i></i>Application</b><b class="cluster"><i></i>Cluster</b></span></p>
             <p class="note">One box per command that got a reply. <a href="#opcode-box-word">How to read this</a>.</p>
             <div id="boxes" class="chart"></div>
           </section>
           <section class="card">
             <h2 id="call-flow">Where calls went</h2>
-            <p class="note">The width of a band is the count. <a href="#call-flow-word">How to read this</a>.</p>
+            <p class="switch"><label>Show <select id="flow-mode" aria-label="Where calls went">
+              <option value="all" selected>All</option>
+              <option value="application">Application Only</option>
+              <option value="cluster">Cluster Only</option>
+              <option value="exclude_not_expected">Exclude Not Expected</option>
+              <option value="unmatched">Missing replies</option>
+            </select></label></p>
+            <p class="note" id="flow-note">The width of a band is the count. <a href="#call-flow-word">How to read this</a>.</p>
             <div id="paths" class="chart tall"></div>
           </section>
         </div>
@@ -932,9 +949,9 @@
           <dt id="missing-heat-word">Missing heatmap</dt>
           <dd>Each cell is one time bucket and one address, or one command. Color is how many requests in that cell have no reply. A vertical stripe means every listed row failed in that second. A horizontal stripe means one address or one command was missing the whole way across. The list is the addresses and commands with the most missing replies, up to 12. DCP commands that do not want a reply are not in this grid. They are <a href="#not-expected">not expected</a>.</dd>
           <dt id="opcode-box-word">Opcode box</dt>
-          <dd>One box per command that got a reply, the slower tails first. The line in the middle of the box is the median. The box is the middle half of those calls, from p25 to p75. The whisker runs from the fastest call to p99, so one extreme call does not squash the rest. A short box with a long whisker is usually fast, with a thin slow tail. A tall box is usually slow. The p99 bar elsewhere is only the end of that whisker.</dd>
+          <dd>One box per command that got a reply, the slower tails first. The line in the middle of the box is the median. The box is the middle half of those calls, from p25 to p75. The whisker runs from the fastest call to p99, so one extreme call does not squash the rest. A short box with a long whisker is usually fast, with a thin slow tail. A tall box is usually slow. The p99 bar elsewhere is only the end of that whisker. Blue is an application command. Rust is cluster. The menu can show one side. Each side keeps the sixteen slowest tails, so a fast application command stays on the list when cluster calls are slower.</dd>
           <dt id="call-flow-word">Call flow</dt>
-          <dd>Left is application or cluster. Middle is the command. Right is where the call went: matched, not found, key exists, an error status, a missing reply, or not expected. The width of a band is the count. Not found is status <code>0x0001</code>, a normal Get. Key exists is status <code>0x0002</code>, a conditional write that found the document already there. An error status is a reply such as not my vbucket, locked, busy, temporary failure, or rollback. Not expected is a DCP message that does not want a command reply. The middle keeps the eight busiest commands and folds the rest into Other.</dd>
+          <dd>Left is application or cluster. Middle is the command. Right is where the call went: matched, not found, key exists, an error status, a missing reply, or not expected. The width of a band is the count. Not found is status <code>0x0001</code>, a normal Get. Key exists is status <code>0x0002</code>, a conditional write that found the document already there. An error status is a reply such as not my vbucket, locked, busy, temporary failure, or rollback. Not expected is a DCP message that does not want a command reply. The menu shows every call, only application, only cluster, calls that want a reply, or only a missing reply. A missing reply wanted an answer and has none in the file. One-way commands stay on the other views. The middle keeps the eight busiest commands in that selection and folds the rest into Other.</dd>
           <dt id="reply-status-word">Reply status</dt>
           <dd>A bar for each Couchbase status on a reply that is not success. Success is left off so it does not hide the rest. Key not found and key exists are normal results, drawn in green. Not my vbucket, locked, busy, temporary failure, and rollback are drawn in rust. Not my vbucket means the client talked to the wrong node and will try again. Busy and temporary failure mean the server told the client to back off. Rollback means a DCP stream has to restart. A reply with one of those statuses is a matched call, so it is not in the missing-reply count.</dd>
           <dt id="durability-word">Durability</dt>
@@ -1510,47 +1527,173 @@
 
     function drawBoxes() {
       if (!charts.boxes) return;
+      const select = document.getElementById("box-mode");
+      const mode = select ? select.value : "all";
       let rows = data.boxplot || [];
+      if (mode === "application") rows = rows.filter((row) => row.role !== "cluster");
+      if (mode === "cluster") rows = rows.filter((row) => row.role === "cluster");
       if (scale() === "log") rows = rows.filter((row) => (row.box || []).length === 5 && row.box.every((value) => value > 0));
+      const plot = document.getElementById("boxes");
+      if (plot) plot.style.height = Math.max(340, rows.length * 36 + 48) + "px";
+      charts.boxes.resize();
+      const empty = {
+        all: "No matched calls",
+        application: "No matched application calls",
+        cluster: "No matched cluster calls"
+      };
       if (!rows.length) {
-        charts.boxes.setOption(emptyChart("No matched calls"), true);
+        charts.boxes.setOption(emptyChart(empty[mode] || "No matched calls"), true);
         return;
       }
+      const names = rows.map((row) => row.name || row.opcode);
+      const duplicate = {};
+      names.forEach((name) => { duplicate[name] = (duplicate[name] || 0) + 1; });
+      const labels = rows.map((row) => {
+        const name = row.name || row.opcode;
+        if ((duplicate[name] || 0) < 2) return name;
+        return name + (row.role === "cluster" ? " · cluster" : " · application");
+      });
+      const application = { color: "#d6e2ea", borderColor: "#1a5276" };
+      const cluster = { color: "#f6d7c4", borderColor: "#c45c26" };
       charts.boxes.setOption({
         tooltip: {
           trigger: "item",
           formatter: (item) => {
             const row = rows[item.dataIndex];
             const box = row.box || [];
-            return row.name + " · " + row.n + " calls<br/>fastest " + box[0] + " ms<br/>p25 " + box[1] + " ms<br/>median " + box[2] + " ms<br/>p75 " + box[3] + " ms<br/>p99 " + box[4] + " ms";
+            const side = row.role === "cluster" ? "Cluster" : "Application";
+            return side + " · " + (row.name || row.opcode) + " · " + row.n + " calls<br/>fastest " + box[0] + " ms<br/>p25 " + box[1] + " ms<br/>median " + box[2] + " ms<br/>p75 " + box[3] + " ms<br/>p99 " + box[4] + " ms";
           }
         },
-        grid: { left: 168, right: 24, top: 16, bottom: 32 },
+        grid: { left: 188, right: 24, top: 16, bottom: 32 },
         xAxis: { type: yType(), name: "ms" },
-        yAxis: { type: "category", data: rows.map((row) => row.name || row.opcode), inverse: true },
-        series: [{ type: "boxplot", data: rows.map((row) => row.box), itemStyle: { color: "#d6e2ea", borderColor: "#1a5276" } }]
+        yAxis: { type: "category", data: labels, inverse: true },
+        series: [{
+          type: "boxplot",
+          data: rows.map((row) => ({
+            value: row.box,
+            itemStyle: row.role === "cluster" ? cluster : application
+          }))
+        }]
       }, true);
+    }
+
+    function sankeyView() {
+      const flow = data.sankey || {};
+      const select = document.getElementById("flow-mode");
+      const key = select ? select.value : "all";
+      const views = flow.views || {};
+      if (views[key]) return views[key];
+      if (key === "all") return flow;
+      return { nodes: [], links: [] };
+    }
+
+    function sankeyLayout(flow, key) {
+      const incoming = {};
+      const outgoing = {};
+      (flow.links || []).forEach((link) => {
+        incoming[link.target] = (incoming[link.target] || 0) + link.value;
+        outgoing[link.source] = (outgoing[link.source] || 0) + link.value;
+      });
+      const countOf = (name) => (incoming[name] != null ? incoming[name] : outgoing[name] || 0);
+      const links = (flow.links || []).map((link) => ({
+        source: link.source,
+        target: link.target,
+        value: link.value,
+        count: link.value
+      }));
+      let stretched = false;
+      if (key === "unmatched" && links.length) {
+        const counts = links.map((link) => link.count).filter((count) => count > 0);
+        const max = Math.max(...counts);
+        const min = Math.min(...counts);
+        if (min > 0 && max / min > 40) {
+          const floor = max * 0.12;
+          links.forEach((link) => {
+            if (link.count < floor) {
+              link.value = floor;
+              stretched = true;
+            }
+          });
+        }
+      }
+      const edgeName = {
+        Application: true, Cluster: true, Matched: true, "Not found": true,
+        "Key exists": true, "Error status": true, "Missing reply": true, "Not expected": true
+      };
+      const nodes = (flow.nodes || []).map((node) => {
+        const row = {
+          name: node.name,
+          itemStyle: node.itemStyle,
+          count: countOf(node.name)
+        };
+        if (stretched && edgeName[node.name]) row.label = { width: 116, overflow: "break", lineHeight: 15 };
+        return row;
+      });
+      return { nodes, links, stretched };
     }
 
     function drawPaths() {
       if (!charts.paths) return;
-      const flow = data.sankey || {};
+      const select = document.getElementById("flow-mode");
+      const key = select ? select.value : "all";
+      const flow = sankeyView();
+      const empty = {
+        all: "No calls",
+        application: "No application calls",
+        cluster: "No cluster calls",
+        exclude_not_expected: "No calls that expected a reply",
+        unmatched: "No missing replies"
+      };
+      const plot = document.getElementById("paths");
+      const note = document.getElementById("flow-note");
       if (!flow.links || !flow.links.length) {
-        charts.paths.setOption(emptyChart("No calls"), true);
+        if (plot) plot.style.height = "";
+        charts.paths.resize();
+        charts.paths.setOption(emptyChart(empty[key] || "No calls"), true);
+        if (note) note.innerHTML = 'The width of a band is the count. <a href="#call-flow-word">How to read this</a>.';
         return;
       }
+      const laid = sankeyLayout(flow, key);
+      if (plot) plot.style.height = laid.stretched ? "640px" : "";
+      if (note) {
+        const lead = laid.stretched
+          ? "Small bands are drawn wider so they stay readable. The number is the real count. "
+          : "The width of a band is the count. ";
+        note.innerHTML = lead + '<a href="#call-flow-word">How to read this</a>.';
+      }
+      charts.paths.resize();
       charts.paths.setOption({
-        tooltip: { trigger: "item" },
+        tooltip: {
+          trigger: "item",
+          formatter: (item) => {
+            const count = item.data && item.data.count != null ? item.data.count : item.value;
+            const shown = Number(count).toLocaleString();
+            if (item.dataType === "edge") return item.data.source + " → " + item.data.target + "<br/>" + shown;
+            return item.name + "<br/>" + shown;
+          }
+        },
         series: [{
           type: "sankey",
-          data: flow.nodes,
-          links: flow.links,
+          data: laid.nodes,
+          links: laid.links,
           emphasis: { focus: "adjacency" },
           nodeAlign: "justify",
           nodeWidth: 14,
-          nodeGap: 10,
+          nodeGap: laid.stretched ? 18 : 10,
+          left: laid.stretched ? 8 : "5%",
+          right: laid.stretched ? 128 : "20%",
           lineStyle: { color: "gradient", curveness: 0.5 },
-          label: { color: "#1c2430", fontSize: 12 }
+          label: {
+            color: "#1c2430",
+            fontSize: 12,
+            formatter: (item) => {
+              if (!laid.stretched || !item.data || item.data.count == null) return item.name;
+              const count = Number(item.data.count).toLocaleString();
+              const edge = item.name === "Application" || item.name === "Cluster" || item.name === "Matched" || item.name === "Not found" || item.name === "Key exists" || item.name === "Error status" || item.name === "Missing reply" || item.name === "Not expected";
+              return edge ? item.name + "\n" + count : item.name + "  " + count;
+            }
+          }
         }]
       }, true);
     }
@@ -2356,8 +2499,8 @@
     }
 
     function wiresharkFilter(kind, value) {
-      if (kind === "opaque") return "couchbase && couchbase.opaque == " + value;
-      return 'couchbase && couchbase.key.logical_key == "' + String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"') + '"';
+      if (kind === "opaque") return "couchbase.opaque == " + value;
+      return 'couchbase.key.logical_key == "' + String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"') + '"';
     }
 
     function addrField(ip) {
@@ -2711,9 +2854,14 @@
       if (scatterMode) scatterMode.addEventListener("change", drawScatter);
       const heatMode = document.getElementById("heat-mode");
       if (heatMode) heatMode.addEventListener("change", drawHeat);
+      const flowMode = document.getElementById("flow-mode");
+      if (flowMode) flowMode.addEventListener("change", drawPaths);
+      const boxMode = document.getElementById("box-mode");
+      if (boxMode) boxMode.addEventListener("change", drawBoxes);
       document.getElementById("scale").addEventListener("change", () => {
         drawFixed();
         drawTime();
+        drawBoxes();
       });
       document.getElementById("reset-zoom").addEventListener("click", () => {
         timeChartIds.forEach((id) => {

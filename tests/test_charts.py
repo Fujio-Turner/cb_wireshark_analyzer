@@ -373,6 +373,7 @@ def test_diagnosis_charts_separate_slow_missing_and_one_way_dcp():
     assert charts["scatter"][0]["durability"] == 3
     assert any(point["server_us"] == 12.0 for point in charts["scatter_server"])
     box = next(row for row in charts["boxplot"] if row["opcode"] == "0x01")
+    assert box["role"] == "sdk"
     assert box["box"][2] == 250.0
     assert box["box"][4] == 250.0
     heat = charts["heatmap"]["1"]["clients"]
@@ -410,3 +411,99 @@ def test_diagnosis_charts_separate_slow_missing_and_one_way_dcp():
     assert bucket["ttp_median"] == 80.0
     assert bucket["ttr_median"] == 12.0
     assert persist_charts["buckets"]["1"][2]["ttp_median"] == 0.0
+    views = charts["sankey"]["views"]
+    assert views["all"]["links"] == charts["sankey"]["links"]
+
+    def bands(view):
+        return {(link["source"], link["target"]): link["value"] for link in view["links"]}
+
+    application = bands(views["application"])
+    assert application[("Application", "Get")] == 3
+    assert ("Cluster", "DCP (Key) Mutation") not in application
+    assert all(link["source"] != "Cluster" for link in views["application"]["links"])
+    cluster = bands(views["cluster"])
+    assert cluster[("DCP (Key) Mutation", "Not expected")] == 1
+    assert all(link["source"] != "Application" for link in views["cluster"]["links"])
+    excluded = bands(views["exclude_not_expected"])
+    assert ("DCP (Key) Mutation", "Not expected") not in excluded
+    assert excluded[("Get", "Missing reply")] == 1
+    assert excluded[("Get", "Not found")] == 1
+    unmatched = bands(views["unmatched"])
+    assert unmatched[("Get", "Missing reply")] == 1
+    assert ("DCP (Key) Mutation", "Not expected") not in unmatched
+    assert all(link["target"] != "Not expected" for link in views["unmatched"]["links"])
+    assert ("Get", "Not found") not in unmatched
+    assert ("Add", "Key exists") not in unmatched
+    assert ("Get", "Error status") not in unmatched
+
+
+def test_sankey_menu_refolds_the_busiest_commands_in_that_view():
+    requests = []
+    responses = []
+    serial = 0
+    for opcode, count in (
+        ("0x00", 9),
+        ("0x01", 8),
+        ("0x02", 7),
+        ("0x04", 6),
+        ("0x05", 5),
+        ("0x06", 4),
+        ("0x07", 3),
+        ("0x08", 2),
+        ("0x09", 1),
+    ):
+        for _ in range(count):
+            serial += 1
+            opaque = f"0x{serial:x}"
+            requests.append(msg(1.0, stream="1", opaque=opaque, opcode=opcode))
+            reply = msg(1.01, stream="1", opaque=opaque, opcode=opcode, kind="resp")
+            reply["status"] = "0x0000"
+            responses.append(reply)
+    for _ in range(100):
+        serial += 1
+        mutation = msg(0.4, stream="2", opaque=f"0x{serial:x}", opcode="0x57", key="doc::dcp", src="10.0.0.9")
+        mutation["sport"] = "11210"
+        mutation["dport"] = "11210"
+        requests.append(mutation)
+    charts = ac.build_charts(requests, ac.pair_messages(requests, responses), [], ["11210"], 5.0)
+    views = charts["sankey"]["views"]
+
+    def names(view):
+        return {node["name"] for node in view["nodes"]}
+
+    assert "Flush" not in names(views["all"])
+    assert "Flush" in names(views["application"])
+    assert "DCP (Key) Mutation" not in names(views["application"])
+    assert "Get Quietly" not in names(views["application"])
+    assert names(views["cluster"]) == {"Cluster", "DCP (Key) Mutation", "Not expected"}
+    assert "Not expected" not in names(views["exclude_not_expected"])
+    assert "Flush" in names(views["exclude_not_expected"])
+    assert views["unmatched"]["links"] == []
+
+
+def test_boxplot_splits_application_and_cluster():
+    app = msg(1.0, opaque="0x1", opcode="0x00")
+    app_reply = msg(1.05, opaque="0x1", opcode="0x00", kind="resp")
+    app_reply["status"] = "0x0000"
+    node = msg(2.0, opaque="0x2", opcode="0x00", src="10.0.0.9")
+    node["sport"] = "11210"
+    node["dport"] = "11210"
+    node_reply = msg(2.2, opaque="0x2", opcode="0x00", kind="resp")
+    node_reply["status"] = "0x0000"
+    meta = msg(3.0, opaque="0x3", opcode="0xa2", src="10.0.0.9")
+    meta["sport"] = "11210"
+    meta["dport"] = "11210"
+    meta_reply = msg(3.4, opaque="0x3", opcode="0xa2", kind="resp")
+    meta_reply["status"] = "0x0000"
+    requests = [app, node, meta]
+    responses = [app_reply, node_reply, meta_reply]
+    charts = ac.build_charts(requests, ac.pair_messages(requests, responses), [], ["11210"], 5.0)
+    gets = [row for row in charts["boxplot"] if row["opcode"] == "0x00"]
+    assert {row["role"] for row in gets} == {"sdk", "cluster"}
+    sdk = next(row for row in gets if row["role"] == "sdk")
+    cluster_get = next(row for row in gets if row["role"] == "cluster")
+    assert sdk["box"][2] == 50.0
+    assert cluster_get["box"][2] == 200.0
+    meta_row = next(row for row in charts["boxplot"] if row["opcode"] == "0xa2")
+    assert meta_row["role"] == "cluster"
+    assert meta_row["box"][2] == 400.0

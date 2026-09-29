@@ -119,11 +119,11 @@ tcp.stream == 0 && tcp.analysis.lost_segment
 
 ## Filters the chart page copies
 
-The copy icon writes one of these. Paste it as it is. `couchbase &&` keeps the list on Couchbase packets. The **Errors** copy is wider, because a TCP hole often has no Couchbase header.
+The copy icon writes one of these. Paste it as it is. A `couchbase.` field already limits the list to Couchbase packets, so the button does not put `couchbase &&` in front of it. The **Errors** copy is wider, because a TCP hole often has no Couchbase header.
 
 | Where | What you get |
 |---|---|
-| Next to a document id | `couchbase && couchbase.key.logical_key == "invoice:12345"` |
+| Next to a document id | `couchbase.key.logical_key == "invoice:12345"` |
 | Next to an opaque on a slow or missing row | `tcp.stream == 121 && couchbase.opaque == 0x00c5a34d` |
 | Next to a stream number | `tcp.stream == 121` |
 | Next to a client address | `tcp.port == 11210 && ip.addr == 10.227.75.29` |

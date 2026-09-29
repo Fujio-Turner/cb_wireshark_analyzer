@@ -1,5 +1,13 @@
 # Release notes
 
+## 0.10.2
+
+Where calls went and the opcode spread can be limited to one side of the capture.
+
+- **Where calls went** has a menu. All is every call. Application Only and Cluster Only keep that side and pick the eight busiest commands again inside it. Exclude Not Expected drops commands that do not want a reply. Missing replies keeps commands that wanted an answer and have none in the file.
+- **Spread by command** has the same application and cluster menu. Blue is an application command. Rust is cluster. Each side keeps its own sixteen slowest tails, so a fast application command stays listed when cluster calls are slower. The linear/log control still drives this chart.
+- A copied document id is `couchbase.key.logical_key == "…"`. A `couchbase.` field already limits the list, so the button no longer writes `couchbase &&` in front of it. [CB_WIRESHARK.md](CB_WIRESHARK.md) matches that string.
+
 ## 0.10.1
 
 The ten busiest document ids show how often each key is asked for, and how big it is. **Per second** is the request count divided by the length of the capture. **Average body** is the mean total body length for that key. Each call contributes the larger of the request and the reply, so a 1 MB get is not hidden by the small request packet. A key asked for hundreds of times a second at about 1 MB is moving a lot of bytes even when only a few keys look slow.

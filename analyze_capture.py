@@ -1517,15 +1517,21 @@ def _heatmaps(unanswered: list[dict], capture_end: float) -> dict:
     return out
 
 
-def _boxplot(opcode_rtts: dict[str, list[float]]) -> list[dict]:
-    """Five numbers per command: fastest, p25, median, p75, p99."""
-    rows = []
-    for opcode, samples in opcode_rtts.items():
+def _boxplot(opcode_rtts: dict[tuple[str, str], list[float]]) -> list[dict]:
+    """Five numbers per command and side: fastest, p25, median, p75, p99.
+
+    Each side keeps its own slower tails, so Application Only still has
+    commands when cluster calls are the slowest in the capture.
+    """
+    grouped: dict[str, list[dict]] = {"sdk": [], "cluster": []}
+    for (role, opcode), samples in opcode_rtts.items():
         if not samples:
             continue
-        rows.append({
+        side = "cluster" if role == "cluster" else "sdk"
+        grouped[side].append({
             "opcode": opcode,
             "name": opcode_name(opcode),
+            "role": side,
             "n": len(samples),
             "box": [
                 _ms(min(samples)),
@@ -1535,12 +1541,20 @@ def _boxplot(opcode_rtts: dict[str, list[float]]) -> list[dict]:
                 _ms(percentile(samples, 0.99)),
             ],
         })
+    rows = []
+    for side in ("sdk", "cluster"):
+        side_rows = grouped[side]
+        side_rows.sort(key=lambda row: row["box"][4] or 0, reverse=True)
+        rows.extend(side_rows[:16])
     rows.sort(key=lambda row: row["box"][4] or 0, reverse=True)
-    return rows[:16]
+    return rows
 
 
-def _sankey(requests: list[dict], paired: dict) -> dict:
-    """Application or cluster, then the command, then how the call ended."""
+_SANKEY_OUTCOMES = ("Matched", "Not found", "Key exists", "Error status", "Missing reply", "Not expected")
+
+
+def _sankey_counts(requests: list[dict], paired: dict) -> Counter:
+    """One count per side, command, and ending."""
     unanswered = {id(msg) for msg in paired["unanswered"]}
     no_reply = {id(msg) for msg in paired.get("no_reply") or []}
     matched = {id(req): resp for req, resp in paired["matched"]}
@@ -1555,6 +1569,11 @@ def _sankey(requests: list[dict], paired: dict) -> dict:
         else:
             continue
         counts[(_role_name(msg), opcode_name(msg.get("opcode") or "") or "Unknown", outcome)] += 1
+    return counts
+
+
+def _sankey_view(counts: Counter) -> dict:
+    """Fold to the eight busiest commands in this set, then draw the bands."""
     totals: Counter = Counter()
     for (_role, name, _outcome), count in counts.items():
         totals[name] += count
@@ -1573,7 +1592,7 @@ def _sankey(requests: list[dict], paired: dict) -> dict:
             node_names.append(name)
     for name in list(dict.fromkeys(name for _role, name in role_opcode)):
         node_names.append(name)
-    for name in ("Matched", "Not found", "Key exists", "Error status", "Missing reply", "Not expected"):
+    for name in _SANKEY_OUTCOMES:
         if any(outcome == name for _opcode, outcome in opcode_outcome):
             node_names.append(name)
     nodes = [{"name": name, "itemStyle": {"color": _SANKEY_COLORS.get(name, "#5d8aa8")}} for name in node_names]
@@ -1585,6 +1604,31 @@ def _sankey(requests: list[dict], paired: dict) -> dict:
         for (name, outcome), count in opcode_outcome.items()
     ]
     return {"nodes": nodes, "links": links}
+
+
+def _sankey(requests: list[dict], paired: dict) -> dict:
+    """Application or cluster, then the command, then how the call ended.
+
+    `nodes` and `links` are the All view. `views` rebuilds that diagram for
+    each menu choice, and each view keeps its own eight busiest commands.
+    """
+    counts = _sankey_counts(requests, paired)
+    views = {
+        "all": _sankey_view(counts),
+        "application": _sankey_view(Counter(
+            {key: count for key, count in counts.items() if key[0] == "Application"}
+        )),
+        "cluster": _sankey_view(Counter(
+            {key: count for key, count in counts.items() if key[0] == "Cluster"}
+        )),
+        "exclude_not_expected": _sankey_view(Counter(
+            {key: count for key, count in counts.items() if key[2] != "Not expected"}
+        )),
+        "unmatched": _sankey_view(Counter(
+            {key: count for key, count in counts.items() if key[2] == "Missing reply"}
+        )),
+    }
+    return {"nodes": views["all"]["nodes"], "links": views["all"]["links"], "views": views}
 
 
 def _milli_summary(samples: list[float]) -> dict:
@@ -1955,6 +1999,7 @@ def build_charts(
     key_body_sum: Counter = Counter()
     key_body_n: Counter = Counter()
     opcode_rtts: dict[str, list[float]] = defaultdict(list)
+    opcode_role_rtts: dict[tuple[str, str], list[float]] = defaultdict(list)
     unanswered_keys = {id(msg) for msg in paired["unanswered"]}
     for msg in requests:
         ip = msg.get("src") or "(unknown)"
@@ -1982,8 +2027,9 @@ def build_charts(
                 key_unanswered[key] += 1
                 key_body_sum[key] += int(msg.get("body") or 0)
                 key_body_n[key] += 1
-    for _when, gap, key, opcode, body_in, body_out, _opaque, _stream, _requester, _role in matched_rtts:
+    for _when, gap, key, opcode, body_in, body_out, _opaque, _stream, _requester, role in matched_rtts:
         opcode_rtts[opcode].append(gap)
+        opcode_role_rtts[(role, opcode)].append(gap)
         if key:
             key_body_sum[key] += max(body_in, body_out)
             key_body_n[key] += 1
@@ -2106,7 +2152,7 @@ def build_charts(
         "scatter": (scatter := _scatters(paired))[0],
         "scatter_server": scatter[1],
         "heatmap": _heatmaps(paired["unanswered"], capture_end),
-        "boxplot": _boxplot(opcode_rtts),
+        "boxplot": _boxplot(opcode_role_rtts),
         "sankey": _sankey(requests, paired),
         "status_counts": _status_counter(
             [resp for _req, resp in paired["matched"]] + list(paired["resp_only"])

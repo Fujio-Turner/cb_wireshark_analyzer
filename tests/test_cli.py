@@ -101,7 +101,9 @@ def test_no_ai_writes_the_counted_note(tmp_path):
     assert "summary.md" in report
     assert 'id="note"' in report
     assert "jsdelivr" not in page
+    assert "vendor/echarts-gl.min.js" in page
     assert (out / "vendor" / "echarts.min.js").is_file()
+    assert (out / "vendor" / "echarts-gl.min.js").is_file()
     assert "matched" in (out / "summary.md").read_text()
     facts = json.loads((out / "facts.json").read_text())
     assert facts["counts"]["matched"] == 1

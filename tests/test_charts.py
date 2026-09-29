@@ -647,6 +647,8 @@ def test_packet_errors_keep_holes_and_skip_capture_duplicates():
         (2.0, "ack", "server", "cluster", "9"),
     ]
     assert rows[1]["kinds"] == ["ack", "retrans"]
+    assert charts["related"]["lanes"] == []
+    assert charts["related"]["points"] == []
 
 
 def test_boxplot_splits_application_and_cluster():
@@ -675,6 +677,114 @@ def test_boxplot_splits_application_and_cluster():
     meta_row = next(row for row in charts["boxplot"] if row["opcode"] == "0xa2")
     assert meta_row["role"] == "cluster"
     assert meta_row["box"][2] == 400.0
+
+
+def _answered(request, delay):
+    reply = msg(
+        request["time"] + delay,
+        stream=request["stream"],
+        opaque=request["opaque"],
+        opcode=request["opcode"],
+        key=request["key"],
+        src=request["dst"],
+        kind="resp",
+    )
+    reply["dst"] = request["src"]
+    reply["sport"] = request["dport"]
+    reply["dport"] = request["sport"]
+    reply["status"] = "0x0000"
+    return reply
+
+
+def test_related_keeps_a_path_when_a_hole_sits_beside_a_slow_call():
+    app = msg(1.0, stream="7", opaque="0xabc", opcode="0x00", key="doc", src="10.0.0.8")
+    cluster = msg(1.1, stream="8", opaque="0xdef", opcode="0xa2", key="doc", src="10.0.0.3")
+    cluster["dst"] = "10.0.0.8"
+    cluster["sport"] = "11210"
+    cluster["dport"] = "11210"
+    fast = msg(4.0, stream="7", opaque="0x11", opcode="0x00", key="doc", src="10.0.0.8")
+    other = msg(2.0, stream="3", opaque="0x22", opcode="0x00", key="doc", src="10.0.0.4")
+    other["dst"] = "10.0.0.5"
+    requests = [app, cluster, fast, other]
+    responses = [_answered(app, 0.08), _answered(cluster, 0.15), _answered(fast, 0.01), _answered(other, 0.01)]
+    charts = ac.build_charts(
+        requests,
+        ac.pair_messages(requests, responses),
+        [
+            {"time": 1.3, "stream": "7", "src": "10.0.0.3", "dst": "10.0.0.8", "sport": "11210", "dport": "4000", "lost": True, "retrans": False, "ack": False},
+            {"time": 1.35, "stream": "7", "src": "10.0.0.8", "dst": "10.0.0.3", "sport": "4000", "dport": "11210", "lost": False, "retrans": False, "ack": True},
+            {"time": 1.2, "stream": "7", "src": "10.0.0.8", "dst": "10.0.0.3", "sport": "4000", "dport": "11210", "lost": False, "retrans": True, "ack": False, "duplicate": True},
+            {"time": 3.5, "stream": "7", "src": "10.0.0.8", "dst": "10.0.0.3", "sport": "4000", "dport": "11210", "lost": False, "retrans": True, "ack": False},
+            {"time": 2.05, "stream": "3", "src": "10.0.0.5", "dst": "10.0.0.4", "sport": "11210", "dport": "4000", "lost": True, "retrans": False, "ack": False},
+            {"time": 1.0, "stream": "1", "sport": "11210", "dport": "4000", "lost": True, "retrans": False, "ack": False},
+        ],
+        ["11210"],
+        5.0,
+    )
+    related = charts["related"]
+    assert related["port"] == "11210"
+    assert related["window"] == 0.5
+    assert [(lane["lane"], lane["label"], lane["related"]) for lane in related["lanes"]] == [
+        (0, "10.0.0.3 ↔ 10.0.0.8", 2),
+    ]
+    by_kind = {}
+    for point in related["points"]:
+        assert "key" not in point
+        assert "doc" not in point.values()
+        by_kind.setdefault(point["kind"], []).append(point)
+    assert set(by_kind) == {"call", "lost", "ack", "retrans"}
+    calls = {(point["role"], point["name"], point["z"], point["burst"], point["near"], point["filter"]) for point in by_kind["call"]}
+    assert calls == {
+        ("sdk", "Get", ac._ms(0.08), 1, True, "tcp.stream == 7 && couchbase.opaque == 0xabc"),
+        ("cluster", "Set with Meta", ac._ms(0.15), 1, True, "tcp.stream == 8 && couchbase.opaque == 0xdef"),
+    }
+    lost = by_kind["lost"][0]
+    assert lost["lane"] == 0
+    assert lost["z"] == 0
+    assert lost["toward"] == "client"
+    assert lost["src"] == "10.0.0.3" and lost["dst"] == "10.0.0.8"
+    assert lost["near"] is True and lost["burst"] == 1
+    assert lost["filter"] == "tcp.stream == 7 && tcp.analysis.lost_segment"
+    ack = by_kind["ack"][0]
+    assert ack["toward"] == "server" and ack["burst"] == 1 and ack["near"] is True
+    assert ack["filter"] == "tcp.stream == 7 && tcp.analysis.ack_lost_segment"
+    retry = by_kind["retrans"][0]
+    assert retry["t"] == round(3.5, 3)
+    assert retry["burst"] == 2 and retry["near"] is False and retry["z"] == 0
+    assert retry["filter"] == "tcp.stream == 7 && tcp.analysis.retransmission && tcp.analysis.rto >= 0.001"
+    assert all(point["t"] != round(4.0, 3) for point in related["points"])
+
+    alone = msg(1.0, stream="5", opaque="0x5", src="10.0.0.6")
+    alone_charts = ac.build_charts([alone], ac.pair_messages([alone], [_answered(alone, 0.2)]), [], ["11210"], 5.0)
+    assert alone_charts["related"]["lanes"] == []
+
+
+def test_related_keeps_the_overlapping_call_when_the_row_is_capped():
+    near = msg(1.0, stream="1", opaque="0x1", src="10.0.0.2")
+    requests = [near]
+    responses = [_answered(near, 0.08)]
+    for index in range(40):
+        request = msg(10.0 + index, stream="2", opaque=f"0x{index + 2:x}", src="10.0.0.2")
+        requests.append(request)
+        responses.append(_answered(request, 0.2))
+    loss = {
+        "time": 1.2,
+        "stream": "1",
+        "src": "10.0.0.2",
+        "dst": "10.0.0.3",
+        "sport": "4000",
+        "dport": "11210",
+        "lost": True,
+        "retrans": False,
+        "ack": False,
+    }
+    charts = ac.build_charts(requests, ac.pair_messages(requests, responses), [loss], ["11210"], 60.0)
+    calls = [point for point in charts["related"]["points"] if point["kind"] == "call"]
+    assert len(calls) == ac._RELATED_CALLS
+    kept = [point for point in calls if point["t"] == round(1.0, 3)]
+    assert len(kept) == 1
+    assert kept[0]["near"] is True
+    assert kept[0]["z"] == ac._ms(0.08)
 
 
 def test_side_tally_skips_an_empty_key_and_keeps_a_zero():

@@ -859,7 +859,10 @@ def _split_repeated(value: str) -> list[str] | None:
     return value.split(FIELD_AGG)
 
 
-def _loss_event(time_raw: str, stream: str, sport: str, dport: str, lost: str, retrans: str, ack: str) -> dict | None:
+def _loss_event(
+    time_raw: str, stream: str, sport: str, dport: str, lost: str, retrans: str, ack: str,
+    src: str = "", dst: str = "",
+) -> dict | None:
     if not (lost or retrans or ack):
         return None
     try:
@@ -869,6 +872,8 @@ def _loss_event(time_raw: str, stream: str, sport: str, dport: str, lost: str, r
     return {
         "time": when,
         "stream": stream,
+        "src": src,
+        "dst": dst,
         "sport": sport,
         "dport": dport,
         "lost": bool(lost),
@@ -891,7 +896,9 @@ def messages_from_field_line(line: str) -> tuple[list[dict], str | None, dict | 
         cols.extend([""] * (width - len(cols)))
     frame, time_raw, stream, src, sport, dst, dport = cols[:_PREFIX_COLUMNS]
     flag_at = _PREFIX_COLUMNS + _CB_COLUMNS
-    loss = _loss_event(time_raw, stream, sport, dport, cols[flag_at], cols[flag_at + 1], cols[flag_at + 2])
+    loss = _loss_event(
+        time_raw, stream, sport, dport, cols[flag_at], cols[flag_at + 1], cols[flag_at + 2], src, dst,
+    )
     # Most frames on this port are TCP with no Couchbase header. Stop before
     # splitting the nineteen Couchbase columns.
     if not cols[_PREFIX_COLUMNS] and not cols[_PREFIX_COLUMNS + 1] and not cols[_PREFIX_COLUMNS + 2]:
@@ -1315,6 +1322,9 @@ def _rtt_summary(samples: list[float]) -> dict:
 
 _SLOW_SECONDS = 0.05
 _SCATTER_CAP = 2000
+_RELATED_PATHS = 12
+_RELATED_CALLS = 40
+_RELATED_ISSUES = 80
 _HEATMAP_LIMIT = 12
 _SANKEY_OPCODES = 8
 _DURABILITY_NAMES = {
@@ -1437,6 +1447,183 @@ def _scatters(paired: dict) -> tuple[list[dict], list[dict]]:
     for point in _spread_points(timed[half:], _SCATTER_CAP - len(chosen)):
         chosen[id(point)] = point
     return slow, list(chosen.values())
+
+
+def _host_pair(src: str, dst: str) -> tuple[str, str] | None:
+    """The two addresses, order-independent, so a reply shares the request's path."""
+    left = str(src or "").strip()
+    right = str(dst or "").strip()
+    if not left or not right or left == right:
+        return None
+    return (left, right) if left < right else (right, left)
+
+
+def _within(times: list[float], when: float, window: float) -> bool:
+    index = bisect.bisect_left(times, when)
+    if index < len(times) and times[index] - when <= window:
+        return True
+    return bool(index) and when - times[index - 1] <= window
+
+
+def _issue_kind(event: dict) -> str | None:
+    if event.get("time") is None or event.get("duplicate"):
+        return None
+    if event.get("lost"):
+        return "lost"
+    if event.get("ack"):
+        return "ack"
+    if event.get("retrans"):
+        return "retrans"
+    return None
+
+
+def _keep_related(rows: list[dict], cap: int, *, slowest: bool) -> list[dict]:
+    """Keep the points that sit next to the other kind, then fill from the rest."""
+    if len(rows) <= cap:
+        return rows
+    near = [row for row in rows if row.get("near")]
+    if len(near) >= cap:
+        if slowest:
+            near.sort(key=lambda row: row["z"] or 0, reverse=True)
+            return near[:cap]
+        return _spread_points(near, cap)
+    rest = [row for row in rows if not row.get("near")]
+    if slowest:
+        rest.sort(key=lambda row: row["z"] or 0, reverse=True)
+        return near + rest[: cap - len(near)]
+    return near + _spread_points(rest, cap - len(near))
+
+
+def _related(paired: dict, loss_events: list[dict], ports: list[str]) -> dict:
+    """Paths where a packet issue and a slow call share the two hosts on the KV port.
+
+    Time, the host pair, and the round trip stay as the three axes. A packet
+    issue has no round trip of its own, so it sits at zero on that axis.
+    """
+    portset = set(ports) or {KV_PORT}
+    window = _ERROR_WINDOW_SECONDS
+    calls: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for req, resp in paired["matched"]:
+        gap = resp["time"] - req["time"]
+        if gap < _SLOW_SECONDS:
+            continue
+        pair = _host_pair(req.get("src"), req.get("dst"))
+        if pair is None:
+            continue
+        sport = str(req.get("sport") or "")
+        dport = str(req.get("dport") or "")
+        if sport not in portset and dport not in portset:
+            continue
+        calls[pair].append({
+            "t": round(float(req["time"]), 3),
+            "raw_t": float(req["time"]),
+            "z": _ms(gap),
+            "kind": "call",
+            "role": "cluster" if _role_name(req) == "Cluster" else "sdk",
+            "name": opcode_name(req.get("opcode") or ""),
+            "toward": "",
+            "stream": str(req.get("stream") or ""),
+            "opaque": str(req.get("opaque") or ""),
+            "src": str(req.get("src") or ""),
+            "dst": str(req.get("dst") or ""),
+            "near": False,
+        })
+    issues: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for event in loss_events:
+        kind = _issue_kind(event)
+        if kind is None:
+            continue
+        sport = str(event.get("sport") or "")
+        dport = str(event.get("dport") or "")
+        if sport not in portset and dport not in portset:
+            continue
+        pair = _host_pair(event.get("src"), event.get("dst"))
+        if pair is None:
+            continue
+        issues[pair].append({
+            "t": round(float(event["time"]), 3),
+            "raw_t": float(event["time"]),
+            "z": 0,
+            "kind": kind,
+            "role": "",
+            "name": "",
+            "toward": "client" if sport in portset else "server",
+            "stream": str(event.get("stream") or ""),
+            "opaque": "",
+            "src": str(event.get("src") or ""),
+            "dst": str(event.get("dst") or ""),
+            "near": False,
+        })
+    call_times = {pair: [row["raw_t"] for row in rows] for pair, rows in calls.items()}
+    for rows in call_times.values():
+        rows.sort()
+    near_count: Counter = Counter()
+    for pair, rows in issues.items():
+        times = call_times.get(pair) or []
+        rows.sort(key=lambda row: row["raw_t"])
+        if not times:
+            continue
+        for row in rows:
+            if _within(times, row["raw_t"], window):
+                row["near"] = True
+                near_count[pair] += 1
+    for pair, rows in calls.items():
+        times = [row["raw_t"] for row in issues.get(pair, [])]
+        times.sort()
+        if not times:
+            continue
+        for row in rows:
+            row["near"] = _within(times, row["raw_t"], window)
+    ranked = sorted(
+        (pair for pair in issues if near_count[pair]),
+        key=lambda pair: (-near_count[pair], -len(issues[pair]), pair),
+    )
+    lanes = []
+    points = []
+    for index, pair in enumerate(ranked[:_RELATED_PATHS]):
+        lanes.append({
+            "lane": index,
+            "label": f"{pair[0]} ↔ {pair[1]}",
+            "port": KV_PORT,
+            "related": near_count[pair],
+        })
+        chosen = _keep_related(calls.get(pair, []), _RELATED_CALLS, slowest=True)
+        chosen += _keep_related(issues[pair], _RELATED_ISSUES, slowest=False)
+        chosen.sort(key=lambda row: row["raw_t"])
+        burst = 0
+        previous = None
+        for row in chosen:
+            if previous is None or row["raw_t"] - previous > window:
+                burst += 1
+            previous = row["raw_t"]
+            stream = row["stream"]
+            if row["kind"] == "call" and stream and row["opaque"]:
+                copied = f"tcp.stream == {stream} && couchbase.opaque == {row['opaque']}"
+            elif stream:
+                flag = {
+                    "lost": "tcp.analysis.lost_segment",
+                    "ack": "tcp.analysis.ack_lost_segment",
+                    "retrans": "tcp.analysis.retransmission && tcp.analysis.rto >= 0.001",
+                }[row["kind"]]
+                copied = f"tcp.stream == {stream} && {flag}"
+            else:
+                copied = ""
+            points.append({
+                "t": row["t"],
+                "lane": index,
+                "z": row["z"],
+                "kind": row["kind"],
+                "role": row["role"],
+                "name": row["name"],
+                "toward": row["toward"],
+                "stream": stream,
+                "src": row["src"],
+                "dst": row["dst"],
+                "near": row["near"],
+                "burst": burst,
+                "filter": copied,
+            })
+    return {"port": KV_PORT, "window": window, "lanes": lanes, "points": points}
 
 
 def _heatmaps(unanswered: list[dict], capture_end: float) -> dict:
@@ -2258,6 +2445,7 @@ def build_charts(
         "scatter": (scatter := _scatters(paired))[0],
         "scatter_server": scatter[1],
         "packet_errors": _packet_errors(loss_events, ports, ends),
+        "related": _related(paired, loss_events, ports),
         "heatmap": _heatmaps(paired["unanswered"], capture_end),
         "boxplot": _boxplot(opcode_role_rtts),
         "sankey": _sankey(requests, paired),
@@ -4741,7 +4929,11 @@ def write_charts(out: Path, charts: dict) -> None:
 
 def print_dry_run(out: Path, args: argparse.Namespace, facts: dict) -> None:
     counts = facts["counts"]
-    files = ["facts.json", "charts.json", "index.html", "summary.html", "index.original.html", "vendor/echarts.min.js", "orphans.tsv", "reqs.pdus.tsv", "resps.tsv", "summary.md"]
+    files = [
+        "facts.json", "charts.json", "index.html", "summary.html", "index.original.html",
+        "vendor/echarts.min.js", "vendor/echarts-gl.min.js",
+        "orphans.tsv", "reqs.pdus.tsv", "resps.tsv", "summary.md",
+    ]
     if not args.no_ai:
         files.append("summary.computed.md")
     print("dry-run")

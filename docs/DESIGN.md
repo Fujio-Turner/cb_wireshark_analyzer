@@ -132,6 +132,7 @@ Diagnosis series are also precomputed:
 
 - `scatter` is matched calls of at least 50 ms, capped. `scatter_server` is the same calls against `couchbase.flex_frame.frame.duration` when that field is present. The duration is microseconds.
 - `packet_errors` is one mark per frame for a lost segment, an ack-lost segment, or a retry whose RTO is at least 1 ms. The mark carries a role so the page can color application and cluster separately.
+- `related` is the same-path chart. A lane is one unordered pair of addresses on port 11210 that had a packet issue within 0.5 s of a matched call of at least 50 ms. Time, that host pair, and the round trip are the three axes. A packet issue sits at round trip 0. Up to twelve lanes, and the points on a lane are capped after the overlapping ones are kept. The card lists each kept pair and that overlap count. The page draws the points with scatter3D. It is not a time-bucket chart.
 - `heatmap` is missing replies by time, for the client view and the command view.
 - `boxplot` is one row per `(role, opcode)`, the sixteen slowest p99 tails on each side.
 - `sankey.views` holds `all`, `application`, `cluster`, `exclude_not_expected`, and `unmatched`. Each view refolds to its own eight busiest commands. `unmatched` is "Missing reply" only. "Not expected" is one-way traffic and is a different outcome. Not found, key exists, and error status are other outcomes.
@@ -151,7 +152,7 @@ Replica reads are a paragraph, not a chart. `replica_reads` counts Get Replica (
 
 ## The chart page
 
-`web/index.html` is one document. The `<style>` block is the theme. The `<body>` is the sections. One `<script>` at the bottom fetches `charts.json` and draws. There is no module bundler, no framework, and no second chart runtime. ECharts is loaded from `vendor/echarts.min.js` next to the page.
+`web/index.html` is one document. The `<style>` block is the theme. The `<body>` is the sections. One `<script>` at the bottom fetches `charts.json` and draws. There is no module bundler and no framework. ECharts is loaded from `vendor/echarts.min.js`, then `vendor/echarts-gl.min.js` for the same-path scatter3D. Both files sit next to the page.
 
 `summary.html` repeats the header, the colors, and the repo corner so the note feels like the same report. Its script is a small Markdown renderer: headings, lists, tables, fenced code, bold, code spans, and `http` links. It does not load a Markdown library. A `code` span that looks like a display filter gets a copy button. `?note=summary.computed.md` selects the counted note. The chart page shows that link after a `HEAD` request succeeds.
 
@@ -159,7 +160,7 @@ Replica reads are a paragraph, not a chart. `replica_reads` counts Get Replica (
 
 `fetch("charts.json")` stores the payload in `data` and calls `boot`. `boot` runs `echarts.init` on each plot div and keeps the instances in the `charts` object, keyed by element id. The plot div and a heading must not share an id. The NIC card's heading is `nic` and the plot is `nic-gauge`, because initializing ECharts on the heading produced a zero-height canvas.
 
-The first paint is `drawTiles`, `drawFixed`, `drawTime`, `drawHeat`, and `drawScatter`. Menus call the one `draw*` they own. The linear/log control calls `drawFixed`, `drawTime`, `drawBoxes`, and `drawScatter`.
+The first paint is `drawTiles`, `drawFixed`, `drawTime`, `drawHeat`, `drawScatter`, and `drawRelated`. Menus call the one `draw*` they own. The linear/log control calls `drawFixed`, `drawTime`, `drawBoxes`, and `drawScatter`.
 
 `yType` and `yValue` implement that control. Log mode turns a non-positive value into `null` so ECharts leaves a gap. Pies and the NIC gauge ignore the control. The scatter's horizontal axis stays linear in time mode and follows the control only in server-time mode.
 
@@ -169,7 +170,7 @@ The first paint is `drawTiles`, `drawFixed`, `drawTime`, `drawHeat`, and `drawSc
 | --- | --- | --- |
 | Timings | `#spread`, `#rtt`, `#tail`, `#range`, `#tiles` | `drawFixed`, `drawTime`, `drawTiles` |
 | Operations | `#mix`, `#opcodes`, `#opcodes-seen` | `drawTime`, the opcode table in `drawFixed` |
-| Diagnosis | `#scatter`, `#heat`, `#boxes`, `#paths`, `#statuses`, `#durable`, `#persist`, `#vbars`, `#snaps`, `#buffer` | `drawScatter`, `drawHeat`, `drawBoxes`, `drawPaths`, `drawStatuses`, `drawDurability`, `drawPersist`, `drawVbuckets`, `drawSnapshots`, `drawBuffer` |
+| Diagnosis | `#scatter`, `#related`, `#heat`, `#boxes`, `#paths`, `#statuses`, `#durable`, `#persist`, `#vbars`, `#snaps`, `#buffer` | `drawScatter`, `drawRelated`, `drawHeat`, `drawBoxes`, `drawPaths`, `drawStatuses`, `drawDurability`, `drawPersist`, `drawVbuckets`, `drawSnapshots`, `drawBuffer` |
 | Packets | `#packets`, `#issues`, `#gaps` | packet bars, `drawTime`, `drawGaps` |
 | Clients | `#flow`, `#cluster-ops`, `#cluster-conns`, fleet and the client picker | `drawTime`, `drawCluster`, `drawClientFleet` |
 | Documents | `#nic-gauge`, `#body`, `#top-asked`, `#top-slow` | `drawGauge`, `drawTime`, the two tabbed tables |
@@ -204,7 +205,7 @@ echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range,
 
 `#heat` is in the connect group, so its slider follows the category charts. It also receives stake lines from `applyStakes`.
 
-These charts do not take stakes or the shared slider: the opcode pie (`#cluster-ops`), the connection bars (`#cluster-conns`), the packet bars, the box plot, the sankey, the gauge, and the status, durability, and vBucket cards.
+These charts do not take stakes or the shared slider: the opcode pie (`#cluster-ops`), the connection bars (`#cluster-conns`), the packet bars, the box plot, the sankey, the gauge, the status, durability, and vBucket cards, and the same-path chart (`#related`). Dragging that chart turns it. A double-click there does not drop a stake.
 
 ### Stakes
 
@@ -252,6 +253,8 @@ Expand wraps each `.chart` in a button that moves the node into `#lightbox` and 
 
 Packet-error diamonds sit on a low hidden value so they share the capture-time axis with the slow calls. Their height is not a round trip. The tooltip says which flag and which direction.
 
+Same path colors a call with the application blue or the cluster rust. A lost segment is `#ff2d2d`, an ack-lost segment is `#e67e22`, and a retry is `#6c3483`. Those diamonds sit at round trip 0, on the floor of the host-pair row. The chart background is the paper color `#f6f3ee`.
+
 ## Tests
 
 `tests/` imports `analyze_capture` and feeds it small message lists. `python3 analyze_capture.py --self-test` and `python3 -m pytest -q` run the same suite. See [tests/README.md](../tests/README.md).
@@ -266,7 +269,7 @@ Fixtures use generic keys and addresses. Capture names, customer hostnames, and 
 | --- | --- |
 | A new counted field | The tshark column list if the packet must be read, then the message dict, then `build_charts` or `build_facts`. Add the draw or the table cell in `web/index.html`. |
 | An opcode name, description, or status | `couchbase_opcodes.py`. The walk imports those tables. |
-| A new time chart | A plot div, an id in `boot`, `echarts.connect`, and `timeChartIds`, and `pin` inside its draw. |
+| A new time chart | A plot div, an id in `boot`, `echarts.connect`, and `timeChartIds`, and `pin` inside its draw. Same path (`#related`) is a scatter3D and stays out of that group. |
 | A new menu on data Python already computed | A `<select>` and a branch in the existing `draw*` function. |
 | A new Wireshark copy | Python when the filter depends on pairing or TCP holes. The page when it is a field already on the row. Keep the string in [CB_WIRESHARK.md](../CB_WIRESHARK.md) in step with the code. |
 | A sentence the model must respect | `facts_brief` and the system prompt together. The page's next-steps list is `next_questions`, which is counted and does not wait for the model. |

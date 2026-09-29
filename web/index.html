@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Couchbase capture</title>
   <script src="vendor/echarts.min.js"></script>
+  <script src="vendor/echarts-gl.min.js"></script>
   <style>
     :root {
       color-scheme: light;
@@ -236,6 +237,7 @@
     .tab.on { background: #1c2430; border-color: #1c2430; color: #f6f3ee; }
     .chart { height: 340px; }
     .chart.tall { height: 460px; }
+    .chart.space { height: 520px; }
     .card .switch { margin: 0 8px 8px; color: var(--muted); font-size: 13px; }
     .card .switch select { margin-left: 6px; }
     .side-key { display: inline-flex; gap: 12px; margin-left: 14px; color: var(--ink); }
@@ -478,6 +480,7 @@
       main { margin: 0; padding: 18px 16px 40px; }
       .group { scroll-margin-top: 230px; }
       .chart, .card, .glossary dt { scroll-margin-top: 280px; }
+      .chart.space { height: 420px; }
       #lightbox { padding: 52px 12px 12px; }
       #lightbox-close { top: 6px; right: 8px; }
       .dock {
@@ -627,6 +630,7 @@
         <p>Where a slow call waited, which replies are odd, and whether replication is catching up.</p>
         <nav class="chips" aria-label="Diagnosis">
           <a href="#slow-scatter">Slow calls</a>
+          <a href="#same-path">Same path</a>
           <a href="#missing-heat">Missing replies</a>
           <a href="#opcode-box">Spread by command</a>
           <a href="#call-flow">Where calls went</a>
@@ -659,6 +663,12 @@
             <div id="heat" class="chart tall"></div>
           </section>
         </div>
+        <section class="card">
+          <h2 id="same-path">Same path</h2>
+          <p class="note" id="same-path-note">Time, the two hosts on port 11210, and the round trip. Packet issues sit on the floor of that row. <a href="#same-path-word">How to read this</a>.</p>
+          <p class="note" id="same-path-rows" hidden></p>
+          <div id="related" class="chart space"></div>
+        </section>
         <div class="grid two">
           <section class="card">
             <h2 id="opcode-box">Spread by command</h2>
@@ -906,6 +916,7 @@
           <a href="#lost-response">Lost response</a>
           <a href="#not-expected">Not expected</a>
           <a href="#slow-scatter-word">Slow-call scatter</a>
+          <a href="#same-path-word">Same path</a>
           <a href="#server-time">Server time</a>
           <a href="#missing-heat-word">Missing heatmap</a>
           <a href="#opcode-box-word">Opcode box</a>
@@ -956,6 +967,8 @@
           </dd>
           <dt id="slow-scatter-word">Slow-call scatter</dt>
           <dd>Each dot is one matched call that took 50 ms or more, up to the slowest 2,000. Horizontal is when the request started. Vertical is the round trip. Blue is an application call. Rust is cluster replication. A diamond is a packet error at that same second: a lost segment, a lost acknowledgement, or a retry that waited out a timeout. Bright blue is an application error. Bright red is a cluster error. The diamond sits low in the chart so it lines up in time with the calls. Its height is not a round trip. A second copy of the same segment within a millisecond is a capture duplicate and is left off. In this time view, double-click drops a stake, the same line the other time charts use. The slider under the chart is that same time window: drag it here or on any other time chart and this one follows. Server time uses a different horizontal axis, so that view keeps its own scale. A p99 line can be three calls or a cloud of them. The dots show which. A vertical stack is many slow calls in the same moment.</dd>
+          <dt id="same-path-word">Same path</dt>
+          <dd>Three axes. Horizontal time is seconds from the first packet. The depth row is one pair of addresses that talked on port 11210, written <code>10.0.0.2 ↔ 10.0.0.3</code>. Height is the round trip, in milliseconds, of a matched call that took 50 ms or more. A packet issue has no round trip, so a lost segment, a lost acknowledgement, or a retry sits on the floor of that same row. The row is kept when at least one of those issues falls within half a second of a slow call on those hosts, the same window the Errors column uses. Up to twelve rows, the ones with the most of those overlaps first. A burst is the kept points on that row that sit within half a second of one another. Drag to turn the chart. Click a point to copy its Wireshark filter. This view does not follow the time-bucket slider, because its axes are not those buckets.</dd>
           <dt id="server-time">Server time</dt>
           <dd>Choose “server time against round trip” on the slow-call chart. Horizontal is <code>couchbase.flex_frame.frame.duration</code>, the microseconds the server held the command from receive to send. Vertical is the round trip in milliseconds. A dot near the diagonal means the server was doing the work. A dot high and to the left was waiting outside the server: the network, the client, or a durability hold. The chart keeps the slowest calls that reported a duration and a spread of the others, about 2,000 dots. An empty chart means this capture did not report that flex frame. That is “not reported,” not a duration of zero. Wireshark 4.6 prints the field in microseconds.</dd>
           <dt id="missing-heat-word">Missing heatmap</dt>
@@ -1767,6 +1780,126 @@
       commitChart(charts.scatter, option, true);
       charts.scatter.off("click");
       charts.scatter.on("click", (params) => {
+        const filter = params.data && params.data.filter;
+        if (filter) copyFilter(filter);
+      });
+    }
+
+    function drawRelated() {
+      if (!charts.related) return;
+      const related = data.related || {};
+      const lanes = related.lanes || [];
+      const points = related.points || [];
+      const note = document.getElementById("same-path-note");
+      const rows = document.getElementById("same-path-rows");
+      const how = ' <a href="#same-path-word">How to read this</a>.';
+      if (!lanes.length || !points.length) {
+        if (note) note.innerHTML = "No packet issue fell within half a second of a slow call on the same two hosts." + how;
+        if (rows) {
+          rows.hidden = true;
+          rows.textContent = "";
+        }
+        commitChart(charts.related, emptyChart("No shared path"), true);
+        return;
+      }
+      const windowSeconds = related.window || 0.5;
+      if (note) {
+        note.innerHTML = "Each row is two hosts on port " + escapeHtml(related.port || "11210")
+          + ". Height is the round trip. Packet issues sit on the floor. A row is kept when an issue and a slow call on those hosts fall within "
+          + windowSeconds + " s. Drag to turn the chart. Click a point to copy its filter." + how;
+      }
+      if (rows) {
+        rows.hidden = false;
+        rows.innerHTML = lanes.map((lane) => escapeHtml(lane.label) + " · " + lane.related + (lane.related === 1 ? " overlap" : " overlaps")).join("<br>");
+      }
+      const labels = lanes.map((lane) => lane.label);
+      const kinds = {
+        sdk: { name: "Application", color: "#1a5276", symbol: "circle", size: 12 },
+        cluster: { name: "Cluster", color: "#c45c26", symbol: "circle", size: 12 },
+        lost: { name: "Lost segment", color: "#ff2d2d", symbol: "diamond", size: 9 },
+        ack: { name: "Ack lost", color: "#e67e22", symbol: "diamond", size: 9 },
+        retrans: { name: "Retry", color: "#6c3483", symbol: "diamond", size: 9 }
+      };
+      const grouped = { sdk: [], cluster: [], lost: [], ack: [], retrans: [] };
+      points.forEach((point) => {
+        const key = point.kind === "call" ? (point.role === "cluster" ? "cluster" : "sdk") : point.kind;
+        if (!grouped[key]) return;
+        grouped[key].push({
+          value: [point.t, point.lane, point.z],
+          kind: point.kind,
+          role: point.role,
+          command: point.name,
+          toward: point.toward,
+          stream: point.stream,
+          src: point.src,
+          dst: point.dst,
+          near: point.near,
+          burst: point.burst,
+          filter: point.filter,
+          lane: labels[point.lane] || ""
+        });
+      });
+      const axis = {
+        nameTextStyle: { color: "#5c6670", fontSize: 12 },
+        axisLabel: { color: "#1c2430", fontSize: 11, margin: 14 },
+        axisLine: { lineStyle: { color: "#c4b8a8" } }
+      };
+      const depth = Math.max(110, labels.length * 52);
+      commitChart(charts.related, {
+        tooltip: {
+          formatter: (item) => {
+            const point = item.data || {};
+            const lines = [escapeHtml(item.seriesName)];
+            if (point.kind === "call") {
+              lines.push(escapeHtml(point.command || "Call") + " · round trip " + point.value[2] + " ms");
+            } else {
+              lines.push(point.toward === "client" ? "Toward the client" : "Toward the server");
+            }
+            lines.push("at " + point.value[0] + " s");
+            lines.push(escapeHtml(point.lane) + " · port " + escapeHtml(related.port || "11210"));
+            if (point.stream) lines.push("stream " + escapeHtml(point.stream));
+            lines.push(point.src && point.dst
+              ? escapeHtml(point.src) + " → " + escapeHtml(point.dst)
+              : "");
+            lines.push("burst " + point.burst + (point.near ? " · within " + windowSeconds + " s of the other kind" : ""));
+            return lines.filter(Boolean).join("<br/>");
+          }
+        },
+        legend: { top: 4, textStyle: { color: "#1c2430" } },
+        xAxis3D: Object.assign({ type: "value", name: "seconds", nameGap: 30 }, axis),
+        yAxis3D: Object.assign({ type: "category", data: labels, name: "hosts", nameGap: 42 }, axis),
+        zAxis3D: Object.assign({ type: "value", name: "round trip ms", nameGap: 36 }, axis),
+        grid3D: {
+          boxWidth: 150,
+          boxDepth: depth,
+          boxHeight: 80,
+          top: 20,
+          bottom: 80,
+          left: 70,
+          right: 40,
+          environment: "#f6f3ee",
+          axisPointer: { show: true, lineStyle: { color: "#24576e" } },
+          viewControl: {
+            projection: "perspective",
+            alpha: 28,
+            beta: 28,
+            distance: Math.min(560, 260 + labels.length * 36),
+            minDistance: 120,
+            maxDistance: 720
+          },
+          light: { main: { intensity: 1.05, shadow: false }, ambient: { intensity: 0.55 } }
+        },
+        series: Object.keys(kinds).filter((key) => grouped[key].length).map((key) => ({
+          name: kinds[key].name,
+          type: "scatter3D",
+          symbol: kinds[key].symbol,
+          symbolSize: kinds[key].size,
+          itemStyle: { color: kinds[key].color, opacity: 0.92 },
+          data: grouped[key]
+        }))
+      }, true);
+      charts.related.off("click");
+      charts.related.on("click", (params) => {
         const filter = params.data && params.data.filter;
         if (filter) copyFilter(filter);
       });
@@ -3123,7 +3256,7 @@
     }
 
     function boot() {
-      ["spread", "mix", "rtt", "tail", "range", "issues", "body", "flow", "opcodes", "packets", "client-share", "client-rate", "client-port-share", "cluster-ops", "cluster-conns", "scatter", "heat", "boxes", "paths", "statuses", "durable", "vbars", "snaps", "buffer", "persist", "nic-gauge"].forEach((id) => {
+      ["spread", "mix", "rtt", "tail", "range", "issues", "body", "flow", "opcodes", "packets", "client-share", "client-rate", "client-port-share", "cluster-ops", "cluster-conns", "scatter", "related", "heat", "boxes", "paths", "statuses", "durable", "vbars", "snaps", "buffer", "persist", "nic-gauge"].forEach((id) => {
         charts[id] = echarts.init(document.getElementById(id));
       });
       echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body, charts.flow, charts.snaps, charts.buffer, charts.persist, charts.heat]);
@@ -3342,6 +3475,7 @@
       drawTime();
       drawHeat();
       drawScatter();
+      drawRelated();
     }
 
     const glossaryJump = {

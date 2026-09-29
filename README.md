@@ -76,7 +76,7 @@ cd /path/to/capture-report
 python3 -m http.server
 ```
 
-Open `http://127.0.0.1:8000/`. Drop `--no-ai` to add the note. With the default config that calls Ollama. To send the same brief to your own API, set `ai.provider` to `openai` as shown below. The virtual-machine section and the Docker section have the full install steps. To record a capture on the Couchbase node, follow [CB_TCPDUMP.md](CB_TCPDUMP.md). To jump from a slow row back to Wireshark, use the stream and opaque with the filters in [CB_WIRESHARK.md](CB_WIRESHARK.md).
+Open `http://127.0.0.1:8000/`. Drop `--no-ai` to add the note. With the default config that calls Ollama. To send the same brief to your own API, set `ai.provider` to `openai` as shown below. The virtual-machine section and the Docker section have the full install steps. To record a capture on the Couchbase node, follow [CB_TCPDUMP.md](CB_TCPDUMP.md). To jump from a slow row back to Wireshark, use the stream and opaque with the filters in [CB_WIRESHARK.md](CB_WIRESHARK.md). How the script and the pages are put together is in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Config
 

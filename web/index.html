@@ -1038,18 +1038,22 @@
     let stakes = [];
     let lightboxHome = null;
 
-    function scale() {
-      return document.getElementById("scale").value;
-    }
+    const scaleInput = document.getElementById("scale");
+    const bucketInput = document.getElementById("bucket");
+    let logScale = scaleInput.value === "log";
+    let zoomStart = 0;
+    let zoomEnd = 100;
+    let scatterLinked = false;
+    const stakeSeriesIndex = new WeakMap();
 
     function yValue(value) {
       if (value == null) return null;
-      if (scale() === "log" && value <= 0) return null;
+      if (logScale && value <= 0) return null;
       return value;
     }
 
     function yType() {
-      return scale() === "log" ? "log" : "value";
+      return logScale ? "log" : "value";
     }
 
     function labels(rows) {
@@ -1057,15 +1061,29 @@
     }
 
     function currentRows() {
-      return (data && data.buckets && data.buckets[document.getElementById("bucket").value]) || [];
+      return (data && data.buckets && data.buckets[bucketInput.value]) || [];
+    }
+
+    function nearestRow(rows, second) {
+      const count = rows.length;
+      if (!count) return null;
+      let low = 0;
+      let high = count - 1;
+      while (low < high) {
+        const mid = (low + high) >> 1;
+        if (rows[mid].t < second) low = mid + 1;
+        else high = mid;
+      }
+      if (low === 0) return rows[0];
+      const left = rows[low - 1];
+      const right = rows[low];
+      if (Math.abs(left.t - second) <= Math.abs(right.t - second)) return left;
+      return right;
     }
 
     function stakeMark(rows) {
       const marks = stakes.map((second, index) => {
-        let chosen = null;
-        rows.forEach((row) => {
-          if (!chosen || Math.abs(row.t - second) < Math.abs(chosen.t - second)) chosen = row;
-        });
+        const chosen = nearestRow(rows, second);
         if (!chosen) return null;
         const color = stakeColors[index % stakeColors.length];
         const pi = interestIndex(second);
@@ -1105,11 +1123,7 @@
     }
 
     function snappedStake(second) {
-      const rows = currentRows();
-      let chosen = null;
-      rows.forEach((row) => {
-        if (!chosen || Math.abs(row.t - second) < Math.abs(chosen.t - second)) chosen = row;
-      });
+      const chosen = nearestRow(currentRows(), second);
       return chosen ? chosen.t : second;
     }
 
@@ -1197,16 +1211,29 @@
       };
     }
 
+    function commitChart(chart, option, replace) {
+      chart.setOption(option, replace);
+      if (chart === charts.scatter) {
+        scatterLinked = !!(option && option.dataZoom && option.dataZoom.length);
+      }
+      const series = option && option.series;
+      if (!series || !series.length) {
+        stakeSeriesIndex.delete(chart);
+        return;
+      }
+      const last = series[series.length - 1];
+      if (last && last.name === STAKE_SERIES) stakeSeriesIndex.set(chart, series.length - 1);
+      else stakeSeriesIndex.delete(chart);
+    }
+
     function paintStake(chart, markLine) {
       if (!chart) return;
-      const series = chart.getOption().series || [];
-      const index = series.findIndex((item) => item.name === STAKE_SERIES);
-      if (index === -1) return;
-      chart.setOption({
-        series: series.map((item, itemIndex) => ({
-          markLine: itemIndex === index ? markLine : { data: [] }
-        }))
-      });
+      const index = stakeSeriesIndex.get(chart);
+      if (index == null) return;
+      const series = new Array(index + 1);
+      for (let slot = 0; slot < index; slot += 1) series[slot] = {};
+      series[index] = { markLine: markLine };
+      chart.setOption({ series: series });
     }
 
     function applyStakes() {
@@ -1223,19 +1250,18 @@
       return kept.concat([stakeCarrier(rows)]);
     }
 
+    function rememberZoom(event) {
+      if (!event) return;
+      const batch = event.batch && event.batch[0];
+      const payload = batch && (typeof batch.start === "number" || typeof batch.end === "number") ? batch : event;
+      if (typeof payload.start === "number") zoomStart = payload.start;
+      if (typeof payload.end === "number") zoomEnd = payload.end;
+    }
+
     function axisZoom() {
-      let start = 0;
-      let end = 100;
-      const chart = charts.rtt;
-      if (chart && typeof chart.getOption === "function") {
-        const option = chart.getOption();
-        const current = option && option.dataZoom && option.dataZoom[0];
-        if (current && current.start != null) start = current.start;
-        if (current && current.end != null) end = current.end;
-      }
       return [
-        { type: "inside", xAxisIndex: 0, start: start, end: end },
-        { type: "slider", xAxisIndex: 0, height: 18, bottom: 8, start: start, end: end }
+        { type: "inside", xAxisIndex: 0, start: zoomStart, end: zoomEnd },
+        { type: "slider", xAxisIndex: 0, height: 18, bottom: 8, start: zoomStart, end: zoomEnd }
       ];
     }
 
@@ -1243,7 +1269,7 @@
 
     function captureSpan() {
       const rows = currentRows();
-      const width = Number(document.getElementById("bucket").value) || 1;
+      const width = Number(bucketInput.value) || 1;
       if (!rows.length) return null;
       let step = width;
       if (rows.length > 1 && rows[rows.length - 1].t > rows[0].t) {
@@ -1258,14 +1284,7 @@
     }
 
     function categoryZoom() {
-      const chart = charts.rtt;
-      if (!chart || typeof chart.getOption !== "function") return { start: 0, end: 100 };
-      const option = chart.getOption();
-      const current = option && option.dataZoom && option.dataZoom[0];
-      return {
-        start: current && current.start != null ? current.start : 0,
-        end: current && current.end != null ? current.end : 100
-      };
+      return { start: zoomStart, end: zoomEnd };
     }
 
     function scatterBounds(span) {
@@ -1309,10 +1328,9 @@
     }
 
     function syncScatterToCategory() {
-      if (!charts.scatter || !scatterTimeMode()) return;
+      if (!charts.scatter || !scatterTimeMode() || !scatterLinked) return;
       const span = captureSpan();
-      const option = charts.scatter.getOption && charts.scatter.getOption();
-      if (!span || !option || !option.dataZoom || !option.dataZoom.length) return;
+      if (!span) return;
       const window = scatterWindow(span, categoryZoom());
       const extent = scatterExtent();
       const eps = Math.max(span.step * 0.02, 1e-6);
@@ -1352,6 +1370,8 @@
       }
       const current = categoryZoom();
       if (Math.abs(current.start - start) < 0.15 && Math.abs(current.end - end) < 0.15) return;
+      zoomStart = start;
+      zoomEnd = end;
       applyingZoom = true;
       charts.rtt.dispatchAction({ type: "dataZoom", start: start, end: end });
       applyingZoom = false;
@@ -1405,10 +1425,10 @@
     }
 
     function drawTime() {
-      const rows = data.buckets[document.getElementById("bucket").value] || [];
+      const rows = data.buckets[bucketInput.value] || [];
       const names = labels(rows);
       const kind = yType();
-      charts.rtt.setOption({
+      commitChart(charts.rtt, {
         color: ["#1a5276", "#c45c26", "#5d8aa8", "#e59866"],
         ...cross(),
         legend: scopedLegend("rtt", ["SDK median", "Cluster median", "SDK p99", "Cluster p99"]),
@@ -1423,7 +1443,7 @@
           { name: scopedName("rtt", "Cluster p99"), type: "line", showSymbol: false, lineStyle: { type: "dashed" }, data: rows.map((row) => yValue(row.cluster_p99)) }
         ], rows)
       }, true);
-      charts.tail.setOption({
+      commitChart(charts.tail, {
         color: ["#1a5276", "#c45c26", "#5d8aa8", "#e59866", "#1c2430", "#6e8b74", "#d4a017"],
         ...cross(),
         legend: scopedLegend("tail", ["SDK median", "Cluster median", "SDK p99", "Cluster p99", "Loss toward client", "Loss toward server", "Retries"], { type: "scroll" }),
@@ -1453,7 +1473,7 @@
         if (!n || med == null || lo == null || (lo <= 0 && kind === "log")) return "-";
         return [med, p90 == null ? med : p90, lo, hi];
       }
-      charts.range.setOption({
+      commitChart(charts.range, {
         color: ["#1a5276", "#c45c26"],
         ...cross(),
         legend: scopedLegend("range", ["SDK median to p90", "Cluster median to p90"]),
@@ -1477,7 +1497,7 @@
         ], rows)
       }, true);
       const opcodeNames = (data.by_opcode || []).map((row) => row.name || row.opcode);
-      charts.mix.setOption({
+      commitChart(charts.mix, {
         color: palette,
         ...cross(),
         legend: scopedLegend("mix", opcodeNames.concat(["SDK median", "Cluster median"]), { type: "scroll" }),
@@ -1512,7 +1532,7 @@
           { name: scopedName("mix", "Cluster median"), type: "line", yAxisIndex: 1, showSymbol: false, lineStyle: { color: "#c45c26", width: 2 }, data: rows.map((row) => yValue(row.cluster_median)) }
         ]), rows)
       }, true);
-      charts.issues.setOption({
+      commitChart(charts.issues, {
         color: ["#b7b1a8", "#1a5276", "#c45c26", "#6b3fa0", "#1c2430", "#1f8a4c", "#e0a100"],
         ...cross(),
         legend: scopedLegend("issues", ["Matched", "SDK missing", "Cluster missing", "Response without request", "Loss toward client", "Loss toward server", "Retries"], {
@@ -1535,7 +1555,7 @@
           { name: scopedName("issues", "Retries"), type: "line", yAxisIndex: 1, showSymbol: false, itemStyle: { color: "#e0a100" }, lineStyle: { color: "#e0a100", width: 3 }, data: rows.map((row) => yValue(row.retrans)) }
         ], rows)
       }, true);
-      if (charts.flow) charts.flow.setOption({
+      if (charts.flow) commitChart(charts.flow, {
         color: ["#1a5276", "#c45c26", "#5d8aa8", "#e59866", "#1a5276", "#c0392b"],
         ...cross(),
         legend: scopedLegend("flow", ["SDK requests", "Cluster requests", "SDK missing", "Cluster missing", "SDK retrans", "Cluster retrans"], { type: "scroll" }),
@@ -1555,7 +1575,7 @@
           { name: scopedName("flow", "Cluster retrans"), type: "line", yAxisIndex: 1, showSymbol: true, symbol: "circle", symbolSize: 7, data: rows.map((row) => yValue(row.cluster_retrans)) }
         ], rows)
       }, true);
-      charts.body.setOption({
+      commitChart(charts.body, {
         color: palette,
         ...cross(),
         legend: scopedLegend("body", ["Largest request", "Largest reply", "All bytes in", "All bytes out"], {
@@ -1630,58 +1650,75 @@
           : 'Blue is an application call. Rust is cluster. Bright blue diamonds are application packet errors. Bright red diamonds are cluster packet errors. The slider moves with the other time charts. <a href="#slow-scatter-word">How to read this</a>.';
       }
       if (!points.length && !errors.length) {
-        charts.scatter.setOption(emptyChart(server ? "No call reported a server duration" : "No matched call reached 50 ms"), true);
+        commitChart(charts.scatter, emptyChart(server ? "No call reported a server duration" : "No matched call reached 50 ms"), true);
         return;
       }
-      const groups = [
-        ["sdk", "Application", "#1a5276"],
-        ["cluster", "Cluster", "#c45c26"]
-      ];
-      const series = groups.map((group) => ({
-        name: group[1],
-        type: "scatter",
-        itemStyle: { color: group[2] },
-        symbolSize: 9,
-        data: points.filter((point) => {
-          if (point.role !== group[0]) return false;
-          if (scale() !== "log") return true;
-          if (!(point.rtt > 0)) return false;
-          return !server || point.server_us > 0;
-        }).map((point) => ({
+      const sdkDots = [];
+      const clusterDots = [];
+      points.forEach((point) => {
+        if (logScale) {
+          if (!(point.rtt > 0)) return;
+          if (server && !(point.server_us > 0)) return;
+        }
+        const dot = {
           value: server ? [point.server_us, point.rtt] : [point.t, point.rtt],
           command: point.name,
           durability: point.durability,
           vbucket: point.vbucket,
           server_us: point.server_us
-        }))
-      }));
+        };
+        if (point.role === "cluster") clusterDots.push(dot);
+        else if (point.role === "sdk") sdkDots.push(dot);
+      });
+      const series = [
+        { name: "Application", type: "scatter", itemStyle: { color: "#1a5276" }, symbolSize: 9, data: sdkDots },
+        { name: "Cluster", type: "scatter", itemStyle: { color: "#c45c26" }, symbolSize: 9, data: clusterDots }
+      ];
       const legend = ["Application", "Cluster"];
       const yAxis = { type: yType(), name: "ms" };
       if (errors.length) {
-        [
-          ["sdk", "Application error", "#1a8cff", 0.18],
-          ["cluster", "Cluster error", "#ff2d2d", 0.08]
-        ].forEach((group) => {
-          legend.push(group[1]);
-          series.push({
-            name: group[1],
+        const sdkErrors = [];
+        const clusterErrors = [];
+        errors.forEach((point) => {
+          const dot = {
+            kind: point.kind,
+            kinds: point.kinds,
+            stream: point.stream,
+            toward: point.toward,
+            role: point.role,
+            filter: packetErrorFilter(point)
+          };
+          if (point.role === "cluster") {
+            dot.value = [point.t, 0.08];
+            clusterErrors.push(dot);
+          } else {
+            dot.value = [point.t, 0.18];
+            sdkErrors.push(dot);
+          }
+        });
+        legend.push("Application error", "Cluster error");
+        series.push(
+          {
+            name: "Application error",
             type: "scatter",
             yAxisIndex: 1,
             symbol: "diamond",
             symbolSize: 12,
-            itemStyle: { color: group[2] },
+            itemStyle: { color: "#1a8cff" },
             z: 10,
-            data: errors.filter((point) => (point.role === "cluster" ? "cluster" : "sdk") === group[0]).map((point) => ({
-              value: [point.t, group[3]],
-              kind: point.kind,
-              kinds: point.kinds,
-              stream: point.stream,
-              toward: point.toward,
-              role: point.role,
-              filter: packetErrorFilter(point)
-            }))
-          });
-        });
+            data: sdkErrors
+          },
+          {
+            name: "Cluster error",
+            type: "scatter",
+            yAxisIndex: 1,
+            symbol: "diamond",
+            symbolSize: 12,
+            itemStyle: { color: "#ff2d2d" },
+            z: 10,
+            data: clusterErrors
+          }
+        );
       }
       if (!server) series.push(stakeCarrierValue());
       const span = server ? null : captureSpan();
@@ -1727,7 +1764,7 @@
         series: series
       };
       if (!server) option.dataZoom = scatterZoom(span);
-      charts.scatter.setOption(option, true);
+      commitChart(charts.scatter, option, true);
       charts.scatter.off("click");
       charts.scatter.on("click", (params) => {
         const filter = params.data && params.data.filter;
@@ -1737,13 +1774,13 @@
 
     function drawHeat() {
       if (!charts.heat) return;
-      const width = document.getElementById("bucket").value;
+      const width = bucketInput.value;
       const board = (data.heatmap && data.heatmap[width]) || {};
       const mode = document.getElementById("heat-mode") && document.getElementById("heat-mode").value === "opcodes" ? "opcodes" : "clients";
       const rows = board[mode] || [];
       const times = labels(currentRows());
       if (!rows.length) {
-        charts.heat.setOption(emptyChart("No requests were missing a reply"), true);
+        commitChart(charts.heat, emptyChart("No requests were missing a reply"), true);
         return;
       }
       const cells = [];
@@ -1755,7 +1792,7 @@
           if (value > max) max = value;
         });
       });
-      charts.heat.setOption({
+      commitChart(charts.heat, {
         tooltip: {
           position: "top",
           formatter: (item) => (times[item.value[0]] || "") + "<br/>" + rows[item.value[1]].name + "<br/>" + item.value[2] + " missing"
@@ -1786,7 +1823,7 @@
       let rows = data.boxplot || [];
       if (mode === "application") rows = rows.filter((row) => row.role !== "cluster");
       if (mode === "cluster") rows = rows.filter((row) => row.role === "cluster");
-      if (scale() === "log") rows = rows.filter((row) => (row.box || []).length === 5 && row.box.every((value) => value > 0));
+      if (logScale) rows = rows.filter((row) => (row.box || []).length === 5 && row.box.every((value) => value > 0));
       const plot = document.getElementById("boxes");
       if (plot) plot.style.height = Math.max(340, rows.length * 36 + 48) + "px";
       charts.boxes.resize();
@@ -2046,7 +2083,7 @@
 
     function drawSnapshots(rows, names) {
       if (!charts.snaps) return;
-      charts.snaps.setOption({
+      commitChart(charts.snaps, {
         color: ["#1a5276", "#c45c26", "#b7b1a8", "#e0a100"],
         ...cross(),
         legend: scopedLegend("snaps", ["Memory", "Disk", "Other", "Widest span"]),
@@ -2068,7 +2105,7 @@
 
     function drawBuffer(rows, names) {
       if (!charts.buffer) return;
-      charts.buffer.setOption({
+      commitChart(charts.buffer, {
         color: ["#c45c26", "#1a5276"],
         ...cross(),
         legend: scopedLegend("buffer", ["Mutations", "Bytes acknowledged"]),
@@ -2103,10 +2140,10 @@
         note.innerHTML = lead + '<a href="#persist-word">How to read this</a>.';
       }
       if (none) {
-        charts.persist.setOption(emptyChart("No reply reported time to replicate or time to persist"), true);
+        commitChart(charts.persist, emptyChart("No reply reported time to replicate or time to persist"), true);
         return;
       }
-      charts.persist.setOption({
+      commitChart(charts.persist, {
         color: ["#1a5276", "#5d8aa8", "#c45c26", "#e59866"],
         ...cross(),
         legend: scopedLegend("persist", ["Replicate median", "Replicate p99", "Persist median", "Persist p99"]),
@@ -2125,7 +2162,7 @@
 
     function drawGauge() {
       if (!charts["nic-gauge"]) return;
-      const width = Number(document.getElementById("bucket").value) || 1;
+      const width = Number(bucketInput.value) || 1;
       const rows = currentRows();
       let best = null;
       rows.forEach((row) => {
@@ -2254,7 +2291,7 @@
       node.style.height = "460px";
       charts.packets.resize();
       const total = all.reduce((sum, row) => sum + row.count, 0);
-      const kind = scale() === "log" ? "log" : "value";
+      const kind = yType();
       const selected = {};
       all.forEach((row) => { selected[row.name] = !hiddenPacketBars.has(row.name); });
       const names = all.map((row) => row.name);
@@ -2483,7 +2520,7 @@
         charts["cluster-conns"].setOption({
           tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
           grid: { left: 16, right: 24, top: 16, bottom: 28, containLabel: true },
-          xAxis: { type: yType(), name: "missing replies", minInterval: scale() === "log" ? undefined : 1 },
+          xAxis: { type: yType(), name: "missing replies", minInterval: logScale ? undefined : 1 },
           yAxis: {
             type: "category",
             data: top.map((row) => row.ip + ":" + row.port),
@@ -2544,7 +2581,7 @@
         },
         grid: { left: 16, right: 24, top: 16, bottom: 28, containLabel: true },
         xAxis: { type: "category", data: bandRows.map((row) => row.label) },
-        yAxis: { type: yType(), name: "clients", minInterval: scale() === "log" ? undefined : 1 },
+        yAxis: { type: yType(), name: "clients", minInterval: logScale ? undefined : 1 },
         series: [{
           type: "bar",
           data: bandRows.map((row) => ({ value: yValue(row.count), itemStyle: { color: row.color } })),
@@ -3090,7 +3127,10 @@
         charts[id] = echarts.init(document.getElementById(id));
       });
       echarts.connect([charts.mix, charts.rtt, charts.tail, charts.range, charts.issues, charts.body, charts.flow, charts.snaps, charts.buffer, charts.persist, charts.heat]);
-      charts.rtt.on("datazoom", () => syncScatterToCategory());
+      charts.rtt.on("datazoom", (event) => {
+        rememberZoom(event);
+        syncScatterToCategory();
+      });
       charts.scatter.on("datazoom", () => syncCategoryFromScatter());
       const clientOpen = document.getElementById("client-open");
       const clientMenu = document.getElementById("client-menu");
@@ -3171,7 +3211,7 @@
         });
       });
       window.addEventListener("resize", () => Object.values(charts).forEach((chart) => chart.resize()));
-      document.getElementById("bucket").addEventListener("change", () => {
+      bucketInput.addEventListener("change", () => {
         drawTime();
         drawHeat();
         drawScatter();
@@ -3184,13 +3224,16 @@
       if (flowMode) flowMode.addEventListener("change", drawPaths);
       const boxMode = document.getElementById("box-mode");
       if (boxMode) boxMode.addEventListener("change", drawBoxes);
-      document.getElementById("scale").addEventListener("change", () => {
+      scaleInput.addEventListener("change", () => {
+        logScale = scaleInput.value === "log";
         drawFixed();
         drawTime();
         drawBoxes();
         drawScatter();
       });
       document.getElementById("reset-zoom").addEventListener("click", () => {
+        zoomStart = 0;
+        zoomEnd = 100;
         timeChartIds.forEach((id) => {
           charts[id].dispatchAction({ type: "dataZoom", start: 0, end: 100 });
         });
@@ -3292,7 +3335,7 @@
       const title = document.querySelector("h1");
       if (title) title.textContent = heading;
       const seconds = data.capture_seconds || 0;
-      document.getElementById("bucket").value = seconds > 180 ? "10" : "1";
+      bucketInput.value = seconds > 180 ? "10" : "1";
       (data.interest_stakes || []).forEach((item) => takeStake(item.seconds));
       drawTiles();
       drawFixed();

@@ -130,7 +130,7 @@ The copy icon writes one of these. Paste it as it is. A `couchbase.` field alrea
 | Next to an opcode | `couchbase.opcode == 0x00` |
 | Next to Set Stake | `tcp.port == 11210 && ip.addr == 10.227.75.29 && frame.time_relative >= 9.171 && frame.time_relative <= 9.671` |
 | A bar on Packets on port 11210 | `tcp.port == 11210 && couchbase.opcode == 0x56 && (couchbase.magic == 0x80 \|\| couchbase.magic == 0x08)` |
-| **Errors** = possible | the call, then `\|\|`, then the holes to and from that requester |
+| **Errors** = possible | the call, then `\|\|`, then the holes on that same stream. A hole only on another connection of that machine uses the requester address |
 | Bottom of the report | the same slow-call and missing-call filters, one per line |
 
 A statistics key such as `vbucket-seqno` is on `couchbase.key`, not the logical key. Use that field when the logical key is empty:
@@ -198,24 +198,24 @@ tcp.stream == 121 && (couchbase.opaque == 0x00c5a34d || couchbase.key.logical_ke
 tcp.stream == 121 && couchbase.opaque == 0x00c5a34d && couchbase.opcode == 0x00
 ```
 
-What the **Errors** copy actually writes. The first parenthesis is the document and the opaque, so the request stays in the list. The second is holes to and from that machine in the surrounding time, on any of its connections, not every host in the file. `||` keeps both. Scroll the packet list. The gap between the request row and the flagged row is the distance.
+What the **Errors** copy actually writes. The first parenthesis is the document and the opaque, so the request stays in the list. When the hole is on that same stream, the second parenthesis is those errors on the stream, in the surrounding time. `||` keeps both. Scroll the packet list. The gap between the request row and the flagged row is the distance. A lost segment toward the client, and a client ack of bytes the capture never saw, are the reply-shaped hole.
 
-Both flags, which is the usual copy:
+Both flags, on the stream that carried the Get:
 
 ```text
-(tcp.stream == 121 && (couchbase.opaque == 0x00c5a34d || couchbase.key.logical_key == "querycache::GetManifestByDevice::8936b2d780a369d2763196f953330bf0")) || (tcp.port == 11210 && ip.addr == 10.227.75.29 && frame.time_relative >= 0 && frame.time_relative <= 0.263 && (tcp.analysis.ack_lost_segment || tcp.analysis.lost_segment))
+(tcp.stream == 121 && (couchbase.opaque == 0x00c5a34d || couchbase.key.logical_key == "querycache::GetManifestByDevice::8936b2d780a369d2763196f953330bf0")) || (tcp.stream == 121 && frame.time_relative >= 0.0 && frame.time_relative <= 0.263 && (tcp.analysis.ack_lost_segment || tcp.analysis.lost_segment))
 ```
 
-Only a lost segment, when that is the only flag near the row:
+Only a lost ack, still on that stream:
+
+```text
+(tcp.stream == 121 && couchbase.opaque == 0x00c5a34d) || (tcp.stream == 121 && frame.time_relative >= 0.0 && frame.time_relative <= 0.263 && tcp.analysis.ack_lost_segment)
+```
+
+When the only hole is on another connection of that machine, the second parenthesis stays on the requester:
 
 ```text
 (tcp.stream == 121 && (couchbase.opaque == 0x00c5a34d || couchbase.key.logical_key == "querycache::GetManifestByDevice::8936b2d780a369d2763196f953330bf0")) || (tcp.port == 11210 && ip.addr == 10.227.75.29 && frame.time_relative >= 9.371 && frame.time_relative <= 9.585 && tcp.analysis.lost_segment)
-```
-
-Only a lost ack:
-
-```text
-(tcp.stream == 121 && couchbase.opaque == 0x00c5a34d) || (tcp.port == 11210 && ip.addr == 10.227.75.29 && frame.time_relative >= 0 && frame.time_relative <= 0.263 && tcp.analysis.ack_lost_segment)
 ```
 
 No document id on the row, so the call half is only the opaque. An IPv6 requester uses `ipv6.addr` in that same position.
@@ -333,7 +333,7 @@ tcp.stream == 0 && tcp.analysis.lost_segment
 
 ## Server time is on the response
 
-`couchbase.flex_frame.frame.duration` is **Server Recv->Send duration**. It is a response flex frame. Select the response row (magic `0x18` or `0x81`, source port 11210). Under **Flexible Frame** the frame id says **Server Recv->Send duration**. Wireshark 4.6.8 prints that value in microseconds. A value of about 56 μs means the server spent a tiny fraction of a millisecond between receiving the request and sending the reply.
+`couchbase.flex_frame.frame.duration` is **Server Recv->Send duration**. It is a flex reply. Select the response row whose magic is `0x18` and whose source port is 11210. Under **Flexible Frame** the frame id says **Server Recv->Send duration**. Wireshark 4.6.8 prints that value in microseconds. A value of about 56 μs means the server spent a tiny fraction of a millisecond between receiving the request and sending the reply. A classic reply, magic `0x81`, has no flex section, so the field is absent. Replication meta commands that use the classic header (`0x80` / `0x81`), including Set with Meta, Get Meta, and Delete with Meta, have no server microseconds. Those calls stay on the capture-time chart. The server-time chart draws a dot only when this field is present.
 
 ```text
 couchbase.flex_frame.frame.duration > 1000
@@ -426,7 +426,7 @@ A reply at the opening of the capture, with no request in front of it, is the re
 
 A reply later in the file, still with no request, is a different case. Couchbase did answer. The request was on the wire. The capture kept the reply and lost the request packet.
 
-The request and the reply travel in opposite directions. A hole in the client-to-server direction removes the request from the file. The reply comes back server-to-client and can still be recorded. In Wireshark that reply is a response magic (`0x81` or `0x18`) whose `tcp.stream` and `couchbase.opaque` never appear on a request. The chart page shows up to ten of those rows under **Responses missing a request**, spaced across the capture rather than taken from the start of the file. **Start of file** is marked only for the ones inside the opening in-flight window. **Inside** means the reply is later than that window. The same limit applies to **Requests missing a response**. Every unanswered request is in `orphans.tsv` next to the page.
+The request and the reply travel in opposite directions. A hole in the client-to-server direction removes the request from the file. The reply comes back server-to-client and can still be recorded. In Wireshark that reply is a response magic (`0x81` or `0x18`) whose `tcp.stream` and `couchbase.opaque` never appear on a request. The chart page shows up to ten of those rows under **Responses missing a request**. Replies inside the opening window are the capture starting mid-call, so the table keeps at most two of them and fills the rest with replies from later in the file. That table shows **Seconds** and **Since Start**. Both are seconds from the first packet to the reply. **Start of file** is marked only for the ones inside the opening in-flight window. **Inside** means the reply is later than that window. **Requests missing a response** keeps **Left**, seconds of capture remaining after the request. A request near the start with a large Left had time for a reply and stays in the list. Requests still inside the closing window are the file ending, and the table keeps at most two of those. Every unanswered request is in `orphans.tsv` next to the page.
 
 The same opaque on a request that appears after that reply is a new call. Pairing does not attach the earlier reply to the later request, so the reply stays a reply with no request.
 

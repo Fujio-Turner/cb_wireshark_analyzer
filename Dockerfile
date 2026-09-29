@@ -15,7 +15,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY analyze_capture.py config.json pyproject.toml ./
+COPY analyze_capture.py couchbase_opcodes.py config.json pyproject.toml ./
 COPY tests ./tests
 COPY images ./images
 COPY web ./web

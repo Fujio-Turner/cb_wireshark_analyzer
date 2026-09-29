@@ -6,31 +6,45 @@ local Ollama server (config.json, qwen3.8:27b-mlx). --provider openai sends the
 same brief to an OpenAI-compatible chat API. Pass --no-ai to keep the counted
 note only.
 Pass --dry-run to print the plan without writing files or calling the model.
+Progress and stage timing are JSON records on stderr. --log-level defaults to INFO.
 
 Input is a pcap/pcapng, a tshark field export (.tsv or .csv), or a directory
 containing them. A request export alone has no responses and, on collections,
 an empty couchbase.key. When a pcap sits next to that export, the pcap is used.
+Opcode names, descriptions, and status text live in couchbase_opcodes.py.
 """
 
 from __future__ import annotations
 
 import argparse
 import bisect
+import datetime
 import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import socket
 import statistics
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
+
+from couchbase_opcodes import (
+    CLUSTER_OPCODES,
+    MULTI_RESPONSE_OPCODES,
+    NO_REPLY_OPCODES,
+    OPCODE_DESCRIPTIONS,
+    OPCODES,
+    STATUS,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -40,213 +54,9 @@ _LOCAL_API_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 DEFAULT_TIMEOUT = 600
 TABLE_TOKEN = "{{UNANSWERED_TABLE}}"
 
-# Wireshark client opcode labels from packet-couchbase.c (client_opcode_vals).
-# The field reference lists couchbase.opcode but not these values.
-OPCODES = {
-    0x00: 'Get',
-    0x01: 'Set',
-    0x02: 'Add',
-    0x03: 'Replace',
-    0x04: 'Delete',
-    0x05: 'Increment',
-    0x06: 'Decrement',
-    0x07: 'Quit',
-    0x08: 'Flush',
-    0x09: 'Get Quietly',
-    0x0A: 'NOOP',
-    0x0B: 'Version',
-    0x0C: 'Get Key',
-    0x0D: 'Get Key Quietly',
-    0x0E: 'Append',
-    0x0F: 'Prepend',
-    0x10: 'Statistics',
-    0x11: 'Set Quietly',
-    0x12: 'Add Quietly',
-    0x13: 'Replace Quietly',
-    0x14: 'Delete Quietly',
-    0x15: 'Increment Quietly',
-    0x16: 'Decrement Quietly',
-    0x17: 'Quit Quietly',
-    0x18: 'Flush Quietly',
-    0x19: 'Append Quietly',
-    0x1A: 'Prepend Quietly',
-    0x1B: 'Verbosity',
-    0x1C: 'Touch',
-    0x1D: 'Get and Touch',
-    0x1E: 'Gat and Touch Quietly',
-    0x1F: 'Hello',
-    0x20: 'List SASL Mechanisms',
-    0x21: 'SASL Authenticate',
-    0x22: 'SASL Step',
-    0x23: 'IOCTL Get',
-    0x24: 'IOCTL Set',
-    0x25: 'Config Validate',
-    0x26: 'Config Reload',
-    0x27: 'Audit Put',
-    0x28: 'Audit Config Reload',
-    0x29: 'Shutdown',
-    0x2D: 'Set Active Encryption Keys',
-    0x2E: 'Prune Encryption Keys',
-    0x30: 'Range Get',
-    0x31: 'Range Set',
-    0x32: 'Range Set Quietly',
-    0x33: 'Range Append',
-    0x34: 'Range Append Quietly',
-    0x35: 'Range Prepend',
-    0x36: 'Range Prepend Quietly',
-    0x37: 'Range Delete',
-    0x38: 'Range Delete Quietly',
-    0x39: 'Range Increment',
-    0x3A: 'Range Increment Quietly',
-    0x3B: 'Range Decrement',
-    0x3C: 'Range Decrement Quietly',
-    0x3D: 'Set VBucket',
-    0x3E: 'Get VBucket',
-    0x3F: 'Delete VBucket',
-    0x40: 'TAP Connect',
-    0x41: 'TAP Mutation',
-    0x42: 'TAP Delete',
-    0x43: 'TAP Flush',
-    0x44: 'TAP Opaque',
-    0x45: 'TAP VBucket Set',
-    0x46: 'TAP Checkpoint Start',
-    0x47: 'TAP Checkpoint End',
-    0x48: 'Get All VBucket Seqnos',
-    0x49: 'GetEx',
-    0x4A: 'GetEx Replica',
-    0x50: 'DCP Open Connection',
-    0x51: 'DCP Add Stream',
-    0x52: 'DCP Close Stream',
-    0x53: 'DCP Stream Request',
-    0x54: 'DCP Get Failover Log',
-    0x55: 'DCP Stream End',
-    0x56: 'DCP Snapshot Marker',
-    0x57: 'DCP (Key) Mutation',
-    0x58: 'DCP (Key) Deletion',
-    0x59: 'DCP (Key) Expiration',
-    0x5A: 'DCP Flush',
-    0x5B: 'DCP Set VBucket State',
-    0x5C: 'DCP NOOP',
-    0x5D: 'DCP Buffer Acknowledgement',
-    0x5E: 'DCP Control',
-    0x5F: 'DCP System Event',
-    0x60: 'DCP Prepare',
-    0x61: 'DCP Seqno Acknowledgement',
-    0x62: 'DCP Commit',
-    0x63: 'DCP Abort',
-    0x64: 'DCP Seqno Advanced',
-    0x65: 'DCP Out of Sequence Order Snapshot',
-    0x66: 'DCP Cache Transfer',
-    0x67: 'DCP Cache Transfer End',
-    0x70: 'Get Fusion Storage Snapshot',
-    0x71: 'Release Fusion Storage Snapshot',
-    0x72: 'Mount Fusion VBucket',
-    0x73: 'Unmount Fusion VBucket',
-    0x74: 'Sync Fusion Logstore',
-    0x75: 'Start Fusion Uploader',
-    0x76: 'Stop Fusion Uploader',
-    0x77: 'Delete Fusion Namespace',
-    0x78: 'Get Fusion Namespaces',
-    0x80: 'Stop Persistence',
-    0x81: 'Start Persistence',
-    0x82: 'Set Parameter',
-    0x83: 'Get Replica',
-    0x85: 'Create Bucket',
-    0x86: 'Delete Bucket',
-    0x87: 'List Buckets',
-    0x88: 'Expand Bucket',
-    0x89: 'Select Bucket',
-    0x90: 'Start Replication',
-    0x91: 'Observe Sequence Number',
-    0x92: 'Observe',
-    0x93: 'Evict Key',
-    0x94: 'Get Locked',
-    0x95: 'Unlock Key',
-    0x96: 'Sync',
-    0x97: 'Last Closed Checkpoint',
-    0x98: 'Restore File',
-    0x99: 'Restore Abort',
-    0x9A: 'Restore Complete',
-    0x9B: 'Online Update Start',
-    0x9C: 'Online Update Complete',
-    0x9D: 'Online Update Revert',
-    0x9E: 'Deregister TAP Client',
-    0x9F: 'Reset Replication Chain',
-    0xA0: 'Get Meta',
-    0xA1: 'Get Meta Quietly',
-    0xA2: 'Set with Meta',
-    0xA3: 'Set with Meta Quietly',
-    0xA4: 'Add with Meta',
-    0xA5: 'Add with Meta Quietly',
-    0xA6: 'Snapshot VBuckets States',
-    0xA7: 'VBucket Batch Count',
-    0xA8: 'Delete with Meta',
-    0xA9: 'Delete with Meta Quietly',
-    0xAA: 'Create Checkpoint',
-    0xAC: 'Notify VBucket Update',
-    0xAD: 'Enable Traffic',
-    0xAE: 'Disable Traffic',
-    0xAF: 'Ifconfig',
-    0xB0: 'Change VBucket Filter',
-    0xB1: 'Checkpoint Persistence',
-    0xB2: 'Return Meta',
-    0xB3: 'Compact Database',
-    0xB4: 'Set Cluster Config',
-    0xB5: 'Get Cluster Config',
-    0xB6: 'Get Random Key',
-    0xB7: 'Seqno Persistence',
-    0xB8: 'Get Keys',
-    0xB9: "Set Collection's Manifest",
-    0xBA: "Get Collection's Manifest",
-    0xBB: 'Get Collection ID',
-    0xBC: 'Get Scope ID',
-    0xC1: 'Set Drift Counter State',
-    0xC2: 'Get Adjusted Time',
-    0xC5: 'Subdoc Get',
-    0xC6: 'Subdoc Exists',
-    0xC7: 'Subdoc Dictionary Add',
-    0xC8: 'Subdoc Dictionary Upsert',
-    0xC9: 'Subdoc Delete',
-    0xCA: 'Subdoc Replace',
-    0xCB: 'Subdoc Array Push Last',
-    0xCC: 'Subdoc Array Push First',
-    0xCD: 'Subdoc Array Insert',
-    0xCE: 'Subdoc Array Add Unique',
-    0xCF: 'Subdoc Counter',
-    0xD0: 'Subdoc Multipath Lookup',
-    0xD1: 'Subdoc Multipath Mutation',
-    0xD2: 'Subdoc Get Count',
-    0xD3: 'Subdoc Replace Body With Xattr',
-    0xDA: 'RangeScan Create',
-    0xDB: 'RangeScan Continue',
-    0xDC: 'RangeScan Cancel',
-    0xE0: 'Prepare Snapshot',
-    0xE1: 'Release Snapshot',
-    0xE2: 'Download Snapshot',
-    0xE3: 'Get File Fragment',
-    0xF0: 'Scrub',
-    0xF1: 'isasl Refresh',
-    0xF2: 'SSL Certificates Refresh',
-    0xF3: 'Internal Timer Control',
-    0xF4: 'Set Control Token',
-    0xF5: 'Get Control Token',
-    0xF6: 'Update External User Permissions',
-    0xF7: 'RBAC Refresh',
-    0xF8: 'Auth Provider',
-    0xFB: 'Drop Privilege',
-    0xFC: 'Adjust Timeofday',
-    0xFD: 'EWOULDBLOCK Control',
-    0xFE: 'Get Error Map',
-}
-
 # KV only. tcp.port is either side, so a reply leaving 11210 stays in.
 KV_PORT = "11210"
 KV_PORTS = {"11210", "11207"}
-# DCP is the in-cluster replication stream. Meta commands are XDCR.
-_CLUSTER_OPCODES = {f"0x{code:02x}" for code in range(0x50, 0x68)} | {
-    "0x48", "0xa0", "0xa1", "0xa2", "0xa3", "0xa4", "0xa5", "0xa8",
-}
-
 
 PACKET_TYPE_ORDER = (
     "Couchbase",
@@ -342,128 +152,10 @@ def _keep_kv(messages: list[dict]) -> list[dict]:
     for msg in messages:
         sport = msg.get("sport") or ""
         dport = msg.get("dport") or ""
-        if not sport and not dport:
-            kept.append(msg)
-        elif on_kv_port(sport, dport):
-            kept.append(msg)
+        if (sport or dport) and not on_kv_port(sport, dport):
+            continue
+        kept.append(msg)
     return kept
-
-
-# Plain descriptions for the commands people meet on port 11210.
-# Names stay as Wireshark prints them. The chart tooltips show these sentences.
-OPCODE_DESCRIPTIONS = {
-    0x00: "Retrieves a document.",
-    0x01: "Stores a document unconditionally.",
-    0x02: "Stores a document only if it does not exist.",
-    0x03: "Stores a document only if it already exists.",
-    0x04: "Removes a document.",
-    0x05: "Increments a numeric counter.",
-    0x06: "Decrements a numeric counter.",
-    0x07: "Closes the connection.",
-    0x08: "Flushes the bucket, when that is enabled.",
-    0x09: "Quiet Get. No response when the key does not exist.",
-    0x0A: "No-op. Keep-alive.",
-    0x0B: "Gets the server version.",
-    0x0C: "Get, and return the key in the response.",
-    0x0D: "Quiet Get, and return the key.",
-    0x0E: "Appends data to an existing document.",
-    0x0F: "Prepends data to an existing document.",
-    0x10: "Retrieves server statistics. Key vbucket-seqno is the DCP high-seqno poll.",
-    0x11: "Quiet Set. No response on success.",
-    0x12: "Quiet Add. No response on success.",
-    0x13: "Quiet Replace. No response on success.",
-    0x14: "Quiet Delete. No response on success.",
-    0x15: "Quiet Increment. No response on success.",
-    0x16: "Quiet Decrement. No response on success.",
-    0x17: "Quiet Quit. No response on success.",
-    0x18: "Quiet Flush. No response on success.",
-    0x19: "Quiet Append. No response on success.",
-    0x1A: "Quiet Prepend. No response on success.",
-    0x1B: "Sets logging verbosity.",
-    0x1C: "Updates a document's expiration time.",
-    0x1D: "Get and Touch. Retrieves the document and updates its expiration.",
-    0x1E: "Quiet Get and Touch.",
-    0x1F: "Hello. Client capability negotiation.",
-    0x20: "Lists supported SASL authentication mechanisms.",
-    0x21: "Starts SASL authentication.",
-    0x22: "Continues SASL authentication.",
-    0x23: "IOCTL Get.",
-    0x24: "IOCTL Set.",
-    0x25: "Validates configuration.",
-    0x26: "Reloads configuration.",
-    0x27: "Writes an audit event.",
-    0x28: "Reloads audit configuration.",
-    0x29: "Shuts the server down.",
-    0x30: "Replica Get.",
-    0x31: "Replica Set.",
-    0x32: "Quiet Replica Set.",
-    0x33: "Replica Append.",
-    0x34: "Quiet Replica Append.",
-    0x35: "Replica Prepend.",
-    0x36: "Quiet Replica Prepend.",
-    0x37: "Replica Delete.",
-    0x38: "Quiet Replica Delete.",
-    0x39: "Replica Increment.",
-    0x3A: "Quiet Replica Increment.",
-    0x3B: "Replica Decrement.",
-    0x3C: "Quiet Replica Decrement.",
-    0x3D: "Sets a vBucket state.",
-    0x3E: "Reads a vBucket state.",
-    0x3F: "Deletes a vBucket.",
-    0x40: "TAP Connect. Legacy replication.",
-    0x41: "TAP Mutation. Legacy replication.",
-    0x42: "TAP Delete. Legacy replication.",
-    0x43: "TAP Flush. Legacy replication.",
-    0x44: "TAP Opaque. Legacy replication.",
-    0x45: "TAP vBucket set. Legacy replication.",
-    0x46: "TAP checkpoint start. Legacy replication.",
-    0x47: "TAP checkpoint end. Legacy replication.",
-    0x50: "DCP Open. Starts a streaming connection.",
-    0x51: "DCP add stream.",
-    0x52: "DCP close stream.",
-    0x53: "DCP stream request. Its opaque is copied onto every later message for that stream.",
-    0x54: "DCP get failover log.",
-    0x55: "DCP stream end. The consumer does not reply.",
-    0x56: "DCP snapshot marker. A reply is required only when the ack flag 0x08 is set.",
-    0x57: "DCP mutation. The consumer does not reply. Flow control is a later buffer ack.",
-    0x58: "DCP deletion. The consumer does not reply.",
-    0x59: "DCP expiration. The consumer does not reply.",
-    0x5A: "DCP flush.",
-    0x5B: "DCP set vBucket state.",
-    0x5C: "DCP noop. The producer sends it, and the consumer must answer or the producer drops the connection.",
-    0x5D: "DCP buffer acknowledgement. The producer does not answer. Opaque 0 is the whole connection.",
-    0x5E: "DCP control.",
-    0x83: "Get Replica. Reads a replica vBucket, usually after the active read timed out.",
-    0x89: "Selects the bucket for this connection.",
-    0x91: "Checks durability by sequence number.",
-    0x92: "Legacy durability check.",
-    0x94: "Fetches a document and applies a pessimistic lock.",
-    0x95: "Unlocks a previously locked document.",
-    0xA0: "Get with meta. Used by cross-datacenter replication.",
-    0xA1: "Quiet Get with meta.",
-    0xA2: "Set with meta. Used by cross-datacenter replication.",
-    0xA3: "Quiet Set with meta.",
-    0xA4: "Add with meta.",
-    0xA5: "Quiet Add with meta.",
-    0xA8: "Delete with meta.",
-    0xA9: "Quiet Delete with meta.",
-    0xB4: "Pushes an updated cluster map.",
-    0xB5: "Pulls the active cluster map.",
-    0xC5: "Sub-document Get. Reads one JSON path.",
-    0xC6: "Sub-document Exists. Checks one JSON path.",
-    0xC7: "Sub-document dictionary add.",
-    0xC8: "Sub-document dictionary upsert.",
-    0xC9: "Sub-document delete.",
-    0xCA: "Sub-document replace.",
-    0xCB: "Sub-document array push last.",
-    0xCC: "Sub-document array push first.",
-    0xCD: "Sub-document array insert.",
-    0xCE: "Sub-document array add unique.",
-    0xCF: "Sub-document counter.",
-    0xD0: "Sub-document multi lookup. Reads several JSON paths.",
-    0xD1: "Sub-document multi mutation. Changes several JSON paths.",
-    0xD2: "Sub-document get count.",
-}
 
 
 def opcode_description(opcode: str) -> str:
@@ -474,26 +166,6 @@ def opcode_description(opcode: str) -> str:
         return ""
     return OPCODE_DESCRIPTIONS.get(number, "")
 
-
-STATUS = {
-    0x00: "success",
-    0x01: "key not found",
-    0x02: "key exists",
-    0x03: "value too large",
-    0x04: "invalid arguments",
-    0x05: "not stored",
-    0x06: "non-numeric",
-    0x07: "not my vbucket",
-    0x08: "authentication error",
-    0x09: "locked",
-    0x81: "unknown command",
-    0x82: "out of memory",
-    0x83: "not supported",
-    0x84: "internal error",
-    0x85: "busy",
-    0x86: "temporary failure",
-    0x23: "rollback",
-}
 
 CLIENT_REQ_MAGIC = {0x80, 0x08}
 CLIENT_RES_MAGIC = {0x81, 0x18}
@@ -524,34 +196,194 @@ COLUMN_ALIASES = {
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
-def log(message: str) -> None:
-    print(message, file=sys.stderr)
-
-
-# DCP is full duplex. The producer sends request-magic packets that are not
-# RPCs. kv_engine docs/dcp: the consumer does not reply to stream end, mutation,
-# deletion, expiration, or a snapshot marker unless snapshot-type flag 0x08 (Ack)
-# is set. Buffer acknowledgement's response is unused. Seqno acknowledged has
-# no success response. System event, prepare, commit, abort, seqno advanced,
-# OSO snapshot, and cache transfer are producer data. Noop is not in this set:
-# the consumer must answer it.
-_NO_REPLY_OPCODES = {
-    0x55, 0x56, 0x57, 0x58, 0x59, 0x5D,
-    0x5F, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,
+# OpenTelemetry log-record severities. The number is the base of each band.
+_SEVERITY_NUMBER = {
+    "TRACE": 1,
+    "DEBUG": 5,
+    "INFO": 9,
+    "WARN": 13,
+    "ERROR": 17,
+    "FATAL": 21,
 }
 
 
-# Statistics (0x10) answers with one packet per stat line, then an empty
-# terminator. Every packet repeats the request opaque. vbucket-seqno does this.
-_MULTI_RESPONSE_OPCODES = {0x10}
+def _utc_now() -> str:
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _attr_value(value: object) -> object | None:
+    if value is None:
+        return None
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, bool) or isinstance(value, (int, float, str)):
+        return value
+    return str(value)
+
+
+def _attrs(raw: dict | None) -> dict:
+    cleaned: dict = {}
+    for key, value in (raw or {}).items():
+        kept = _attr_value(value)
+        if kept is not None:
+            cleaned[str(key)] = kept
+    return cleaned
+
+
+class _Span:
+    """One timed stage. The finish line carries duration and status."""
+
+    def __init__(self, owner: "_Telemetry", name: str, parent_span_id: str, attributes: dict):
+        self.owner = owner
+        self.name = name
+        self.span_id = secrets.token_hex(8)
+        self.parent_span_id = parent_span_id
+        self.attributes = dict(attributes)
+        self.start = time.perf_counter()
+        self.start_time = _utc_now()
+        self.status = "OK"
+
+    def set(self, **attributes: object) -> None:
+        for key, value in attributes.items():
+            if value is None:
+                self.attributes.pop(key, None)
+            else:
+                self.attributes[key] = value
+
+    def __enter__(self) -> "_Span":
+        self.owner._stack.append(self)
+        self.owner.emit(f"{self.name} started", "DEBUG")
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is not None:
+            self.status = "ERROR"
+            text = str(exc).splitlines()[0] if exc is not None else exc_type.__name__
+            self.attributes["error"] = text[:300]
+        try:
+            self.owner._finish_span(self)
+        finally:
+            if self.owner._stack and self.owner._stack[-1] is self:
+                self.owner._stack.pop()
+        return False
+
+
+class _Telemetry:
+    """One JSON record per line on stderr, in the OpenTelemetry log shape.
+
+    A person can read the line while a capture is processing. A collector can
+    read the same line later. This does not import the OpenTelemetry SDK.
+    """
+
+    def __init__(self) -> None:
+        self.trace_id = secrets.token_hex(16)
+        self.level = "INFO"
+        self._stack: list[_Span] = []
+        self._version: str | None = None
+
+    def set_level(self, level: str) -> None:
+        name = (level or "INFO").upper()
+        if name not in _SEVERITY_NUMBER:
+            raise SystemExit(
+                f"Unknown log level {level}. Use TRACE, DEBUG, INFO, WARN, or ERROR."
+            )
+        self.level = name
+
+    def service_version(self) -> str:
+        if self._version is None:
+            try:
+                self._version = project_version()
+            except SystemExit:
+                self._version = ""
+        return self._version
+
+    def span(self, name: str, **attributes: object) -> _Span:
+        parent = self._stack[-1].span_id if self._stack else ""
+        return _Span(self, name, parent, attributes)
+
+    def emit(
+        self,
+        body: str,
+        severity: str = "INFO",
+        attributes: dict | None = None,
+        *,
+        span_id: str = "",
+        extra: dict | None = None,
+    ) -> None:
+        name = (severity or "INFO").upper()
+        number = _SEVERITY_NUMBER.get(name)
+        if number is None:
+            name = "INFO"
+            number = _SEVERITY_NUMBER["INFO"]
+        if number < _SEVERITY_NUMBER[self.level]:
+            return
+        if not span_id and self._stack:
+            span_id = self._stack[-1].span_id
+        record: dict = {
+            "timestamp": _utc_now(),
+            "severity_text": name,
+            "severity_number": number,
+            "body": body,
+            "trace_id": self.trace_id,
+            "attributes": _attrs(attributes),
+            "resource": {
+                "service.name": "cb_wireshark_analyzer",
+                "service.version": self.service_version(),
+            },
+            "instrumentation_scope": {"name": "analyze_capture"},
+        }
+        if span_id:
+            record["span_id"] = span_id
+        if extra:
+            record.update(extra)
+        print(json.dumps(record, separators=(",", ":")), file=sys.stderr, flush=True)
+
+    def _finish_span(self, span: _Span) -> None:
+        duration_ms = round((time.perf_counter() - span.start) * 1000, 3)
+        failed = span.status == "ERROR"
+        extra = {
+            "kind": "span",
+            "name": span.name,
+            "start_time": span.start_time,
+            "end_time": _utc_now(),
+            "duration_ms": duration_ms,
+            "status": {"code": span.status},
+        }
+        if span.parent_span_id:
+            extra["parent_span_id"] = span.parent_span_id
+        self.emit(
+            f"{span.name} failed" if failed else f"{span.name} finished",
+            "ERROR" if failed else "INFO",
+            span.attributes,
+            span_id=span.span_id,
+            extra=extra,
+        )
+
+
+telemetry = _Telemetry()
+
+
+def log(message: str, severity: str = "INFO", **attributes: object) -> None:
+    telemetry.emit(message, severity, attributes)
+
+
+_OPCODE_NUMBERS: dict[str, int | None] = {}
 
 
 def _opcode_number(opcode: str) -> int | None:
     text = str(opcode or "").strip()
+    if text in _OPCODE_NUMBERS:
+        return _OPCODE_NUMBERS[text]
     try:
-        return int(text, 16) if text.lower().startswith("0x") else int(text)
+        number = int(text, 16) if text.lower().startswith("0x") else int(text)
     except (TypeError, ValueError):
-        return None
+        number = None
+    _OPCODE_NUMBERS[text] = number
+    return number
 
 
 def _flag_set(value) -> bool:
@@ -603,19 +435,19 @@ def expects_reply(opcode: str, snapshot_ack=False) -> bool:
     # Snapshot marker replies only when the ack flag (0x08) is set.
     if number == 0x56:
         return bool(snapshot_ack)
-    return number not in _NO_REPLY_OPCODES
+    return number not in NO_REPLY_OPCODES
 
 
 def is_multi_response(opcode: str) -> bool:
     """One request, many response packets, one opaque."""
-    return _opcode_number(opcode) in _MULTI_RESPONSE_OPCODES
+    return _opcode_number(opcode) in MULTI_RESPONSE_OPCODES
 
 
 def traffic_role(sport: str, dport: str, opcode: str = "", key: str = "") -> str:
     """Cluster is node-to-node, DCP, or replication meta. SDK is an app port to KV."""
     if str(sport or "") in KV_PORTS and str(dport or "") in KV_PORTS:
         return "cluster"
-    if str(opcode or "").lower() in _CLUSTER_OPCODES:
+    if str(opcode or "").lower() in CLUSTER_OPCODES:
         return "cluster"
     # Stats key vbucket-seqno is the DCP poll for the high sequence number.
     if _opcode_number(opcode) == 0x10 and str(key or "").startswith("vbucket-seqno"):
@@ -623,11 +455,14 @@ def traffic_role(sport: str, dport: str, opcode: str = "", key: str = "") -> str
     return "sdk"
 
 
-def cluster_endpoints(requests: list[dict]) -> set[str]:
+def cluster_endpoints(requests: list[dict], role_of: dict[int, str] | None = None) -> set[str]:
     """Ephemeral ports that carried a cluster command. The reply comes back from the KV port."""
     ends: set[str] = set()
     for msg in requests:
-        if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or "") != "cluster":
+        role = None if role_of is None else role_of.get(id(msg))
+        if role is None:
+            role = traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or "")
+        if role != "cluster":
             continue
         for port in (str(msg.get("sport") or ""), str(msg.get("dport") or "")):
             if port and port not in KV_PORTS:
@@ -645,13 +480,21 @@ def flow_role(sport: str, dport: str, cluster_ends: set[str]) -> str:
     return "sdk"
 
 
+_OPCODE_NAMES: dict[str, str] = {}
+
+
 def opcode_name(opcode: str, learned: dict[str, str] | None = None) -> str:
     if learned and opcode in learned:
         return learned[opcode]
+    cached = _OPCODE_NAMES.get(opcode)
+    if cached is not None:
+        return cached
     try:
-        return OPCODES.get(int(opcode, 16), opcode)
+        cached = OPCODES.get(int(opcode, 16), opcode)
     except (TypeError, ValueError):
-        return opcode or ""
+        cached = opcode or ""
+    _OPCODE_NAMES[opcode] = cached
+    return cached
 
 
 def status_name(status: str) -> str:
@@ -721,10 +564,7 @@ def key_family(key: str) -> str:
     return parts[0]
 
 
-def percentile(values: list[float], p: float) -> float | None:
-    if not values:
-        return None
-    ordered = sorted(values)
+def _percentile_sorted(ordered: list[float], p: float) -> float:
     if len(ordered) == 1:
         return ordered[0]
     index = (len(ordered) - 1) * p
@@ -732,6 +572,20 @@ def percentile(values: list[float], p: float) -> float | None:
     high = min(low + 1, len(ordered) - 1)
     frac = index - low
     return ordered[low] * (1 - frac) + ordered[high] * frac
+
+
+def _median_sorted(ordered: list[float]) -> float:
+    count = len(ordered)
+    mid = count // 2
+    if count % 2:
+        return ordered[mid]
+    return (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def percentile(values: list[float], p: float) -> float | None:
+    if not values:
+        return None
+    return _percentile_sorted(sorted(values), p)
 
 
 def fmt_secs(value: float) -> str:
@@ -948,6 +802,24 @@ _CB_COLUMNS = 19
 _FLAG_COLUMNS = 3
 
 
+def _tshark_brief(cmd: list[str]) -> dict[str, str]:
+    """Mode, capture name, and display filter. The field list stays off the log."""
+    found = {"mode": "", "source": "", "display": ""}
+    flags = {"-T": "mode", "-r": "source", "-Y": "display"}
+    index = 0
+    while index < len(cmd) - 1:
+        key = flags.get(cmd[index])
+        if key:
+            value = cmd[index + 1]
+            if key == "source":
+                value = Path(value).name
+            found[key] = value
+            index += 2
+            continue
+        index += 1
+    return found
+
+
 def iter_tshark(cmd: list[str]):
     """Stream tshark stdout. One process, one read of the capture."""
     stderr_file = tempfile.NamedTemporaryFile(prefix="tshark-", suffix=".err", delete=False)
@@ -956,6 +828,14 @@ def iter_tshark(cmd: list[str]):
     stderr_handle = open(stderr_path, "w")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=stderr_handle)
     assert proc.stdout is not None
+    brief = _tshark_brief(cmd)
+    log(
+        "tshark started",
+        pid=proc.pid,
+        mode=brief["mode"],
+        source=brief["source"],
+        display=brief["display"],
+    )
     try:
         for raw in proc.stdout:
             yield raw.decode("utf-8", "replace").rstrip("\n")
@@ -1012,6 +892,10 @@ def messages_from_field_line(line: str) -> tuple[list[dict], str | None, dict | 
     frame, time_raw, stream, src, sport, dst, dport = cols[:_PREFIX_COLUMNS]
     flag_at = _PREFIX_COLUMNS + _CB_COLUMNS
     loss = _loss_event(time_raw, stream, sport, dport, cols[flag_at], cols[flag_at + 1], cols[flag_at + 2])
+    # Most frames on this port are TCP with no Couchbase header. Stop before
+    # splitting the nineteen Couchbase columns.
+    if not cols[_PREFIX_COLUMNS] and not cols[_PREFIX_COLUMNS + 1] and not cols[_PREFIX_COLUMNS + 2]:
+        return [], None, loss
     (
         magic, opcode, opaque, key, raw_key, status, body, ack,
         vbucket, duration, durability, snap_memory, snap_disk, snap_start, snap_end, bytes_ack,
@@ -1157,16 +1041,24 @@ def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter,
             "separator=\t",
         )
     )
-    log(f"reading port {KV_PORT} packets from {pcap.name}")
+    log(
+        f"reading port {KV_PORT} packets from {pcap.name}",
+        pcap=pcap.name,
+        port=KV_PORT,
+        bytes=pcap.stat().st_size,
+    )
     requests: list[dict] = []
     responses: list[dict] = []
     magics: Counter = Counter()
     loss_events: list[dict] = []
     packet_types: Counter = Counter()
     redo: list[str] = []
+    seen = 0
+    logged_at = time.monotonic()
     for line in iter_tshark(cmd):
         if not line:
             continue
+        seen += 1
         messages, bad_frame, loss = messages_from_field_line(line)
         cols = line.split("\t")
         tcp_len_at = _PREFIX_COLUMNS + _CB_COLUMNS + _FLAG_COLUMNS
@@ -1207,12 +1099,34 @@ def load_pcap(pcap: Path, tshark: str) -> tuple[list[dict], list[dict], Counter,
         if bad_frame is not None:
             if bad_frame:
                 redo.append(bad_frame)
-            continue
-        for message in messages:
-            if on_kv_port(message.get("sport", ""), message.get("dport", "")):
-                _keep_client_message(message, requests, responses, magics)
+        else:
+            for message in messages:
+                if on_kv_port(message.get("sport", ""), message.get("dport", "")):
+                    _keep_client_message(message, requests, responses, magics)
+        now = time.monotonic()
+        if seen == 1 or seen % 100_000 == 0 or now - logged_at >= 15:
+            log(
+                "tshark fields progress",
+                packets=seen,
+                requests=len(requests),
+                responses=len(responses),
+                loss_events=len(loss_events),
+                redo=len(redo),
+            )
+            logged_at = now
+    log(
+        "tshark fields finished",
+        packets=seen,
+        requests=len(requests),
+        responses=len(responses),
+        loss_events=len(loss_events),
+        redo=len(redo),
+    )
     if redo:
-        log(f"re-reading {len(redo)} frames whose Couchbase columns did not line up, in one pass")
+        log(
+            f"re-reading {len(redo)} frames whose Couchbase columns did not line up, in one pass",
+            redo=len(redo),
+        )
         wanted = set(redo)
         for message in _iter_ek_messages(pcap, tshark, f"tcp.port == {KV_PORT} && couchbase"):
             if str(message.get("frame") or "") not in wanted:
@@ -1387,14 +1301,15 @@ def _rtt_summary(samples: list[float]) -> dict:
             "rtt_p95": None,
             "rtt_p99": None,
         }
+    ordered = sorted(samples)
     return {
-        "rtt_n": len(samples),
-        "rtt_min": _ms(min(samples)),
-        "rtt_max": _ms(max(samples)),
-        "rtt_median": _ms(statistics.median(samples)),
-        "rtt_p90": _ms(percentile(samples, 0.90)),
-        "rtt_p95": _ms(percentile(samples, 0.95)),
-        "rtt_p99": _ms(percentile(samples, 0.99)),
+        "rtt_n": len(ordered),
+        "rtt_min": _ms(ordered[0]),
+        "rtt_max": _ms(ordered[-1]),
+        "rtt_median": _ms(_median_sorted(ordered)),
+        "rtt_p90": _ms(_percentile_sorted(ordered, 0.90)),
+        "rtt_p95": _ms(_percentile_sorted(ordered, 0.95)),
+        "rtt_p99": _ms(_percentile_sorted(ordered, 0.99)),
     }
 
 
@@ -1453,6 +1368,41 @@ def _call_point(req: dict, resp: dict, gap: float) -> dict:
     }
 
 
+def _packet_errors(loss_events: list[dict], ports: list[str], cluster_ends: set[str] | None = None) -> list[dict]:
+    """Packet holes and real retries, one mark per frame, spread across the capture."""
+    portset = set(ports)
+    ends = cluster_ends or set()
+    rows = []
+    for event in loss_events:
+        if event.get("time") is None or event.get("duplicate"):
+            continue
+        lost = event.get("lost")
+        ack = event.get("ack")
+        retrans = event.get("retrans") and not event.get("duplicate")
+        if not (lost or ack or retrans):
+            continue
+        sport = str(event.get("sport") or "")
+        dport = str(event.get("dport") or "")
+        if portset and sport not in portset and dport not in portset:
+            continue
+        kinds = []
+        if lost:
+            kinds.append("lost")
+        if ack:
+            kinds.append("ack")
+        if retrans:
+            kinds.append("retrans")
+        rows.append({
+            "t": round(float(event["time"]), 3),
+            "kind": kinds[0],
+            "kinds": kinds,
+            "stream": str(event.get("stream") or ""),
+            "toward": "client" if sport in portset else "server",
+            "role": "cluster" if flow_role(sport, dport, ends) == "cluster" else "sdk",
+        })
+    return _spread_points(rows, _SCATTER_CAP)
+
+
 def _spread_points(points: list[dict], cap: int) -> list[dict]:
     if len(points) <= cap:
         return points
@@ -1492,29 +1442,39 @@ def _scatters(paired: dict) -> tuple[list[dict], list[dict]]:
 def _heatmaps(unanswered: list[dict], capture_end: float) -> dict:
     by_ip: Counter = Counter()
     by_opcode: Counter = Counter()
+    prepared = []
     for msg in unanswered:
-        by_ip[msg.get("src") or "(unknown)"] += 1
-        by_opcode[opcode_name(msg.get("opcode") or "")] += 1
+        ip = msg.get("src") or "(unknown)"
+        name = opcode_name(msg.get("opcode") or "")
+        by_ip[ip] += 1
+        by_opcode[name] += 1
+        prepared.append((msg["time"], ip, name))
     ips = [ip for ip, _count in by_ip.most_common(_HEATMAP_LIMIT)]
     names = [name for name, _count in by_opcode.most_common(_HEATMAP_LIMIT)]
-    out = {}
-    for width in (0.5, 1, 5, 10):
-        count = _bucket_count(capture_end, width)
-        ip_rows = {ip: [0] * count for ip in ips}
-        opcode_rows = {name: [0] * count for name in names}
-        for msg in unanswered:
-            index = _bucket_index(msg["time"], width, count)
-            ip = msg.get("src") or "(unknown)"
-            if ip in ip_rows:
-                ip_rows[ip][index] += 1
-            name = opcode_name(msg.get("opcode") or "")
-            if name in opcode_rows:
-                opcode_rows[name][index] += 1
-        out[_bucket_key(width)] = {
-            "clients": [{"name": ip, "values": ip_rows[ip]} for ip in ips],
-            "opcodes": [{"name": name, "values": opcode_rows[name]} for name in names],
+    ip_keep = set(ips)
+    name_keep = set(names)
+    widths = (0.5, 1, 5, 10)
+    counts = [_bucket_count(capture_end, width) for width in widths]
+    ip_rows = [{ip: [0] * count for ip in ips} for count in counts]
+    opcode_rows = [{name: [0] * count for name in names} for count in counts]
+    for when, ip, name in prepared:
+        keep_ip = ip in ip_keep
+        keep_name = name in name_keep
+        if not keep_ip and not keep_name:
+            continue
+        for index_width, width in enumerate(widths):
+            slot = _bucket_index(when, width, counts[index_width])
+            if keep_ip:
+                ip_rows[index_width][ip][slot] += 1
+            if keep_name:
+                opcode_rows[index_width][name][slot] += 1
+    return {
+        _bucket_key(width): {
+            "clients": [{"name": ip, "values": ip_rows[index_width][ip]} for ip in ips],
+            "opcodes": [{"name": name, "values": opcode_rows[index_width][name]} for name in names],
         }
-    return out
+        for index_width, width in enumerate(widths)
+    }
 
 
 def _boxplot(opcode_rtts: dict[tuple[str, str], list[float]]) -> list[dict]:
@@ -1528,17 +1488,18 @@ def _boxplot(opcode_rtts: dict[tuple[str, str], list[float]]) -> list[dict]:
         if not samples:
             continue
         side = "cluster" if role == "cluster" else "sdk"
+        ordered = sorted(samples)
         grouped[side].append({
             "opcode": opcode,
             "name": opcode_name(opcode),
             "role": side,
-            "n": len(samples),
+            "n": len(ordered),
             "box": [
-                _ms(min(samples)),
-                _ms(percentile(samples, 0.25)),
-                _ms(statistics.median(samples)),
-                _ms(percentile(samples, 0.75)),
-                _ms(percentile(samples, 0.99)),
+                _ms(ordered[0]),
+                _ms(_percentile_sorted(ordered, 0.25)),
+                _ms(_median_sorted(ordered)),
+                _ms(_percentile_sorted(ordered, 0.75)),
+                _ms(_percentile_sorted(ordered, 0.99)),
             ],
         })
     rows = []
@@ -1606,6 +1567,12 @@ def _sankey_view(counts: Counter) -> dict:
     return {"nodes": nodes, "links": links}
 
 
+def _sankey_where(counts: Counter, keep) -> dict:
+    """The same diagram, limited to the calls `keep` accepts."""
+    chosen = Counter({key: count for key, count in counts.items() if keep(key)})
+    return _sankey_view(chosen)
+
+
 def _sankey(requests: list[dict], paired: dict) -> dict:
     """Application or cluster, then the command, then how the call ended.
 
@@ -1614,19 +1581,14 @@ def _sankey(requests: list[dict], paired: dict) -> dict:
     """
     counts = _sankey_counts(requests, paired)
     views = {
-        "all": _sankey_view(counts),
-        "application": _sankey_view(Counter(
-            {key: count for key, count in counts.items() if key[0] == "Application"}
-        )),
-        "cluster": _sankey_view(Counter(
-            {key: count for key, count in counts.items() if key[0] == "Cluster"}
-        )),
-        "exclude_not_expected": _sankey_view(Counter(
-            {key: count for key, count in counts.items() if key[2] != "Not expected"}
-        )),
-        "unmatched": _sankey_view(Counter(
-            {key: count for key, count in counts.items() if key[2] == "Missing reply"}
-        )),
+        name: _sankey_view(counts) if keep is None else _sankey_where(counts, keep)
+        for name, keep in (
+            ("all", None),
+            ("application", lambda key: key[0] == "Application"),
+            ("cluster", lambda key: key[0] == "Cluster"),
+            ("exclude_not_expected", lambda key: key[2] != "Not expected"),
+            ("unmatched", lambda key: key[2] == "Missing reply"),
+        )
     }
     return {"nodes": views["all"]["nodes"], "links": views["all"]["links"], "views": views}
 
@@ -1635,12 +1597,22 @@ def _milli_summary(samples: list[float]) -> dict:
     """Median and p99 of a millisecond estimate. Zero is a real reading."""
     if not samples:
         return {"n": 0, "median": None, "p99": None, "max": None}
+    ordered = sorted(samples)
     return {
-        "n": len(samples),
-        "median": round(statistics.median(samples), 1),
-        "p99": round(percentile(samples, 0.99) or 0, 1),
-        "max": round(max(samples), 1),
+        "n": len(ordered),
+        "median": round(_median_sorted(ordered), 1),
+        "p99": round(_percentile_sorted(ordered, 0.99) or 0, 1),
+        "max": round(ordered[-1], 1),
     }
+
+
+# sdk_* and cluster_* copy the rtt_ keys. ttp_* and ttr_* copy n, median, and p99.
+_RTT_ROLE_FIELDS = ("n", "median", "p90", "p99", "min", "max")
+_MILLI_FIELDS = ("n", "median", "p99")
+
+
+def _summary_fields(prefix: str, summary: dict, names: tuple[str, ...], source: str = "rtt_") -> dict:
+    return {f"{prefix}_{name}": summary[f"{source}{name}"] for name in names}
 
 
 def replica_read_kind(msg: dict) -> str:
@@ -1698,12 +1670,19 @@ def _persist_times(paired: dict) -> dict:
     return {"ttp": _milli_summary(ttp), "ttr": _milli_summary(ttr)}
 
 
-def _durability_rows(requests: list[dict], paired: dict) -> list[dict]:
-    gaps = {}
+def _matched_gaps(paired: dict) -> dict[int, float]:
+    """Round trip of each matched call. A response before its request is skipped."""
+    gaps: dict[int, float] = {}
     for req, resp in paired["matched"]:
         gap = resp["time"] - req["time"]
-        if gap >= 0:
-            gaps[id(req)] = gap
+        if gap < 0:
+            continue
+        gaps[id(req)] = gap
+    return gaps
+
+
+def _durability_rows(requests: list[dict], paired: dict) -> list[dict]:
+    gaps = _matched_gaps(paired)
     samples: dict[int, list[float]] = {0: [], 1: [], 2: [], 3: []}
     counts: Counter = Counter()
     for msg in requests:
@@ -1731,11 +1710,7 @@ def _durability_rows(requests: list[dict], paired: dict) -> list[dict]:
 
 def _vbucket_rows(requests: list[dict], paired: dict) -> list[dict]:
     unanswered = {id(msg) for msg in paired["unanswered"]}
-    gaps = {}
-    for req, resp in paired["matched"]:
-        gap = resp["time"] - req["time"]
-        if gap >= 0:
-            gaps[id(req)] = gap
+    gaps = _matched_gaps(paired)
     stats: dict[int, list] = {}
     for msg in requests:
         vb = msg.get("vbucket")
@@ -1769,6 +1744,256 @@ def _vbucket_rows(requests: list[dict], paired: dict) -> list[dict]:
     return rows[:12]
 
 
+def _bucket_series(
+    requests: list[dict],
+    paired: dict,
+    matched_rtts: list[tuple],
+    timed_loss: list[dict],
+    portset: set[str],
+    ends: set[str],
+    capture_end: float,
+    role_of: dict[int, str],
+) -> dict[str, list[dict]]:
+    """Fill 0.5, 1, 5, and 10 second rows in one pass.
+
+    Each width calls ``_bucket_index`` on its own. A coarser index is not
+    the half-second index divided down; the epsilon in that function can disagree.
+    """
+    widths = (0.5, 1, 5, 10)
+    counts = [_bucket_count(capture_end, width) for width in widths]
+
+    def blank() -> list[list[int]]:
+        return [[0] * count for count in counts]
+
+    def blank_lists() -> list[list[list[float]]]:
+        return [[[] for _ in range(count)] for count in counts]
+
+    requests_n = blank()
+    matched_n = blank()
+    unanswered_n = blank()
+    resp_only_n = blank()
+    lost_n = blank()
+    lost_c2s = blank()
+    lost_s2c = blank()
+    retrans_n = blank()
+    ack_n = blank()
+    opcode_n: list[list[Counter]] = [[Counter() for _ in range(count)] for count in counts]
+    samples = blank_lists()
+    sdk_requests_n = blank()
+    cluster_requests_n = blank()
+    sdk_unanswered_n = blank()
+    cluster_unanswered_n = blank()
+    sdk_retrans_n = blank()
+    cluster_retrans_n = blank()
+    sdk_samples = blank_lists()
+    cluster_samples = blank_lists()
+    body_in_max = blank()
+    body_out_max = blank()
+    body_in_sum = blank()
+    body_out_sum = blank()
+    body_large = blank()
+    snap_memory_n = blank()
+    snap_disk_n = blank()
+    snap_other_n = blank()
+    snap_span_max = blank()
+    ack_bytes_n = blank()
+    buffer_ack_n = blank()
+    mutation_n = blank()
+    ttp_samples = blank_lists()
+    ttr_samples = blank_lists()
+
+    for msg in requests:
+        when = msg["time"]
+        cluster = role_of.get(id(msg)) == "cluster"
+        name = opcode_name(msg.get("opcode") or "")
+        number = _opcode_number(msg.get("opcode") or "")
+        size = int(msg.get("body") or 0)
+        credit = msg.get("bytes_to_ack")
+        large = size >= LARGE_BODY_BYTES
+        mutation = number == 0x57
+        disk = False
+        memory = False
+        other = False
+        span = None
+        if number == 0x56:
+            if msg.get("snapshot_disk"):
+                disk = True
+            elif msg.get("snapshot_memory"):
+                memory = True
+            else:
+                other = True
+            start = msg.get("snap_start")
+            end = msg.get("snap_end")
+            if start is not None and end is not None and end >= start:
+                span = end - start
+        for slot, width in enumerate(widths):
+            index = _bucket_index(when, width, counts[slot])
+            requests_n[slot][index] += 1
+            opcode_n[slot][index][name] += 1
+            if cluster:
+                cluster_requests_n[slot][index] += 1
+            else:
+                sdk_requests_n[slot][index] += 1
+            if mutation:
+                mutation_n[slot][index] += 1
+            if disk:
+                snap_disk_n[slot][index] += 1
+            elif memory:
+                snap_memory_n[slot][index] += 1
+            elif other:
+                snap_other_n[slot][index] += 1
+            if span is not None and span > snap_span_max[slot][index]:
+                snap_span_max[slot][index] = span
+            if credit:
+                ack_bytes_n[slot][index] += credit
+                buffer_ack_n[slot][index] += 1
+            body_in_sum[slot][index] += size
+            if size > body_in_max[slot][index]:
+                body_in_max[slot][index] = size
+            if large:
+                body_large[slot][index] += 1
+
+    def add_outbound(msg: dict, count_gap: bool) -> None:
+        when = msg["time"]
+        size = int(msg.get("body") or 0)
+        large = size >= LARGE_BODY_BYTES
+        ttp = msg.get("ttp")
+        ttr = msg.get("ttr")
+        ttp_value = None if ttp is None else float(ttp)
+        ttr_value = None if ttr is None else float(ttr)
+        if not size and ttp_value is None and ttr_value is None and not count_gap:
+            return
+        for slot, width in enumerate(widths):
+            index = _bucket_index(when, width, counts[slot])
+            body_out_sum[slot][index] += size
+            if size > body_out_max[slot][index]:
+                body_out_max[slot][index] = size
+            if large:
+                body_large[slot][index] += 1
+            if ttp_value is not None:
+                ttp_samples[slot][index].append(ttp_value)
+            if ttr_value is not None:
+                ttr_samples[slot][index].append(ttr_value)
+            if count_gap:
+                resp_only_n[slot][index] += 1
+
+    for _req, resp in paired["matched"]:
+        add_outbound(resp, False)
+    for msg in paired["resp_only"]:
+        add_outbound(msg, True)
+    for when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, _requester, role in matched_rtts:
+        cluster = role == "cluster"
+        for slot, width in enumerate(widths):
+            index = _bucket_index(when, width, counts[slot])
+            matched_n[slot][index] += 1
+            samples[slot][index].append(gap)
+            if cluster:
+                cluster_samples[slot][index].append(gap)
+            else:
+                sdk_samples[slot][index].append(gap)
+    for msg in paired["unanswered"]:
+        cluster = role_of.get(id(msg)) == "cluster"
+        for slot, width in enumerate(widths):
+            index = _bucket_index(msg["time"], width, counts[slot])
+            unanswered_n[slot][index] += 1
+            if cluster:
+                cluster_unanswered_n[slot][index] += 1
+            else:
+                sdk_unanswered_n[slot][index] += 1
+    for event in timed_loss:
+        lost = event["lost"]
+        retrans = event["retrans"]
+        ack = event["ack"]
+        # One frame can carry a loss, a retransmission, and an ack together.
+        if not (lost or retrans or ack):
+            continue
+        when = event["time"]
+        toward_client = event["sport"] in portset
+        cluster_retry = flow_role(event.get("sport") or "", event.get("dport") or "", ends) == "cluster" if retrans else False
+        for slot, width in enumerate(widths):
+            index = _bucket_index(when, width, counts[slot])
+            if lost:
+                lost_n[slot][index] += 1
+                if toward_client:
+                    lost_s2c[slot][index] += 1
+                else:
+                    lost_c2s[slot][index] += 1
+            if retrans:
+                retrans_n[slot][index] += 1
+                if cluster_retry:
+                    cluster_retrans_n[slot][index] += 1
+                else:
+                    sdk_retrans_n[slot][index] += 1
+            if ack:
+                ack_n[slot][index] += 1
+
+    series: dict[str, list[dict]] = {}
+    for slot, width in enumerate(widths):
+        rows = []
+        for index in range(counts[slot]):
+            row = {
+                "t": _bucket_time(index, width),
+                "requests": requests_n[slot][index],
+                "matched": matched_n[slot][index],
+                "unanswered": unanswered_n[slot][index],
+                "resp_only": resp_only_n[slot][index],
+                "lost": lost_n[slot][index],
+                "lost_c2s": lost_c2s[slot][index],
+                "lost_s2c": lost_s2c[slot][index],
+                "retrans": retrans_n[slot][index],
+                "sdk_requests": sdk_requests_n[slot][index],
+                "cluster_requests": cluster_requests_n[slot][index],
+                "sdk_unanswered": sdk_unanswered_n[slot][index],
+                "cluster_unanswered": cluster_unanswered_n[slot][index],
+                "sdk_retrans": sdk_retrans_n[slot][index],
+                "cluster_retrans": cluster_retrans_n[slot][index],
+                **_summary_fields("sdk", _rtt_summary(sdk_samples[slot][index]), _RTT_ROLE_FIELDS),
+                **_summary_fields("cluster", _rtt_summary(cluster_samples[slot][index]), _RTT_ROLE_FIELDS),
+                "ack_lost": ack_n[slot][index],
+                "opcodes": dict(opcode_n[slot][index]),
+                "body_in_max": body_in_max[slot][index],
+                "body_out_max": body_out_max[slot][index],
+                "body_in_bytes": body_in_sum[slot][index],
+                "body_out_bytes": body_out_sum[slot][index],
+                "body_large": body_large[slot][index],
+                "snap_memory": snap_memory_n[slot][index],
+                "snap_disk": snap_disk_n[slot][index],
+                "snap_other": snap_other_n[slot][index],
+                "snap_span_max": snap_span_max[slot][index],
+                "ack_bytes": ack_bytes_n[slot][index],
+                "buffer_acks": buffer_ack_n[slot][index],
+                "mutations": mutation_n[slot][index],
+                **_summary_fields("ttp", _milli_summary(ttp_samples[slot][index]), _MILLI_FIELDS, source=""),
+                **_summary_fields("ttr", _milli_summary(ttr_samples[slot][index]), _MILLI_FIELDS, source=""),
+            }
+            row.update(_rtt_summary(samples[slot][index]))
+            rows.append(row)
+        series[_bucket_key(width)] = rows
+    return series
+
+
+class _SideTally:
+    """Document-id counts for the capture and for each side.
+
+    An empty key is not a document. A zero amount is stored, so a body of
+    0 still counts toward the average.
+    """
+
+    def __init__(self) -> None:
+        self.all: Counter = Counter()
+        self.sdk: Counter = Counter()
+        self.cluster: Counter = Counter()
+
+    def add(self, side: str, key: str, amount: int = 1) -> None:
+        if not key:
+            return
+        self.all[key] += amount
+        if side == "cluster":
+            self.cluster[key] += amount
+        else:
+            self.sdk[key] += amount
+
+
 def build_charts(
     requests: list[dict],
     paired: dict,
@@ -1777,7 +2002,18 @@ def build_charts(
     capture_end: float,
     packet_types: Counter | None = None,
 ) -> dict:
-    """Aggregates for the chart page at 0.5, 1, 5, and 10 second buckets."""
+    """Aggregates for the chart page at 0.5, 1, 5, and 10 second buckets.
+
+    Each request is classified once. The four bucket widths share that walk.
+    """
+    role_of: dict[int, str] = {}
+    for msg in requests:
+        role_of[id(msg)] = traffic_role(
+            msg.get("sport") or "",
+            msg.get("dport") or "",
+            msg.get("opcode") or "",
+            msg.get("key") or "",
+        )
     matched_rtts: list[tuple] = []
     ip_rtts: dict[str, list[float]] = defaultdict(list)
     ip_over_100: Counter = Counter()
@@ -1799,205 +2035,31 @@ def build_charts(
             req.get("opaque") or "",
             str(req.get("stream") or ""),
             req.get("src") or "",
-            traffic_role(req.get("sport") or "", req.get("dport") or "", req.get("opcode") or "", req.get("key") or ""),
+            role_of[id(req)],
         ))
 
     portset = set(ports)
-    ends = cluster_endpoints(requests)
+    ends = cluster_endpoints(requests, role_of)
     timed_loss = []
-    for event in loss_events:
-        if portset and event["sport"] not in portset and event["dport"] not in portset:
-            continue
-        if not portset:
-            continue
-        if event["time"] is None:
-            continue
-        timed_loss.append(event)
+    if portset:
+        for event in loss_events:
+            if event["time"] is None:
+                continue
+            if event["sport"] not in portset and event["dport"] not in portset:
+                continue
+            timed_loss.append(event)
 
-    widths = (0.5, 1, 5, 10)
-    series: dict[str, list[dict]] = {}
-    for width in widths:
-        count = _bucket_count(capture_end, width)
-        requests_n = [0] * count
-        matched_n = [0] * count
-        unanswered_n = [0] * count
-        resp_only_n = [0] * count
-        lost_n = [0] * count
-        lost_c2s = [0] * count
-        lost_s2c = [0] * count
-        retrans_n = [0] * count
-        ack_n = [0] * count
-        opcode_n: list[Counter] = [Counter() for _ in range(count)]
-        samples: list[list[float]] = [[] for _ in range(count)]
-        sdk_requests_n = [0] * count
-        cluster_requests_n = [0] * count
-        sdk_unanswered_n = [0] * count
-        cluster_unanswered_n = [0] * count
-        sdk_retrans_n = [0] * count
-        cluster_retrans_n = [0] * count
-        sdk_samples: list[list[float]] = [[] for _ in range(count)]
-        cluster_samples: list[list[float]] = [[] for _ in range(count)]
-        body_in_max = [0] * count
-        body_out_max = [0] * count
-        body_in_sum = [0] * count
-        body_out_sum = [0] * count
-        body_large = [0] * count
-        snap_memory_n = [0] * count
-        snap_disk_n = [0] * count
-        snap_other_n = [0] * count
-        snap_span_max = [0] * count
-        ack_bytes_n = [0] * count
-        buffer_ack_n = [0] * count
-        mutation_n = [0] * count
-        ttp_samples: list[list[float]] = [[] for _ in range(count)]
-        ttr_samples: list[list[float]] = [[] for _ in range(count)]
-
-        def note_body(msg: dict, maxima: list[int], totals: list[int]) -> None:
-            size = int(msg.get("body") or 0)
-            index = _bucket_index(msg["time"], width, count)
-            totals[index] += size
-            if size > maxima[index]:
-                maxima[index] = size
-            if size >= LARGE_BODY_BYTES:
-                body_large[index] += 1
-
-        for msg in requests:
-            index = _bucket_index(msg["time"], width, count)
-            requests_n[index] += 1
-            opcode_n[index][opcode_name(msg.get("opcode") or "")] += 1
-            if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or "") == "cluster":
-                cluster_requests_n[index] += 1
-            else:
-                sdk_requests_n[index] += 1
-            number = _opcode_number(msg.get("opcode") or "")
-            if number == 0x57:
-                mutation_n[index] += 1
-            if number == 0x56:
-                if msg.get("snapshot_disk"):
-                    snap_disk_n[index] += 1
-                elif msg.get("snapshot_memory"):
-                    snap_memory_n[index] += 1
-                else:
-                    snap_other_n[index] += 1
-                start = msg.get("snap_start")
-                end = msg.get("snap_end")
-                if start is not None and end is not None and end >= start:
-                    span = end - start
-                    if span > snap_span_max[index]:
-                        snap_span_max[index] = span
-            credit = msg.get("bytes_to_ack")
-            if credit:
-                ack_bytes_n[index] += credit
-                buffer_ack_n[index] += 1
-            note_body(msg, body_in_max, body_in_sum)
-        def note_persist(msg: dict) -> None:
-            index = _bucket_index(msg["time"], width, count)
-            if msg.get("ttp") is not None:
-                ttp_samples[index].append(float(msg["ttp"]))
-            if msg.get("ttr") is not None:
-                ttr_samples[index].append(float(msg["ttr"]))
-
-        for _req, resp in paired["matched"]:
-            note_body(resp, body_out_max, body_out_sum)
-            note_persist(resp)
-        for msg in paired["resp_only"]:
-            note_body(msg, body_out_max, body_out_sum)
-            note_persist(msg)
-        for when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, _requester, role in matched_rtts:
-            index = _bucket_index(when, width, count)
-            matched_n[index] += 1
-            samples[index].append(gap)
-            if role == "cluster":
-                cluster_samples[index].append(gap)
-            else:
-                sdk_samples[index].append(gap)
-        for msg in paired["unanswered"]:
-            index = _bucket_index(msg["time"], width, count)
-            unanswered_n[index] += 1
-            if traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or "") == "cluster":
-                cluster_unanswered_n[index] += 1
-            else:
-                sdk_unanswered_n[index] += 1
-        for msg in paired["resp_only"]:
-            resp_only_n[_bucket_index(msg["time"], width, count)] += 1
-        for event in timed_loss:
-            index = _bucket_index(event["time"], width, count)
-            if event["lost"]:
-                lost_n[index] += 1
-                if event["sport"] in portset:
-                    lost_s2c[index] += 1
-                else:
-                    lost_c2s[index] += 1
-            if event["retrans"]:
-                retrans_n[index] += 1
-                if flow_role(event.get("sport") or "", event.get("dport") or "", ends) == "cluster":
-                    cluster_retrans_n[index] += 1
-                else:
-                    sdk_retrans_n[index] += 1
-            if event["ack"]:
-                ack_n[index] += 1
-        rows = []
-        for index in range(count):
-            row = {
-                "t": _bucket_time(index, width),
-                "requests": requests_n[index],
-                "matched": matched_n[index],
-                "unanswered": unanswered_n[index],
-                "resp_only": resp_only_n[index],
-                "lost": lost_n[index],
-                "lost_c2s": lost_c2s[index],
-                "lost_s2c": lost_s2c[index],
-                "retrans": retrans_n[index],
-                "sdk_requests": sdk_requests_n[index],
-                "cluster_requests": cluster_requests_n[index],
-                "sdk_unanswered": sdk_unanswered_n[index],
-                "cluster_unanswered": cluster_unanswered_n[index],
-                "sdk_retrans": sdk_retrans_n[index],
-                "cluster_retrans": cluster_retrans_n[index],
-                "sdk_n": (sdk_summary := _rtt_summary(sdk_samples[index]))["rtt_n"],
-                "sdk_median": sdk_summary["rtt_median"],
-                "sdk_p90": sdk_summary["rtt_p90"],
-                "sdk_p99": sdk_summary["rtt_p99"],
-                "sdk_min": sdk_summary["rtt_min"],
-                "sdk_max": sdk_summary["rtt_max"],
-                "cluster_n": (cluster_summary := _rtt_summary(cluster_samples[index]))["rtt_n"],
-                "cluster_median": cluster_summary["rtt_median"],
-                "cluster_p90": cluster_summary["rtt_p90"],
-                "cluster_p99": cluster_summary["rtt_p99"],
-                "cluster_min": cluster_summary["rtt_min"],
-                "cluster_max": cluster_summary["rtt_max"],
-                "ack_lost": ack_n[index],
-                "opcodes": dict(opcode_n[index]),
-                "body_in_max": body_in_max[index],
-                "body_out_max": body_out_max[index],
-                "body_in_bytes": body_in_sum[index],
-                "body_out_bytes": body_out_sum[index],
-                "body_large": body_large[index],
-                "snap_memory": snap_memory_n[index],
-                "snap_disk": snap_disk_n[index],
-                "snap_other": snap_other_n[index],
-                "snap_span_max": snap_span_max[index],
-                "ack_bytes": ack_bytes_n[index],
-                "buffer_acks": buffer_ack_n[index],
-                "mutations": mutation_n[index],
-                "ttp_n": (ttp_summary := _milli_summary(ttp_samples[index]))["n"],
-                "ttp_median": ttp_summary["median"],
-                "ttp_p99": ttp_summary["p99"],
-                "ttr_n": (ttr_summary := _milli_summary(ttr_samples[index]))["n"],
-                "ttr_median": ttr_summary["median"],
-                "ttr_p99": ttr_summary["p99"],
-            }
-            row.update(_rtt_summary(samples[index]))
-            rows.append(row)
-        series[_bucket_key(width)] = rows
+    series = _bucket_series(
+        requests, paired, matched_rtts, timed_loss, portset, ends, capture_end, role_of,
+    )
 
     by_ip: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     by_conn: dict[tuple[str, str], list] = {}
     by_opcode: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-    by_key: Counter = Counter()
-    key_unanswered: Counter = Counter()
-    key_body_sum: Counter = Counter()
-    key_body_n: Counter = Counter()
+    keys = _SideTally()
+    unanswered_tally = _SideTally()
+    body_sum = _SideTally()
+    body_n = _SideTally()
     opcode_rtts: dict[str, list[float]] = defaultdict(list)
     opcode_role_rtts: dict[tuple[str, str], list[float]] = defaultdict(list)
     unanswered_keys = {id(msg) for msg in paired["unanswered"]}
@@ -2012,27 +2074,31 @@ def build_charts(
             conn = [0, 0, str(msg.get("stream") or ""), 0, 0]
             by_conn[(ip, port)] = conn
         conn[0] += 1
-        if traffic_role(port, msg.get("dport") or "", opcode, msg.get("key") or "") == "cluster":
+        side = role_of[id(msg)]
+        if side == "cluster":
             conn[4] += 1
         else:
             conn[3] += 1
         key = msg.get("key") or ""
-        if key:
-            by_key[key] += 1
-        if id(msg) in unanswered_keys:
-            by_ip[ip][1] += 1
-            by_opcode[opcode][1] += 1
-            conn[1] += 1
-            if key:
-                key_unanswered[key] += 1
-                key_body_sum[key] += int(msg.get("body") or 0)
-                key_body_n[key] += 1
+        keys.add(side, key)
+        if id(msg) not in unanswered_keys:
+            continue
+        by_ip[ip][1] += 1
+        by_opcode[opcode][1] += 1
+        conn[1] += 1
+        if not key:
+            continue
+        body = int(msg.get("body") or 0)
+        unanswered_tally.add(side, key)
+        body_sum.add(side, key, body)
+        body_n.add(side, key)
     for _when, gap, key, opcode, body_in, body_out, _opaque, _stream, _requester, role in matched_rtts:
         opcode_rtts[opcode].append(gap)
         opcode_role_rtts[(role, opcode)].append(gap)
-        if key:
-            key_body_sum[key] += max(body_in, body_out)
-            key_body_n[key] += 1
+        if not key:
+            continue
+        body_sum.add(role, key, max(body_in, body_out))
+        body_n.add(role, key)
 
     ranked_calls = sorted(
         (
@@ -2042,33 +2108,74 @@ def build_charts(
         ),
         key=lambda item: (-item[1], item[0]),
     )
-    slowest = [
-        {
-            "key": key,
-            "time_ms": _ms(gap),
-            "seconds": round(when, 3),
-            "body_bytes": max(body_in, body_out),
-            "opaque": opaque,
-            "opcode": opcode,
-            "stream": stream,
-            "requester": requester,
-            "role": role,
-        }
-        for when, gap, key, opcode, body_in, body_out, opaque, stream, requester, role in ranked_calls[:10]
-    ]
+
+    def slow_rows(calls: list[tuple]) -> list[dict]:
+        return [
+            {
+                "key": key,
+                "time_ms": _ms(gap),
+                "seconds": round(when, 3),
+                "body_bytes": max(body_in, body_out),
+                "opaque": opaque,
+                "opcode": opcode,
+                "stream": stream,
+                "requester": requester,
+                "role": role,
+            }
+            for when, gap, key, opcode, body_in, body_out, opaque, stream, requester, role in calls
+        ]
+
+    def top_keys(counter: Counter, unanswered: Counter, body_sum: Counter, body_n: Counter) -> list[dict]:
+        return [
+            {
+                "key": key,
+                "count": count,
+                "unanswered": unanswered[key],
+                "per_second": round(count / capture_end, 1) if capture_end else None,
+                "avg_body_bytes": round(body_sum[key] / body_n[key]) if body_n[key] else None,
+            }
+            for key, count in counter.most_common(10)
+        ]
+
+    slowest_sdk_calls: list[tuple] = []
+    slowest_cluster_calls: list[tuple] = []
+    for item in ranked_calls:
+        if len(slowest_sdk_calls) >= 10 and len(slowest_cluster_calls) >= 10:
+            break
+        if item[-1] == "cluster":
+            if len(slowest_cluster_calls) < 10:
+                slowest_cluster_calls.append(item)
+            continue
+        if len(slowest_sdk_calls) < 10:
+            slowest_sdk_calls.append(item)
+    slowest = slow_rows(ranked_calls[:10])
+    slowest_sdk = slow_rows(slowest_sdk_calls)
+    slowest_cluster = slow_rows(slowest_cluster_calls)
     all_rtts = [gap for _when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, _requester, _role in matched_rtts]
     overall = _rtt_summary(all_rtts)
-    all_ms = [gap * 1000 for gap in all_rtts]
+    over_50 = over_100 = over_250 = 0
+    for gap in all_rtts:
+        ms = gap * 1000
+        if ms < 50:
+            continue
+        over_50 += 1
+        if ms >= 100:
+            over_100 += 1
+        if ms >= 250:
+            over_250 += 1
     gap_window = _in_flight_window(matched_rtts)
 
     def _side(msg: dict) -> str:
-        role = traffic_role(
-            msg.get("sport") or "",
-            msg.get("dport") or "",
-            msg.get("opcode") or "",
-            msg.get("key") or "",
-        )
-        return "cluster" if role == "cluster" else "sdk"
+        role = role_of.get(id(msg))
+        if role is None:
+            role = traffic_role(
+                msg.get("sport") or "",
+                msg.get("dport") or "",
+                msg.get("opcode") or "",
+                msg.get("key") or "",
+            )
+            role_of[id(msg)] = role
+        return role
 
     unanswered_by_role: dict[str, list] = {"sdk": [], "cluster": []}
     resp_only_by_role: dict[str, list] = {"sdk": [], "cluster": []}
@@ -2077,15 +2184,30 @@ def build_charts(
     for msg in paired["resp_only"]:
         resp_only_by_role[_side(msg)].append(msg)
     loss_marks = _loss_marks(timed_loss, ports)
+    gap_charts: dict[str, object] = {}
+    for name, messages, at_start in (
+        ("missing_response", paired["unanswered"], False),
+        ("missing_request", paired["resp_only"], True),
+        ("missing_response_sdk", unanswered_by_role["sdk"], False),
+        ("missing_response_cluster", unanswered_by_role["cluster"], False),
+        ("missing_request_sdk", resp_only_by_role["sdk"], True),
+        ("missing_request_cluster", resp_only_by_role["cluster"], True),
+    ):
+        gap_charts[name] = _annotate_gap_errors(
+            _ten_gaps(messages, capture_end, gap_window, at_start=at_start),
+            loss_marks,
+        )
+        gap_charts[f"{name}_total"] = len(messages)
     return {
         "capture_seconds": round(capture_end, 3),
+        "in_flight_window": round(gap_window, 6),
         "buckets": series,
         "rtt_overall_ms": overall,
         "slow_ms": {
-            "matched": len(all_ms),
-            "over_50": sum(1 for value in all_ms if value >= 50),
-            "over_100": sum(1 for value in all_ms if value >= 100),
-            "over_250": sum(1 for value in all_ms if value >= 250),
+            "matched": len(all_rtts),
+            "over_50": over_50,
+            "over_100": over_100,
+            "over_250": over_250,
         },
         "rtt_histogram": _role_histogram(matched_rtts),
         "by_requester_ip": [
@@ -2105,7 +2227,7 @@ def build_charts(
             }
             for (ip, port), slot in sorted(by_conn.items(), key=lambda item: item[1][0], reverse=True)
         ],
-        "traffic": _traffic_summary(requests, paired, loss_events),
+        "traffic": _traffic_summary(requests, paired, loss_events, role_of, ends),
         "by_opcode": [
             {
                 "opcode": opcode,
@@ -2115,34 +2237,18 @@ def build_charts(
                 "median_ms": (summary := _rtt_summary(opcode_rtts[opcode]))["rtt_median"],
                 "p99_ms": summary["rtt_p99"],
                 "description": opcode_description(opcode),
-                "role": "cluster" if str(opcode or "").lower() in _CLUSTER_OPCODES else "sdk",
+                "role": "cluster" if str(opcode or "").lower() in CLUSTER_OPCODES else "sdk",
                 "expects_reply": expects_reply(opcode),
             }
             for opcode, counts in sorted(by_opcode.items(), key=lambda item: item[1][0], reverse=True)
         ],
-        "top_requested": [
-            {
-                "key": key,
-                "count": count,
-                "unanswered": key_unanswered[key],
-                "per_second": round(count / capture_end, 1) if capture_end else None,
-                "avg_body_bytes": round(key_body_sum[key] / key_body_n[key]) if key_body_n[key] else None,
-            }
-            for key, count in by_key.most_common(10)
-        ],
+        "top_requested": top_keys(keys.all, unanswered_tally.all, body_sum.all, body_n.all),
+        "top_requested_sdk": top_keys(keys.sdk, unanswered_tally.sdk, body_sum.sdk, body_n.sdk),
+        "top_requested_cluster": top_keys(keys.cluster, unanswered_tally.cluster, body_sum.cluster, body_n.cluster),
         "top_slowest": slowest,
-        "missing_response": _annotate_gap_errors(_ten_gaps(paired["unanswered"], capture_end, gap_window, at_start=False), loss_marks),
-        "missing_response_total": len(paired["unanswered"]),
-        "missing_request": _annotate_gap_errors(_ten_gaps(paired["resp_only"], capture_end, gap_window, at_start=True), loss_marks),
-        "missing_request_total": len(paired["resp_only"]),
-        "missing_response_sdk": _annotate_gap_errors(_ten_gaps(unanswered_by_role["sdk"], capture_end, gap_window, at_start=False), loss_marks),
-        "missing_response_sdk_total": len(unanswered_by_role["sdk"]),
-        "missing_response_cluster": _annotate_gap_errors(_ten_gaps(unanswered_by_role["cluster"], capture_end, gap_window, at_start=False), loss_marks),
-        "missing_response_cluster_total": len(unanswered_by_role["cluster"]),
-        "missing_request_sdk": _annotate_gap_errors(_ten_gaps(resp_only_by_role["sdk"], capture_end, gap_window, at_start=True), loss_marks),
-        "missing_request_sdk_total": len(resp_only_by_role["sdk"]),
-        "missing_request_cluster": _annotate_gap_errors(_ten_gaps(resp_only_by_role["cluster"], capture_end, gap_window, at_start=True), loss_marks),
-        "missing_request_cluster_total": len(resp_only_by_role["cluster"]),
+        "top_slowest_sdk": slowest_sdk,
+        "top_slowest_cluster": slowest_cluster,
+        **gap_charts,
         "server": couchbase_server(requests),
         "packet_types": [
             {"name": name, "count": int(count)}
@@ -2151,6 +2257,7 @@ def build_charts(
         ],
         "scatter": (scatter := _scatters(paired))[0],
         "scatter_server": scatter[1],
+        "packet_errors": _packet_errors(loss_events, ports, ends),
         "heatmap": _heatmaps(paired["unanswered"], capture_end),
         "boxplot": _boxplot(opcode_role_rtts),
         "sankey": _sankey(requests, paired),
@@ -2200,7 +2307,13 @@ def _connection_role(slot: list) -> str:
     return "sdk"
 
 
-def _traffic_summary(requests: list[dict], paired: dict, loss_events: list[dict]) -> dict:
+def _traffic_summary(
+    requests: list[dict],
+    paired: dict,
+    loss_events: list[dict],
+    role_of: dict[int, str] | None = None,
+    cluster_ends: set[str] | None = None,
+) -> dict:
     """SDK is an application port to KV. Cluster is node-to-node or replication."""
     rows = {
         "sdk": {"requests": 0, "unanswered": 0, "no_reply": 0, "matched": 0, "retrans": 0, "lost": 0},
@@ -2208,8 +2321,16 @@ def _traffic_summary(requests: list[dict], paired: dict, loss_events: list[dict]
     }
     unanswered = {id(msg) for msg in paired["unanswered"]}
     role_rtts: dict[str, list[float]] = {"sdk": [], "cluster": []}
+
+    def role_for(msg: dict) -> str:
+        if role_of is not None:
+            cached = role_of.get(id(msg))
+            if cached is not None:
+                return cached
+        return traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or "")
+
     for msg in requests:
-        role = traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or "")
+        role = role_for(msg)
         rows[role]["requests"] += 1
         if not expects_reply(msg.get("opcode") or "", msg.get("snapshot_ack")):
             rows[role]["no_reply"] += 1
@@ -2218,15 +2339,20 @@ def _traffic_summary(requests: list[dict], paired: dict, loss_events: list[dict]
     for req, resp in paired["matched"]:
         if resp["time"] < req["time"]:
             continue
-        role = traffic_role(req.get("sport") or "", req.get("dport") or "", req.get("opcode") or "", req.get("key") or "")
+        role = role_for(req)
         rows[role]["matched"] += 1
         role_rtts[role].append(resp["time"] - req["time"])
-    cluster_ends = cluster_endpoints(requests)
+    if cluster_ends is None:
+        cluster_ends = cluster_endpoints(requests, role_of)
     for event in loss_events:
+        retrans = event.get("retrans")
+        lost = event.get("lost")
+        if not retrans and not lost:
+            continue
         role = flow_role(event.get("sport") or "", event.get("dport") or "", cluster_ends)
-        if event.get("retrans"):
+        if retrans:
             rows[role]["retrans"] += 1
-        if event.get("lost"):
+        if lost:
             rows[role]["lost"] += 1
     for role, samples in role_rtts.items():
         summary = _rtt_summary(samples)
@@ -2264,12 +2390,19 @@ def _client_rows(
     return rows
 
 
-def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_start: bool) -> list[dict]:
-    """Up to ten missing calls, spaced across the file.
+_GAP_LIMIT = 10
+# A capture always cuts calls at the open and the close. Two examples show
+# that shape. The rest of the ten stays with calls that had time to finish.
+_EDGE_SAMPLE = 2
 
-    Interior rows are preferred. Edge rows fill in only when fewer than ten
-    calls sit away from the open or the close. A long list is not copied into
-    the page.
+
+def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_start: bool) -> list[dict]:
+    """Up to ten missing calls.
+
+    A response in the opening window, and a request in the closing window,
+    are the file starting or stopping. At most two of those are shown.
+    Everything else had time for the other half of the call, including a
+    request near the start whose reply had the rest of the capture.
     """
     rows = []
     for msg in messages:
@@ -2298,13 +2431,18 @@ def _ten_gaps(messages: list[dict], capture_end: float, window: float, *, at_sta
             "where": where,
             "role": traffic_role(msg.get("sport") or "", msg.get("dport") or "", msg.get("opcode") or "", msg.get("key") or ""),
         })
-    interior = [row for row in rows if not row["at_edge"]]
-    edge = [row for row in rows if row["at_edge"]]
-    interior.sort(key=lambda row: row["seconds"])
+    if at_start:
+        investigate = [row for row in rows if row["where"] != "start"]
+        edge = [row for row in rows if row["where"] == "start"]
+    else:
+        investigate = [row for row in rows if row["where"] != "end"]
+        edge = [row for row in rows if row["where"] == "end"]
+    investigate.sort(key=lambda row: row["seconds"])
     edge.sort(key=lambda row: row["seconds"])
-    chosen = _spread_rows(interior, 10)
-    if len(chosen) < 10:
-        chosen.extend(_spread_rows(edge, 10 - len(chosen)))
+    chosen = _spread_rows(investigate, _GAP_LIMIT)
+    room = _GAP_LIMIT - len(chosen)
+    if room > 0 and edge:
+        chosen.extend(_spread_rows(edge, min(_EDGE_SAMPLE, room)))
     chosen.sort(key=lambda row: row["seconds"])
     return chosen
 
@@ -2340,13 +2478,15 @@ def _loss_marks(events: list[dict], ports: list[str]) -> list[tuple]:
 def _annotate_gap_errors(rows: list[dict], marks: list[tuple], window: float = _ERROR_WINDOW_SECONDS) -> list[dict]:
     """Mark a missing call when a TCP hole sits within half a second of it.
 
-    Same stream is preferred. Otherwise any hole in that half-second still
-    counts, because the chart shows the loss and the missing call together.
+    A hole on the same stream is the one that can explain the missing half.
+    The copied filter names that stream. A hole only on another connection
+    of the same machine stays on that requester's address.
     """
     for row in rows:
         when = float(row["seconds"])
         near = [mark for mark in marks if abs(mark[0] - when) <= window]
-        same = [mark for mark in near if mark[1] and mark[1] == str(row.get("stream") or "")]
+        stream = str(row.get("stream") or "")
+        same = [mark for mark in near if mark[1] and mark[1] == stream]
         chosen = same or near
         if not chosen:
             row["error"] = ""
@@ -2361,14 +2501,17 @@ def _annotate_gap_errors(rows: list[dict], marks: list[tuple], window: float = _
                 if flag not in flags:
                     flags.append(flag)
         flag_text = flags[0] if len(flags) == 1 else "(" + " || ".join(flags) + ")"
-        # Errors to and from this machine, both directions, not every host in the file.
-        hole = ["tcp.port == 11210"]
-        requester = str(row.get("requester") or "")
-        if requester:
-            addr = "ipv6.addr" if ":" in requester else "ip.addr"
-            hole.append(f"{addr} == {requester}")
-        elif same:
-            hole.append(f"tcp.stream == {row['stream']}")
+        if same and stream:
+            hole = [f"tcp.stream == {stream}"]
+        else:
+            # Another connection of this machine, not every host in the file.
+            hole = ["tcp.port == 11210"]
+            requester = str(row.get("requester") or "")
+            if requester:
+                addr = "ipv6.addr" if ":" in requester else "ip.addr"
+                hole.append(f"{addr} == {requester}")
+            elif stream:
+                hole.append(f"tcp.stream == {stream}")
         hole.append(f"frame.time_relative >= {start}")
         hole.append(f"frame.time_relative <= {end}")
         hole.append(flag_text)
@@ -3077,7 +3220,9 @@ def render_summary(facts: dict) -> str:
             else ""
         )
         + f"The other **{edge['interior_unanswered']}** unanswered requests and "
-        f"**{edge['interior_responses_without_request']}** unmatched responses sit further inside the file."
+        f"**{edge['interior_responses_without_request']}** unmatched responses sit further inside the file. "
+        "Responses at the open and requests at the close are expected on both SDK and cluster: the capture cut through calls already on the wire. "
+        "A request in the opening that still had time for a reply, and the unmatched calls further inside, are the ones to trace."
     )
     traffic = facts.get("traffic") or {}
     cluster = traffic.get("cluster") or {}
@@ -3507,16 +3652,20 @@ def next_questions(facts: dict, charts: dict | None = None) -> list[dict]:
         )
     edge = facts["edge"]
     opening = edge.get("opening_requests") or 0
-    if opening:
+    start_n = edge.get("start_responses") or 0
+    end_n = edge.get("end_requests") or 0
+    if start_n or end_n:
         steps.append(
             {
-                "title": "The recording opened in the middle of live calls",
+                "title": "The open and the close are the capture",
                 "text": (
-                    f"{opening} requests in the first {edge['window_seconds']:.3f}s have no reply, and "
-                    f"{edge['start_responses']} replies in that window have no request. "
-                    "On a replication connection the opaque counts upward. The missing reply and the extra reply "
-                    "are neighbors that were already on the wire when the file started. "
-                    "Read later matched calls on that stream before treating the command as failed."
+                    f"{start_n} responses in the first {edge['window_seconds']:.3f}s have no request, "
+                    f"and {end_n} requests in the last {edge['window_seconds']:.3f}s have no reply. "
+                    "That is the file starting and stopping, on both SDK and cluster. "
+                    f"{opening} requests in the opening still had time for a reply, "
+                    f"{edge['interior_unanswered']} unanswered requests sit further inside, and "
+                    f"{edge['interior_responses_without_request']} responses after the opening have no request. "
+                    "Trace those. The open and the close are expected."
                 ),
             }
         )
@@ -3556,21 +3705,6 @@ def next_questions(facts: dict, charts: dict | None = None) -> list[dict]:
                     f"{gap_clause} "
                     "Ask about the span port, snap length, and whether the capture disk kept up. "
                     "Do not treat the whole unanswered set as Couchbase timeouts."
-                ),
-            }
-        )
-    if edge["interior_unanswered"] > edge["end_requests"] + edge["start_responses"]:
-        steps.append(
-            {
-                "title": "The open and close of the file are not the missing calls",
-                "text": (
-                    f"{edge['start_responses']} "
-                    f"{'response has' if edge['start_responses'] == 1 else 'responses have'} "
-                    "no request at the start, and "
-                    f"{edge['end_requests']} "
-                    f"{'request is' if edge['end_requests'] == 1 else 'requests are'} "
-                    "still in flight at the end. "
-                    f"{edge['interior_unanswered']} unanswered requests sit further inside the file."
                 ),
             }
         )
@@ -3719,12 +3853,42 @@ def chart_digest(charts: dict) -> list[str]:
             f"median_ms={row.get('median_ms')} p99_ms={row.get('p99_ms')} "
             f"{row.get('description') or ''}".rstrip()
         )
-    lines.append("Ten slowest matched calls (ms, seconds from start, body bytes, key):")
-    for row in charts.get("top_slowest") or []:
-        lines.append(
-            f"- {row.get('time_ms')} ms at {row.get('seconds')}s side={row.get('role') or ''} "
+    def busy_line(row: dict) -> str:
+        return (
+            f"- {row.get('count')} requests, {row.get('per_second')}/s, "
+            f"avg body {row.get('avg_body_bytes')} bytes, lost {row.get('unanswered')}: {row.get('key')}"
+        )
+
+    def slow_line(row: dict) -> str:
+        return (
+            f"- {row.get('time_ms')} ms at {row.get('seconds')}s "
             f"body={row.get('body_bytes')} stream {row.get('stream')} opaque {row.get('opaque')} {row.get('key')}"
         )
+
+    sdk_busy = charts.get("top_requested_sdk") or []
+    cluster_busy = charts.get("top_requested_cluster") or []
+    sdk_slow = charts.get("top_slowest_sdk") or []
+    cluster_slow = charts.get("top_slowest_cluster") or []
+    if sdk_busy or cluster_busy or sdk_slow or cluster_slow:
+        lines.append(
+            "Busiest and slowest document ids are counted separately for SDK and for cluster. "
+            "Each list is that side's own ten."
+        )
+        for title, rows, line in (
+            ("Ten busiest SDK document ids:", sdk_busy, busy_line),
+            ("Ten busiest cluster document ids:", cluster_busy, busy_line),
+            ("Ten slowest SDK calls:", sdk_slow, slow_line),
+            ("Ten slowest cluster calls:", cluster_slow, slow_line),
+        ):
+            if not rows:
+                continue
+            lines.append(title)
+            for row in rows:
+                lines.append(line(row))
+    else:
+        lines.append("Ten slowest matched calls (ms, seconds from start, body bytes, key):")
+        for row in charts.get("top_slowest") or []:
+            lines.append(slow_line(row))
     return lines
 
 
@@ -3741,7 +3905,7 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
         "- The opaque on a DCP stream request is copied onto every later command for that stream. A snapshot marker and a mutation often share one packet and that opaque. A later packet is the next change, not a retry. Do not call no_reply messages lost responses.",
         "- These producer messages do not expect a command reply: stream end 0x55, snapshot marker 0x56 unless snapshot-type flag 0x08 Ack is set, mutation 0x57, deletion 0x58, expiration 0x59, buffer acknowledgement 0x5d (its response is unused; opaque 0 means the whole connection), and 0x5f-0x67. Noop 0x5c does expect a reply: the producer disconnects if the consumer stays silent.",
         "- Statistics 0x10 with key vbucket-seqno, and Get All VBucket Seqnos 0x48, are how a DCP consumer learns the high sequence number before a stream request. Statistics is one request and many response packets on one opaque. Continuation packets folded into the request are one call.",
-        "- Replies with no request in the opening window, and requests with no reply in that same window, are calls the capture cut through. Requests in the closing window were still in flight when recording stopped.",
+        "- A response with no request in the opening window is expected on both SDK and cluster: the request was sent before recording started. A request with no response in the closing window is expected on both sides: recording stopped before the reply. Do not make either one a point of interest. A request that still had more than that window of capture left, including one near the start, had time for a reply. A response after the opening window with no request is a request packet missing from the file. Those are the missing calls to look at.",
         "- Quote the SDK median and the cluster median. The blended round-trip median mixes them and hides the slower side.",
         "- Capture duplicates are the same TCP segment seen twice within 1 ms. Do not call them retransmissions or DCP retries. A retransmission waited out a timeout.",
         "- Observe (opcode 0x92) is the only command where Wireshark fills couchbase.ttp and couchbase.ttr. They replace the CAS field and are milliseconds: approximate time still needed to persist the key, then to replicate it. Zero means that step is already done. A durable Set does not carry these fields. Its request carries durability_req.",
@@ -3791,6 +3955,10 @@ def facts_brief(facts: dict, charts: dict | None = None) -> str:
     for row in facts["magics"]:
         lines.append(f"- {row['magic']} {row['role']}: {row['messages']}")
     lines.append("")
+    lines.append(
+        "The rows below are the capture edges. They are expected on SDK and on cluster. "
+        "Do not choose them as points of interest. Use the interior counts and the later sections for that."
+    )
     lines.append("Opening-window responses:")
     for row in edge["start_examples"]:
         lines.append(
@@ -3933,7 +4101,7 @@ Write GitHub-flavored markdown with these headings, in this order:
 ## Next questions and steps
 
 The opening states the Couchbase host and IP, the unanswered-request count, the unique key count, and the responses that have no request.
-Then state the round trip and the in-flight window. Separate three groups: responses already on the wire when the file opened, requests still on the wire when the file closed, and the interior rows that had more than that window of capture left.
+Then state the round trip and the in-flight window. Responses already on the wire when the file opened, and requests still on the wire when the file closed, are expected on both SDK and cluster. Give their counts in one sentence. Do not make that open or close a point of interest or an application failure. Write about calls that had time for the other half: a request with more than that window of capture left, including one near the start, and a response after the opening window whose request packet is missing.
 When slow-call counts and body lengths are present, put them in the round-trip section. A short tail of calls over 100 ms, with a maximum well under a second, is not a server timeout.
 When lost-segment markers are present in both directions and retransmissions are rare, say the missing packets fit a recorder that did not see them. Do not call the whole unanswered set Couchbase timeouts.
 Name the stream and key family that hold most of the unanswered requests. Mention duplicate keys and any opaque that also appears on a different stream.
@@ -4012,6 +4180,7 @@ INTEREST_SYSTEM = """You mark points of interest on a Couchbase capture chart.
 Return only a JSON array. No markdown. Each object has "seconds", "title", and "why".
 "seconds" must be one of the candidate seconds in the user message. Do not invent a time.
 Pick 4 to 6 moments that are worth a vertical line: where slowness, a large body, and TCP loss line up, plus a moment that is only a loss spike or only a large body when those are different seconds.
+A response with no request at the start of the file, and a request with no response at the end, are the capture cutting a live call. Do not pick those seconds. Pick other seconds.
 "title" is at most 6 words. "why" is one sentence and cites a number from that candidate.
 """
 
@@ -4068,8 +4237,22 @@ def interest_candidates(charts: dict) -> list[dict]:
                 "Largest request",
                 f"{peak_in.get('body_in_max')} bytes into Couchbase",
             )
-        peak_miss = max(rows, key=lambda row: row.get("unanswered") or 0)
-        if peak_miss.get("unanswered"):
+        window = float(charts.get("in_flight_window") or 0)
+        capture_end = float(charts.get("capture_seconds") or 0)
+
+        def closing_bucket(row: dict) -> bool:
+            """The bucket starts inside the closing in-flight window."""
+            if window <= 0 or capture_end <= 0:
+                return False
+            try:
+                start = float(row.get("t"))
+            except (TypeError, ValueError):
+                return False
+            return start >= capture_end - window - 1e-9
+
+        open_rows = [row for row in rows if not closing_bucket(row)]
+        peak_miss = max(open_rows, key=lambda row: row.get("unanswered") or 0) if open_rows else None
+        if peak_miss and peak_miss.get("unanswered"):
             add(
                 peak_miss.get("t"),
                 "Most lost responses",
@@ -4154,7 +4337,7 @@ def choose_interest_stakes(
         log(f"model marked {len(picked)} points of interest")
         return picked
     except (SystemExit, ValueError, json.JSONDecodeError, KeyError, TypeError) as exc:
-        log(f"Interest stakes fell back to the counted seconds: {exc}")
+        log(f"Interest stakes fell back to the counted seconds: {exc}", severity="WARN")
         return _fallback_interest(candidates)
 
 
@@ -4228,44 +4411,51 @@ def call_model(
     system: str | None = None,
     api_key: str = "",
 ) -> str:
-    if provider == "openai":
-        if not base_url or not model:
-            raise SystemExit(
-                "An OpenAI-compatible note needs ai.base_url and ai.model, "
-                "or --api-base and --model. The API key stays in AI_API_KEY or OPENAI_API_KEY."
-            )
-        if not api_key and not api_host_is_local(base_url):
-            raise SystemExit(
-                "Set AI_API_KEY or OPENAI_API_KEY for that API. Do not put the key in config.json."
-            )
-    elif not base_url or not model:
-        raise SystemExit("The Ollama note needs a base URL and a model.")
-    url, payload, headers = model_request(
-        note,
-        provider=provider,
-        base_url=base_url,
-        model=model,
-        system=system,
-        api_key=api_key,
-    )
-    data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    log(f"asking {model} at {base_url} ({provider}), note {len(note)} characters")
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")[:1500]
-        raise SystemExit(f"The model API returned {exc.code}: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise SystemExit(f"Could not reach the model API at {base_url}: {exc.reason}") from exc
-    content = message_text(body, provider)
-    if not content.strip():
-        raise SystemExit(
-            "The model returned an empty note. If it spent the reply on hidden thinking, "
-            "confirm the model accepts think:false, or raise --timeout."
+    with telemetry.span("call_model", model=model, provider=provider) as span:
+        if provider == "openai":
+            if not base_url or not model:
+                raise SystemExit(
+                    "An OpenAI-compatible note needs ai.base_url and ai.model, "
+                    "or --api-base and --model. The API key stays in AI_API_KEY or OPENAI_API_KEY."
+                )
+            if not api_key and not api_host_is_local(base_url):
+                raise SystemExit(
+                    "Set AI_API_KEY or OPENAI_API_KEY for that API. Do not put the key in config.json."
+                )
+        elif not base_url or not model:
+            raise SystemExit("The Ollama note needs a base URL and a model.")
+        url, payload, headers = model_request(
+            note,
+            provider=provider,
+            base_url=base_url,
+            model=model,
+            system=system,
+            api_key=api_key,
         )
-    return content
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        log(
+            f"asking {model} at {base_url} ({provider}), note {len(note)} characters",
+            model=model,
+            provider=provider,
+            characters=len(note),
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:1500]
+            raise SystemExit(f"The model API returned {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise SystemExit(f"Could not reach the model API at {base_url}: {exc.reason}") from exc
+        content = message_text(body, provider)
+        if not content.strip():
+            raise SystemExit(
+                "The model returned an empty note. If it spent the reply on hidden thinking, "
+                "confirm the model accepts think:false, or raise --timeout."
+            )
+        span.set(characters=len(content))
+        return content
 
 
 def call_ollama(
@@ -4542,7 +4732,11 @@ def write_charts(out: Path, charts: dict) -> None:
     for path in vendor_src.iterdir():
         if path.is_file():
             shutil.copyfile(path, vendor_out / path.name)
-    log(f"wrote {out / 'index.html'}")
+    log(
+        f"wrote {out / 'index.html'}",
+        directory=str(out),
+        charts_bytes=(out / "charts.json").stat().st_size,
+    )
 
 
 def print_dry_run(out: Path, args: argparse.Namespace, facts: dict) -> None:
@@ -4570,6 +4764,11 @@ def print_dry_run(out: Path, args: argparse.Namespace, facts: dict) -> None:
 
 
 def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
+    with telemetry.span("run_job") as job_span:
+        return _execute_job(args, job_span)
+
+
+def _execute_job(args: argparse.Namespace, job_span: _Span) -> tuple[Path, bool]:
     job = resolve_job(args)
     out = default_out(job, args)
     tshark = find_tshark(args.tshark)
@@ -4588,73 +4787,116 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
             raise SystemExit("tshark is not on PATH and not in /Applications/Wireshark.app.")
         pcap = job["pcap"]
         pcap_names = [path.name for path in job.get("also") or [pcap]]
-        requests, responses, magics, loss_events, packet_types = load_pcap(pcap, tshark)
-        capinfos = find_capinfos(tshark)
-        duration = None
-        if capinfos:
-            duration, packet_count = read_capinfos(capinfos, pcap)
-        times = [msg["time"] for msg in requests + responses]
-        capture_end = max([t for t in [duration, max(times) if times else 0] if t is not None])
-        loss = summarize_loss(loss_events, couchbase_ports(requests))
+        with telemetry.span("load_pcap", pcap=pcap.name, bytes=pcap.stat().st_size) as load_span:
+            requests, responses, magics, loss_events, packet_types = load_pcap(pcap, tshark)
+            load_span.set(
+                requests=len(requests),
+                responses=len(responses),
+                loss_events=len(loss_events),
+                packet_kinds=len(packet_types),
+            )
+        with telemetry.span("capinfos") as cap_span:
+            capinfos = find_capinfos(tshark)
+            duration = None
+            if capinfos:
+                duration, packet_count = read_capinfos(capinfos, pcap)
+            times = [msg["time"] for msg in requests + responses]
+            capture_end = max([t for t in [duration, max(times) if times else 0] if t is not None])
+            loss = summarize_loss(loss_events, couchbase_ports(requests))
+            cap_span.set(
+                packets=packet_count,
+                capture_seconds=duration,
+                lost_segments=loss.get("lost_segments"),
+            )
         source = str(pcap)
     else:
-        requests, responses, joined_rows = load_tsv_pair(job["reqs"], job.get("resps"))
+        with telemetry.span("load_tsv") as load_span:
+            requests, responses, joined_rows = load_tsv_pair(job["reqs"], job.get("resps"))
+            load_span.set(requests=len(requests), responses=len(responses), joined_rows=joined_rows)
         times = [msg["time"] for msg in requests + responses]
         capture_end = max(times) if times else 0.0
         source = str(job["reqs"])
         if job.get("resps"):
             source += f" + {job['resps'].name}"
 
-    paired = pair_messages(requests, responses)
-    facts = build_facts(
-        requests,
-        responses,
-        paired,
-        source_label=source,
-        pcap_names=pcap_names,
-        capture_end=capture_end,
-        packet_count=packet_count,
-        magics=magics,
-        joined_rows=joined_rows,
-        opcode_names=opcode_names,
-        loss=loss,
+    with telemetry.span("pair_messages", requests=len(requests), responses=len(responses)) as pair_span:
+        paired = pair_messages(requests, responses)
+        pair_span.set(
+            matched=len(paired["matched"]),
+            unanswered=len(paired["unanswered"]),
+            resp_only=len(paired["resp_only"]),
+            no_reply=len(paired["no_reply"]),
+        )
+    with telemetry.span("build_facts") as facts_span:
+        facts = build_facts(
+            requests,
+            responses,
+            paired,
+            source_label=source,
+            pcap_names=pcap_names,
+            capture_end=capture_end,
+            packet_count=packet_count,
+            magics=magics,
+            joined_rows=joined_rows,
+            opcode_names=opcode_names,
+            loss=loss,
+        )
+        facts_span.set(
+            matched=facts["counts"]["matched"],
+            unanswered=facts["counts"]["unanswered_requests"],
+        )
+    job_span.set(
+        output=str(out),
+        source=source,
+        requests=len(requests),
+        responses=len(responses),
+        matched=facts["counts"]["matched"],
+        unanswered=facts["counts"]["unanswered_requests"],
     )
     if args.dry_run:
         print_dry_run(out, args, facts)
         return out, True
 
-    charts = build_charts(
-        requests,
-        paired,
-        loss_events,
-        couchbase_ports(requests),
-        capture_end,
-        packet_types,
-    )
+    with telemetry.span("build_charts", capture_seconds=round(capture_end, 3)):
+        charts = build_charts(
+            requests,
+            paired,
+            loss_events,
+            couchbase_ports(requests),
+            capture_end,
+            packet_types,
+        )
     facts["traffic"] = charts.get("traffic") or {}
     facts["next_steps"] = next_questions(facts, charts)
     charts["next_steps"] = facts["next_steps"]
-    computed = render_summary(facts)
+    with telemetry.span("render_summary") as render_span:
+        computed = render_summary(facts)
+        render_span.set(characters=len(computed))
     out.mkdir(parents=True, exist_ok=True)
     (out / "facts.json").write_text(json.dumps(facts, indent=2) + "\n")
     write_tsv(out, requests, responses, facts["unanswered"])
 
     def finish_charts(use_model: bool) -> None:
-        charts["interest_stakes"] = choose_interest_stakes(
-            charts,
-            base_url=args.api_base,
-            model=args.model,
-            timeout=args.timeout,
-            use_model=use_model,
-            provider=args.provider,
-            api_key=args.api_key,
-        )
-        write_charts(out, charts)
+        with telemetry.span("interest_stakes", use_model=use_model) as stake_span:
+            charts["interest_stakes"] = choose_interest_stakes(
+                charts,
+                base_url=args.api_base,
+                model=args.model,
+                timeout=args.timeout,
+                use_model=use_model,
+                provider=args.provider,
+                api_key=args.api_key,
+            )
+            stake_span.set(stakes=len(charts["interest_stakes"]))
+        with telemetry.span("write_charts", directory=str(out)) as write_span:
+            write_charts(out, charts)
+            write_span.set(charts_bytes=(out / "charts.json").stat().st_size)
 
     if args.no_ai:
         finish_charts(False)
-        (out / "summary.md").write_text(append_trace_filters(computed, charts))
-        log(f"wrote {out / 'summary.md'}")
+        note = append_trace_filters(computed, charts)
+        (out / "summary.md").write_text(note)
+        log(f"wrote {out / 'summary.md'}", characters=len(note))
         return out, True
 
     try:
@@ -4668,9 +4910,13 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
         )
     except SystemExit as exc:
         finish_charts(True)
-        (out / "summary.md").write_text(append_trace_filters(computed, charts))
-        log(str(exc))
-        log(f"The model did not write the note. The counted report is {out / 'summary.md'}")
+        note = append_trace_filters(computed, charts)
+        (out / "summary.md").write_text(note)
+        log(str(exc), severity="ERROR")
+        log(
+            f"The model did not write the note. The counted report is {out / 'summary.md'}",
+            characters=len(note),
+        )
         return out, False
     finish_charts(True)
     cleaned = append_trace_filters(
@@ -4688,11 +4934,12 @@ def run_job(args: argparse.Namespace) -> tuple[Path, bool]:
     if headline not in cleaned or (facts["unanswered"] and len(missing) > max(3, len(facts["unanswered"]) // 5)):
         log(
             "The model note dropped counted keys or the unanswered total. "
-            "summary.md is the model text; summary.computed.md is the counted note."
+            "summary.md is the model text; summary.computed.md is the counted note.",
+            severity="WARN",
         )
     else:
         log("model note kept the counted keys")
-    log(f"wrote {out / 'summary.md'}")
+    log(f"wrote {out / 'summary.md'}", characters=len(cleaned))
     return out, True
 
 
@@ -4748,6 +4995,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--config", help="path to config.json (default: config.json next to this script)")
     parser.add_argument("--tshark", help="path to tshark")
     parser.add_argument("--self-test", action="store_true", help="run pytest on tests/ and exit")
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        type=str.upper,
+        choices=["TRACE", "DEBUG", "INFO", "WARN", "ERROR"],
+        help="stderr record level (default INFO). Each line is one JSON record",
+    )
     return parser.parse_args(argv)
 
 
@@ -4757,6 +5011,7 @@ def main(argv: list[str] | None = None) -> int:
         return self_test()
     if not args.path and not args.pcap and not args.reqs:
         parse_args(["-h"])
+    telemetry.set_level(args.log_level)
     args = apply_config(args)
     out, ai_ok = run_job(args)
     if args.dry_run:

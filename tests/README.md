@@ -1,6 +1,6 @@
 # Tests
 
-The suite is in this folder. It uses small TSV fixtures. It does not read a pcap and it does not call Ollama.
+The suite is in this folder. It uses small TSV fixtures. It does not read a pcap and it does not call Ollama. Release 0.11.0 keeps that boundary. The opcode tables are imported from `couchbase_opcodes.py`, and the CLI coverage includes `--log-level`.
 
 ## Virtual machine
 

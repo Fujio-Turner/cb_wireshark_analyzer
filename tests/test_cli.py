@@ -1,6 +1,7 @@
 """Config resolution, dry-run, and the counted write path."""
 
 import json
+from pathlib import Path
 
 import analyze_capture as ac
 
@@ -270,3 +271,93 @@ def test_capinfos_expands_a_rounded_summary_when_that_is_all_it_has():
     duration, packets = ac.parse_capinfos_text("Number of packets: 82 k\nCapture duration: 10.5 seconds\n")
     assert duration == 10.5
     assert packets == 82000
+
+
+def test_log_level_defaults_to_info():
+    args = ac.parse_args(["--reqs", "reqs.tsv", "--from-tsv"])
+    assert args.log_level == "INFO"
+    debug = ac.parse_args(["--reqs", "reqs.tsv", "--from-tsv", "--log-level", "debug"])
+    assert debug.log_level == "DEBUG"
+
+
+def test_log_record_is_one_json_line(capsys):
+    ac.telemetry.set_level("INFO")
+    ac.log("counted the capture", packets=3)
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["body"] == "counted the capture"
+    assert record["severity_text"] == "INFO"
+    assert record["severity_number"] == 9
+    assert record["timestamp"].endswith("Z")
+    assert "T" in record["timestamp"]
+    assert len(record["trace_id"]) == 32
+    assert record["attributes"]["packets"] == 3
+    assert record["resource"]["service.name"] == "cb_wireshark_analyzer"
+    assert record["resource"]["service.version"]
+    assert record["instrumentation_scope"]["name"] == "analyze_capture"
+
+
+def test_span_records_duration_and_keeps_attributes(capsys):
+    ac.telemetry.set_level("INFO")
+    try:
+        with ac.telemetry.span("pair_messages", requests=2, folder=Path("/tmp/report")) as span:
+            span.set(matched=1)
+            span.set(skipped=None)
+    finally:
+        ac.telemetry.set_level("INFO")
+    lines = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    row = lines[0]
+    assert row["kind"] == "span"
+    assert row["name"] == "pair_messages"
+    assert row["duration_ms"] >= 0
+    assert row["status"]["code"] == "OK"
+    assert row["attributes"]["requests"] == 2
+    assert row["attributes"]["matched"] == 1
+    assert row["attributes"]["folder"] == "/tmp/report"
+    assert "skipped" not in row["attributes"]
+    assert len(row["trace_id"]) == 32
+    assert len(row["span_id"]) == 16
+
+    ac.telemetry.set_level("DEBUG")
+    try:
+        with ac.telemetry.span("load_pcap"):
+            pass
+    finally:
+        ac.telemetry.set_level("INFO")
+    debug_lines = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert any(item["body"] == "load_pcap started" and item["severity_text"] == "DEBUG" for item in debug_lines)
+    assert any(item.get("kind") == "span" and item["name"] == "load_pcap" for item in debug_lines)
+
+
+def test_log_level_hides_lower_severities(capsys):
+    ac.telemetry.set_level("ERROR")
+    try:
+        ac.log("quiet progress")
+        ac.log("broke", severity="ERROR", frames=1)
+    finally:
+        ac.telemetry.set_level("INFO")
+    lines = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert lines[0]["severity_text"] == "ERROR"
+    assert lines[0]["severity_number"] == 17
+    assert lines[0]["attributes"]["frames"] == 1
+
+
+def test_span_marks_an_error_and_reraises(capsys):
+    ac.telemetry.set_level("INFO")
+    try:
+        with ac.telemetry.span("call_model"):
+            raise SystemExit("model down")
+    except SystemExit as exc:
+        assert "model down" in str(exc)
+    else:
+        raise AssertionError("span should not swallow SystemExit")
+    finally:
+        ac.telemetry.set_level("INFO")
+    lines = [json.loads(line) for line in capsys.readouterr().err.splitlines() if line.strip()]
+    row = next(item for item in lines if item.get("kind") == "span")
+    assert row["status"]["code"] == "ERROR"
+    assert row["severity_text"] == "ERROR"
+    assert row["attributes"]["error"] == "model down"

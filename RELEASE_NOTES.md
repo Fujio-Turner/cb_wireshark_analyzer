@@ -1,5 +1,28 @@
 # Release notes
 
+## 0.11.0
+
+A long run says which stage it is in, and the opcode tables sit beside the script.
+
+- Stderr is one JSON record per line: severity, the stage, a trace id, and `duration_ms` when the stage finishes. `--log-level` defaults to INFO. TRACE, DEBUG, WARN, and ERROR are the other levels. The counted note and the path to `summary.md` stay on stdout. There is no extra package; the lines are written with the standard library.
+- Changing the time bucket keeps the zoom. **Reset chart zoom** is what returns the charts to the full capture. Double-click and **Set Stake** still only move the stake.
+- Opcode names, the tooltip sentences, status text, and the cluster, no-reply, and multi-response sets live in `couchbase_opcodes.py`. The walk imports that file. The Docker image copies it.
+- The four bucket widths, 0.5, 1, 5, and 10 seconds, are filled in one walk of the packets already in memory. The counts stay the same.
+- [docs/DESIGN.md](docs/DESIGN.md) is the map of the script, the chart page, and where a change goes.
+- [CB_WIRESHARK.md](CB_WIRESHARK.md) says Server Recv→Send duration is a flex reply, magic `0x18`. A classic reply, magic `0x81`, has no flex section. A replication meta command that uses the classic header has no server microseconds, so it stays on the capture-time chart.
+
+## 0.10.3
+
+Document tables split by side, and the open and close of the file are no longer treated as the missing calls to investigate.
+
+- **Ten most requested document ids** and **Ten slowest document ids** each have an SDK tab and a Cluster tab. Each side is its own ten. The slowest table no longer has a Role column. The combined lists stay in the note.
+- A **Lost responses** count greater than 1 is red and bold on those tables and on **Opcodes in this capture**. On **Points of Interest** the same style starts when the count is greater than zero. The "not expected" label stays plain.
+- Missing-call tables still show at most ten rows. The tab label is still the full count. Calls that had time for the other half fill the list. A response in the opening window, and a request in the closing window, are the capture cutting a live call, so the table keeps at most two of those. A request near the start that still had time for a reply stays in the list. **Responses missing a request** shows **Seconds** and **Since Start**. Both are seconds from the first packet to the reply. **Requests missing a response** still shows **Left**.
+- The brief sent to the model says the same thing. The open and the close are expected on both SDK and cluster, and they are not points of interest. A lost-response stake is not placed on a bucket that starts inside the closing window.
+- **Slow calls** draws packet errors as diamonds on the capture-time axis. Bright blue is an application error. Bright red is a cluster error. The height is not a round trip. In “when it happened,” that chart and **Missing replies** share the time slider and the stake lines. Server time keeps its own scale.
+- The **Cluster** over-time chart takes stakes, double-click, and reset zoom with the other time charts.
+- **Errors** on a missing call copies the TCP hole on that same stream when the hole is there. A hole only on another connection of that machine stays on the requester address.
+
 ## 0.10.2
 
 Where calls went and the opcode spread can be limited to one side of the capture.

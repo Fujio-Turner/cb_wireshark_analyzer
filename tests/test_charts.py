@@ -90,11 +90,12 @@ def test_missing_rows_are_spaced_across_the_capture():
     rows = charts["missing_response"]
     assert charts["missing_response_total"] == 30
     assert len(rows) == 10
-    assert rows[0]["key"] == "k2"
+    assert rows[0]["key"] == "k1"
+    assert rows[0]["where"] == "start"
     assert rows[-1]["key"] == "k30"
-    assert rows[0]["where"] == "inside"
     assert rows[0]["seconds"] < rows[4]["seconds"] < rows[-1]["seconds"]
-    assert all(not row["at_edge"] for row in rows)
+    assert all(row["where"] != "end" for row in rows)
+    assert rows[0]["seconds_left"] > charts["in_flight_window"]
 
 
 def test_missing_calls_are_listed_sdk_then_cluster():
@@ -129,13 +130,20 @@ def test_a_nearby_tcp_hole_marks_the_missing_call_possible():
     charts = ac.build_charts([request], paired, [hole, far], ["11210"], 5.0)
     row = charts["missing_response"][0]
     assert row["error"] == "possible"
-    assert "tcp.stream == 4" in row["error_filter"]
-    assert "ip.addr == 10.0.0.2" in row["error_filter"]
+    call, hole_text = row["error_filter"].split(") || (", 1)
+    assert "tcp.stream == 4" in call
+    assert hole_text.startswith("tcp.stream == 4 && ")
+    assert "ip.addr" not in row["error_filter"]
     assert "couchbase.opaque == 0x11" in row["error_filter"]
     assert 'couchbase.key.logical_key == "widget::gone"' in row["error_filter"]
     assert "tcp.analysis.lost_segment" in row["error_filter"]
-    assert " || " in row["error_filter"]
     assert "frame.time_relative >= " in row["error_filter"]
+    other = dict(hole, stream="9")
+    charts = ac.build_charts([request], paired, [other], ["11210"], 5.0)
+    widened = charts["missing_response"][0]
+    assert widened["error"] == "possible"
+    assert "ip.addr == 10.0.0.2" in widened["error_filter"]
+    assert "tcp.stream == 9" not in widened["error_filter"]
     quiet = msg(1.0, opaque="0x12", opcode="0x00", key="other", stream="8")
     charts = ac.build_charts([quiet], ac.pair_messages([quiet], []), [far], ["11210"], 5.0)
     assert charts["missing_response"][0]["error"] == ""
@@ -296,6 +304,142 @@ def test_busiest_key_averages_the_larger_body_of_each_call():
     assert row["count"] == 2
     assert row["per_second"] == 1.0
     assert row["avg_body_bytes"] == 500_100
+
+
+def test_busiest_and_slowest_lists_keep_each_side():
+    sdk = [
+        msg(0.10, opaque="0x1", key="app::hot", body=100),
+        msg(0.20, opaque="0x2", key="app::hot", body=100),
+        msg(0.30, opaque="0x3", key="app::hot", body=100),
+        msg(0.40, opaque="0x4", key="app::lost", body=10),
+        msg(0.50, opaque="0x5", key="app::lost", body=10),
+        msg(1.00, opaque="0x6", key="app::slow", body=50),
+        msg(1.40, opaque="0x7", key="shared::doc", body=1000),
+    ]
+    cluster = [
+        msg(0.11, opaque="0x11", opcode="0xa2", key="repl::busy", src="10.0.0.9"),
+        msg(0.21, opaque="0x12", opcode="0xa2", key="repl::busy", src="10.0.0.9"),
+        msg(0.31, opaque="0x13", opcode="0xa2", key="repl::busy", src="10.0.0.9"),
+        msg(0.41, opaque="0x14", opcode="0xa2", key="repl::busy", src="10.0.0.9"),
+        msg(1.00, opaque="0x15", opcode="0xa2", key="repl::slow", src="10.0.0.9", body=80),
+        msg(1.40, opaque="0x16", opcode="0xa2", key="shared::doc", src="10.0.0.9", body=10),
+    ]
+    responses = [
+        msg(0.12, opaque="0x1", kind="res", body=300),
+        msg(0.22, opaque="0x2", kind="res", body=300),
+        msg(0.32, opaque="0x3", kind="res", body=300),
+        msg(1.08, opaque="0x6", kind="res", body=10),
+        msg(1.41, opaque="0x7", kind="res", body=0),
+        msg(0.12, opaque="0x11", kind="res"),
+        msg(0.22, opaque="0x12", kind="res"),
+        msg(0.32, opaque="0x13", kind="res"),
+        msg(0.42, opaque="0x14", kind="res"),
+        msg(1.25, opaque="0x15", kind="res", body=20),
+        msg(1.45, opaque="0x16", kind="res", body=4000),
+    ]
+    requests = sdk + cluster
+    charts = ac.build_charts(requests, ac.pair_messages(requests, responses), [], ["11210"], 2.0)
+    assert charts["top_requested"][0]["key"] == "repl::busy"
+    assert charts["top_requested"][0]["count"] == 4
+    sdk_keys = {row["key"]: row for row in charts["top_requested_sdk"]}
+    cluster_keys = {row["key"]: row for row in charts["top_requested_cluster"]}
+    assert sdk_keys["app::hot"]["count"] == 3
+    assert sdk_keys["app::hot"]["unanswered"] == 0
+    assert sdk_keys["app::hot"]["avg_body_bytes"] == 300
+    assert sdk_keys["app::hot"]["per_second"] == 1.5
+    assert sdk_keys["app::lost"]["unanswered"] == 2
+    assert "repl::busy" not in sdk_keys
+    assert cluster_keys["repl::busy"]["count"] == 4
+    assert "app::hot" not in cluster_keys
+    assert sdk_keys["shared::doc"]["avg_body_bytes"] == 1000
+    assert cluster_keys["shared::doc"]["avg_body_bytes"] == 4000
+    shared = next(row for row in charts["top_requested"] if row["key"] == "shared::doc")
+    assert shared["count"] == 2
+    assert shared["avg_body_bytes"] == 2500
+    assert charts["top_slowest"][0]["key"] == "repl::slow"
+    assert charts["top_slowest_sdk"][0]["key"] == "app::slow"
+    assert charts["top_slowest_sdk"][0]["time_ms"] == 80.0
+    assert charts["top_slowest_sdk"][0]["role"] == "sdk"
+    assert charts["top_slowest_cluster"][0]["key"] == "repl::slow"
+    assert charts["top_slowest_cluster"][0]["time_ms"] == 250.0
+    assert charts["top_slowest_cluster"][0]["body_bytes"] == 80
+    assert all(row["role"] == "sdk" for row in charts["top_slowest_sdk"])
+    assert all(row["role"] == "cluster" for row in charts["top_slowest_cluster"])
+    assert len(charts["top_requested_sdk"]) <= 10
+    assert len(charts["top_slowest_cluster"]) <= 10
+    digest = "\n".join(ac.chart_digest(charts))
+    assert "Ten busiest SDK document ids" in digest
+    assert "app::hot" in digest
+    assert "Ten busiest cluster document ids" in digest
+    assert "repl::busy" in digest
+    assert "Ten slowest SDK calls" in digest
+    assert "app::slow" in digest
+    assert "Ten slowest cluster calls" in digest
+    assert "repl::slow" in digest
+
+
+def test_gap_sample_keeps_a_request_that_had_time_and_caps_the_close():
+    early = msg(0.02, opaque="0x1", key="app::early")
+    middle = [
+        msg(3.0, opaque="0x2", key="app::mid"),
+        msg(4.0, opaque="0x3", key="app::mid2"),
+    ]
+    closing = [msg(9.96 + i * 0.003, opaque=f"0x{i + 10:x}", key=f"app::close{i}") for i in range(9)]
+    done = msg(1.0, opaque="0xff", key="app::ok")
+    reply = msg(1.05, opaque="0xff", kind="res")
+    requests = [early, done, *middle, *closing]
+    charts = ac.build_charts(requests, ac.pair_messages(requests, [reply]), [], ["11210"], 10.0)
+    rows = charts["missing_response_sdk"]
+    assert charts["missing_response_sdk_total"] == 12
+    assert [row["key"] for row in rows if row["where"] != "end"] == ["app::early", "app::mid", "app::mid2"]
+    assert sum(1 for row in rows if row["where"] == "end") == ac._EDGE_SAMPLE
+    assert rows[0]["where"] == "start"
+    assert rows[0]["seconds_left"] > charts["in_flight_window"]
+    crowded = [msg(float(i), opaque=f"0x{i:x}", key=f"app::in{i}") for i in range(1, 13)]
+    ends = [msg(19.97, opaque="0xee", key="app::end")]
+    quiet = msg(2.0, opaque="0xfe", key="app::pace")
+    quiet_reply = msg(2.04, opaque="0xfe", kind="res")
+    many = crowded + ends + [quiet]
+    wide = ac.build_charts(many, ac.pair_messages(many, [quiet_reply]), [], ["11210"], 20.0)
+    shown = wide["missing_response"]
+    assert wide["missing_response_total"] == 13
+    assert len(shown) == 10
+    assert all(row["where"] != "end" for row in shown)
+
+
+def test_opening_replies_do_not_fill_the_missing_request_sample():
+    opening = [
+        msg(0.001 * i, opaque=f"0x{i:x}", opcode="0xa2", kind="res", src="10.0.0.9", key=f"repl::open{i}")
+        for i in range(1, 13)
+    ]
+    later = [
+        msg(4.0 + i, opaque=f"0xa{i}", opcode="0xa2", kind="res", src="10.0.0.9", key=f"repl::later{i}")
+        for i in range(3)
+    ]
+    done = msg(1.0, opaque="0xff", opcode="0xa2", key="repl::ok", src="10.0.0.9")
+    reply = msg(1.05, opaque="0xff", opcode="0xa2", kind="res", src="10.0.0.9")
+    charts = ac.build_charts([done], ac.pair_messages([done], opening + later + [reply]), [], ["11210"], 10.0)
+    rows = charts["missing_request_cluster"]
+    assert charts["missing_request_cluster_total"] == 15
+    assert sum(1 for row in rows if row["where"] == "inside") == 3
+    assert sum(1 for row in rows if row["where"] == "start") == ac._EDGE_SAMPLE
+    assert {row["key"] for row in rows if row["where"] == "inside"} == {"repl::later0", "repl::later1", "repl::later2"}
+
+
+def test_closing_unanswered_spike_is_not_a_point_of_interest():
+    interior = msg(4.2, opaque="0x1", key="app::look")
+    closing = [msg(10.05 + i * 0.02, opaque=f"0x{i + 2:x}", key=f"app::tail{i}") for i in range(6)]
+    done = msg(1.0, opaque="0xff", key="app::ok")
+    reply = msg(1.3, opaque="0xff", kind="res")
+    requests = [interior, done, *closing]
+    charts = ac.build_charts(requests, ac.pair_messages(requests, [reply]), [], ["11210"], 10.2)
+    assert charts["in_flight_window"] == 0.3
+    picked = [item for item in ac.interest_candidates(charts) if item["title"] == "Most lost responses"]
+    assert picked
+    assert all(item["seconds"] < 10 for item in picked)
+    assert picked[0]["seconds"] == 4.0
+    assert "point of interest" in ac.SYSTEM_PROMPT
+    assert "Do not pick those seconds" in ac.INTEREST_SYSTEM
 
 
 def test_replica_reads_are_counted_by_the_node_that_was_asked():
@@ -481,6 +625,30 @@ def test_sankey_menu_refolds_the_busiest_commands_in_that_view():
     assert views["unmatched"]["links"] == []
 
 
+def test_packet_errors_keep_holes_and_skip_capture_duplicates():
+    dcp = msg(0.3, opaque="0x8", opcode="0x57", src="10.0.0.9")
+    dcp["sport"] = "5000"
+    dcp["dport"] = "11210"
+    paired = ac.pair_messages([dcp], [])
+    charts = ac.build_charts(
+        [dcp],
+        paired,
+        [
+            {"time": 1.2, "stream": "4", "sport": "11210", "dport": "4000", "lost": True, "retrans": False, "ack": False},
+            {"time": 1.5, "stream": "4", "sport": "4000", "dport": "11210", "lost": False, "retrans": True, "ack": False, "duplicate": True},
+            {"time": 2.0, "stream": "9", "sport": "5000", "dport": "11210", "lost": False, "retrans": True, "ack": True},
+        ],
+        ["11210"],
+        5.0,
+    )
+    rows = charts["packet_errors"]
+    assert [(row["t"], row["kind"], row["toward"], row["role"], row["stream"]) for row in rows] == [
+        (1.2, "lost", "client", "sdk", "4"),
+        (2.0, "ack", "server", "cluster", "9"),
+    ]
+    assert rows[1]["kinds"] == ["ack", "retrans"]
+
+
 def test_boxplot_splits_application_and_cluster():
     app = msg(1.0, opaque="0x1", opcode="0x00")
     app_reply = msg(1.05, opaque="0x1", opcode="0x00", kind="resp")
@@ -507,3 +675,15 @@ def test_boxplot_splits_application_and_cluster():
     meta_row = next(row for row in charts["boxplot"] if row["opcode"] == "0xa2")
     assert meta_row["role"] == "cluster"
     assert meta_row["box"][2] == 400.0
+
+
+def test_side_tally_skips_an_empty_key_and_keeps_a_zero():
+    tally = ac._SideTally()
+    tally.add("sdk", "", 5)
+    tally.add("cluster", "doc", 0)
+    tally.add("sdk", "doc", 4)
+    assert list(tally.all) == ["doc"]
+    assert tally.all["doc"] == 4
+    assert tally.cluster["doc"] == 0
+    assert tally.sdk["doc"] == 4
+

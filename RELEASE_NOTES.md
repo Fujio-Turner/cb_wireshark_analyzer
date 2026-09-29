@@ -1,5 +1,16 @@
 # Release notes
 
+## 0.11.0
+
+A long run says which stage it is in, and the opcode tables sit beside the script.
+
+- Stderr is one JSON record per line: severity, the stage, a trace id, and `duration_ms` when the stage finishes. `--log-level` defaults to INFO. TRACE, DEBUG, WARN, and ERROR are the other levels. The counted note and the path to `summary.md` stay on stdout. There is no extra package; the lines are written with the standard library.
+- Changing the time bucket keeps the zoom. **Reset chart zoom** is what returns the charts to the full capture. Double-click and **Set Stake** still only move the stake.
+- Opcode names, the tooltip sentences, status text, and the cluster, no-reply, and multi-response sets live in `couchbase_opcodes.py`. The walk imports that file. The Docker image copies it.
+- The four bucket widths, 0.5, 1, 5, and 10 seconds, are filled in one walk of the packets already in memory. The counts stay the same.
+- [docs/DESIGN.md](docs/DESIGN.md) is the map of the script, the chart page, and where a change goes.
+- [CB_WIRESHARK.md](CB_WIRESHARK.md) says Server Recv→Send duration is a flex reply, magic `0x18`. A classic reply, magic `0x81`, has no flex section. A replication meta command that uses the classic header has no server microseconds, so it stays on the capture-time chart.
+
 ## 0.10.3
 
 Document tables split by side, and the open and close of the file are no longer treated as the missing calls to investigate.

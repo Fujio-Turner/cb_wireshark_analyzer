@@ -333,7 +333,7 @@ tcp.stream == 0 && tcp.analysis.lost_segment
 
 ## Server time is on the response
 
-`couchbase.flex_frame.frame.duration` is **Server Recv->Send duration**. It is a response flex frame. Select the response row (magic `0x18` or `0x81`, source port 11210). Under **Flexible Frame** the frame id says **Server Recv->Send duration**. Wireshark 4.6.8 prints that value in microseconds. A value of about 56 μs means the server spent a tiny fraction of a millisecond between receiving the request and sending the reply.
+`couchbase.flex_frame.frame.duration` is **Server Recv->Send duration**. It is a flex reply. Select the response row whose magic is `0x18` and whose source port is 11210. Under **Flexible Frame** the frame id says **Server Recv->Send duration**. Wireshark 4.6.8 prints that value in microseconds. A value of about 56 μs means the server spent a tiny fraction of a millisecond between receiving the request and sending the reply. A classic reply, magic `0x81`, has no flex section, so the field is absent. Replication meta commands that use the classic header (`0x80` / `0x81`), including Set with Meta, Get Meta, and Delete with Meta, have no server microseconds. Those calls stay on the capture-time chart. The server-time chart draws a dot only when this field is present.
 
 ```text
 couchbase.flex_frame.frame.duration > 1000

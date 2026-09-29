@@ -34,7 +34,7 @@ The pipeline stays in `analyze_capture.py`. The functions are the sections. Wire
 8. `choose_interest_stakes` picks seconds for the vertical marks. The fallback list is counted. The model may choose among those candidate seconds.
 9. `write_charts` writes compact `charts.json` and copies the two live pages, the original page, and `web/vendor/`.
 
-Stage timing and progress go to stderr as one OpenTelemetry-style JSON record per line (severity, body, trace id, span id, attributes). A span record adds the duration. `--log-level` defaults to INFO.
+Stage timing and progress go to stderr as one OpenTelemetry-style JSON record per line (severity, body, trace id, span id, attributes). A span record adds the duration. `--log-level` defaults to INFO. 0.11.0 is the release that added these records. There is no OpenTelemetry package; the lines are written with the standard library. The counted note and the final summary path stay on stdout.
 
 `--dry-run` stops after the facts and prints the plan. It does not create the directory and it does not call the model.
 

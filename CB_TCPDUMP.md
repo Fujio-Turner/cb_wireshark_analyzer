@@ -55,4 +55,4 @@ ls -lh filename.pcap*
 
 The size should grow. When the event you care about is in the file, go back to the tcpdump terminal and press **Ctrl+C**.
 
-Open the pcap in Wireshark with the filters in [CB_WIRESHARK.md](CB_WIRESHARK.md), or pass it to `analyze_capture.py`. The analyzer uses the packets on port 11210.
+Open the pcap in Wireshark with the filters in [CB_WIRESHARK.md](CB_WIRESHARK.md), or pass it to `analyze_capture.py`. The analyzer uses the packets on port 11210. What that run writes is in [README.md](README.md). What changed in the current release is the top of [RELEASE_NOTES.md](RELEASE_NOTES.md).

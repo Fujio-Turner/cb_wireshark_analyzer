@@ -238,6 +238,102 @@
     .chart { height: 340px; }
     .chart.tall { height: 460px; }
     .chart.space { height: 520px; }
+    .same-path-layout {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+      margin: 8px 4px 8px;
+    }
+    .same-path-layout > .chart,
+    .same-path-layout > .chart-wrap { flex: 1 1 auto; min-width: 0; }
+    .same-path-plot { position: relative; }
+    .chart-zoom {
+      position: absolute;
+      top: 8px;
+      right: 36px;
+      z-index: 2;
+      display: flex;
+      gap: 4px;
+    }
+    .chart-zoom button {
+      min-width: 32px;
+      height: 28px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.94);
+      color: var(--ink);
+      font: inherit;
+      font-size: 13px;
+      line-height: 26px;
+      cursor: pointer;
+    }
+    .chart-zoom button:hover { border-color: var(--teal); color: var(--teal); }
+    .host-side {
+      flex: 0 0 300px;
+      width: 300px;
+      max-height: 520px;
+      overflow: auto;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .host-side-actions {
+      display: flex;
+      gap: 6px;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding-bottom: 8px;
+      background: #fff;
+    }
+    .host-side-actions button {
+      flex: 1;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .host-side-actions button:hover { border-color: var(--teal); color: var(--teal); }
+    .host-side ul { list-style: none; margin: 0; padding: 0; }
+    .host-side li { border-top: 1px solid var(--line); }
+    .host-side label {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      padding: 6px 2px;
+      color: var(--ink);
+      font-size: 12px;
+      line-height: 1.35;
+      cursor: pointer;
+    }
+    .host-side input { margin-top: 2px; }
+    .host-side .host-pair { display: block; word-break: break-all; }
+    .host-side .host-meta { display: block; color: var(--muted); }
+    .host-side-title {
+      margin: 10px 2px 4px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .host-side .kind-swatch {
+      flex: 0 0 10px;
+      width: 10px;
+      height: 10px;
+      margin-top: 3px;
+    }
+    .host-side .kind-swatch.diamond {
+      transform: rotate(45deg) scale(0.78);
+      border-radius: 1px;
+    }
+    .host-side .kind-swatch.circle { border-radius: 50%; }
     .card .switch { margin: 0 8px 8px; color: var(--muted); font-size: 13px; }
     .card .switch select { margin-left: 6px; }
     .side-key { display: inline-flex; gap: 12px; margin-left: 14px; color: var(--ink); }
@@ -481,6 +577,8 @@
       .group { scroll-margin-top: 230px; }
       .chart, .card, .glossary dt { scroll-margin-top: 280px; }
       .chart.space { height: 420px; }
+      .same-path-layout { flex-direction: column; }
+      .host-side { flex: none; width: auto; max-height: 220px; }
       #lightbox { padding: 52px 12px 12px; }
       #lightbox-close { top: 6px; right: 8px; }
       .dock {
@@ -506,7 +604,7 @@
         <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
         cb_wireshark_analyzer
       </a>
-      <span class="version" id="app-version">v0.11.0</span>
+      <span class="version" id="app-version">v0.12.0</span>
     </div>
     </div>
     <div class="bar">
@@ -529,7 +627,7 @@
     </div>
   </header>
   <aside class="dock">
-    <label><button type="button" class="term" data-tip="How wide each point on the time charts is. Half a second and one second show more detail. Five and ten seconds smooth a long capture.">Time bucket</button>
+    <label><button type="button" class="term" data-tip="How wide each point on the time charts is. Half a second and one second show more detail. Five and ten seconds smooth a long capture. Same path counts each half-second, then adds those counts into this width. The 3D time axis uses the same step.">Time bucket</button>
       <select id="bucket">
         <option value="0.5">0.5 seconds</option>
         <option value="1" selected>1 second</option>
@@ -537,7 +635,7 @@
         <option value="10">10 seconds</option>
       </select>
     </label>
-    <label><button type="button" class="term" data-tip="Switches the numeric axis on every chart that has one, including the horizontal p99 bars. Linear makes a slow spike look tall. Log fits ordinary calls and slow calls on one axis. Zero counts are left blank on a log axis. The client IP pie has no numeric axis.">Y axis</button>
+    <label><button type="button" class="term" data-tip="Switches the numeric axis on every chart that has one, including the horizontal p99 bars. Linear makes a slow spike look tall. Log fits ordinary calls and slow calls on one axis. Zero counts are left blank on a log axis. The client IP pie has no numeric axis. Same path uses it for the size of a mark.">Y axis</button>
       <select id="scale">
         <option value="value">Linear</option>
         <option value="log">Log</option>
@@ -665,9 +763,25 @@
         </div>
         <section class="card">
           <h2 id="same-path">Same path</h2>
-          <p class="note" id="same-path-note">Time, the two hosts on port 11210, and the round trip. Packet issues sit on the floor of that row. <a href="#same-path-word">How to read this</a>.</p>
-          <p class="note" id="same-path-rows" hidden></p>
-          <div id="related" class="chart space"></div>
+          <p class="note" id="same-path-note">Time, the two hosts on port 11210, and the kind of event. Events are counted in half-seconds, then added into the time bucket. Linear and log change the size. Check an event or a host pair to show it. <a href="#same-path-word">How to read this</a>.</p>
+          <div class="same-path-layout">
+            <div id="related" class="chart space"></div>
+            <div class="chart-zoom" role="group" aria-label="Same path zoom">
+              <button type="button" id="same-path-zoom-in" aria-label="Zoom in" title="Zoom in">+</button>
+              <button type="button" id="same-path-zoom-out" aria-label="Zoom out" title="Zoom out">−</button>
+              <button type="button" id="same-path-home" aria-label="Home" title="Home">Home</button>
+            </div>
+            <aside class="host-side" id="same-path-hosts" aria-label="Same path filters" hidden>
+              <div class="host-side-actions">
+                <button type="button" id="same-path-hide">Hide all</button>
+                <button type="button" id="same-path-show">Show all</button>
+              </div>
+              <p class="host-side-title" id="same-path-events-label">Events</p>
+              <ul id="same-path-event-list" aria-labelledby="same-path-events-label"></ul>
+              <p class="host-side-title" id="same-path-hosts-label">Hosts</p>
+              <ul id="same-path-host-list" aria-labelledby="same-path-hosts-label"></ul>
+            </aside>
+          </div>
         </section>
         <div class="grid two">
           <section class="card">
@@ -968,7 +1082,7 @@
           <dt id="slow-scatter-word">Slow-call scatter</dt>
           <dd>Each dot is one matched call that took 50 ms or more, up to the slowest 2,000. Horizontal is when the request started. Vertical is the round trip. Blue is an application call. Rust is cluster replication. A diamond is a packet error at that same second: a lost segment, a lost acknowledgement, or a retry that waited out a timeout. Bright blue is an application error. Bright red is a cluster error. The diamond sits low in the chart so it lines up in time with the calls. Its height is not a round trip. A second copy of the same segment within a millisecond is a capture duplicate and is left off. In this time view, double-click drops a stake, the same line the other time charts use. The slider under the chart is that same time window: drag it here or on any other time chart and this one follows. Server time uses a different horizontal axis, so that view keeps its own scale. A p99 line can be three calls or a cloud of them. The dots show which. A vertical stack is many slow calls in the same moment.</dd>
           <dt id="same-path-word">Same path</dt>
-          <dd>Three axes. Horizontal time is seconds from the first packet. The depth row is one pair of addresses that talked on port 11210, written <code>10.0.0.2 ↔ 10.0.0.3</code>. Height is the round trip, in milliseconds, of a matched call that took 50 ms or more. A packet issue has no round trip, so a lost segment, a lost acknowledgement, or a retry sits on the floor of that same row. The row is kept when at least one of those issues falls within half a second of a slow call on those hosts, the same window the Errors column uses. Up to twelve rows, the ones with the most of those overlaps first. A burst is the kept points on that row that sit within half a second of one another. Drag to turn the chart. Click a point to copy its Wireshark filter. This view does not follow the time-bucket slider, because its axes are not those buckets.</dd>
+          <dd>Three axes. Horizontal time is seconds from the first packet. Each event is counted into the half-second that contains it, and the time bucket selected on the page adds those half-seconds into one mark. The axis step is that same bucket, so half a second reads 0.5, 1.0, 1.5. The depth row is one pair of addresses that talked on port 11210, written <code>10.0.0.2 ↔ 10.0.0.3</code>. The vertical level is the kind of event: a lost segment, an application call with no reply, a lost acknowledgement, a retry, or a cluster call with no reply. The size of the mark is how many of that event shared those hosts in that bucket. Linear sizes the mark from the count. Log sizes it from the logarithm of the count, so one event stays visible beside a large count. A big red diamond is many lost segments. A big bright-blue circle is many application calls with no reply. When those two sit on the same row at the same time, the holes and the missing replies are the same moment. The row is kept when a packet issue falls within half a second of an application call with no reply, or of a matched call that took 50 ms or more, the same window the Errors column uses. Up to twelve rows, the ones with the most application misses beside a packet issue first. The list beside the chart has a checkbox for each event and each host pair. Uncheck an event to hide that kind. Uncheck a host pair to hide that row. Hide all and Show all change every box. Drag to turn the chart. Zoom in, Zoom out, and Home sit at the upper right. Home restores the first view. Click a mark to copy its Wireshark filter. One event copies the stream and the opaque, or the stream and the TCP flag. A half-second that holds several events copies the shared path and that half-second. A wider bucket copies the shared path and that bucket.</dd>
           <dt id="server-time">Server time</dt>
           <dd>Choose “server time against round trip” on the slow-call chart. Horizontal is <code>couchbase.flex_frame.frame.duration</code>, the microseconds the server held the command from receive to send. Vertical is the round trip in milliseconds. A dot near the diagonal means the server was doing the work. A dot high and to the left was waiting outside the server: the network, the client, or a durability hold. The chart keeps the slowest calls that reported a duration and a spread of the others, about 2,000 dots. An empty chart means this capture did not report that flex frame. That is “not reported,” not a duration of zero. Wireshark 4.6 prints the field in microseconds.</dd>
           <dt id="missing-heat-word">Missing heatmap</dt>
@@ -1054,6 +1168,16 @@
     const scaleInput = document.getElementById("scale");
     const bucketInput = document.getElementById("bucket");
     let logScale = scaleInput.value === "log";
+    let relatedVisible = null;
+    let relatedKinds = null;
+
+    const relatedLevels = [
+      { key: "lost", name: "Lost segment", short: "Lost", color: "#ff2d2d", symbol: "diamond" },
+      { key: "noreply-sdk", name: "Application no response", short: "No reply", color: "#1a8cff", symbol: "circle" },
+      { key: "ack", name: "Ack lost", short: "Ack lost", color: "#e67e22", symbol: "diamond" },
+      { key: "retrans", name: "Retry", short: "Retry", color: "#6c3483", symbol: "diamond" },
+      { key: "noreply-cluster", name: "Cluster no response", short: "Cluster", color: "#c45c26", symbol: "circle" }
+    ];
     let zoomStart = 0;
     let zoomEnd = 100;
     let scatterLinked = false;
@@ -1785,47 +1909,411 @@
       });
     }
 
+    function relatedSize(count) {
+      const n = Math.max(1, Number(count) || 1);
+      if (logScale) return Math.round(Math.min(78, 12 + Math.log10(n) * 32));
+      if (n === 1) return 11;
+      return Math.round(Math.min(78, 14 + 13 * Math.sqrt(n)));
+    }
+
+    function relatedWidth() {
+      const width = Number(bucketInput.value);
+      return width > 0 ? width : 1;
+    }
+
+    function relatedBucketStart(when, width) {
+      const start = Math.floor((Number(when) + 1e-9) / width) * width;
+      return Math.round(start * 1000) / 1000;
+    }
+
+    function relatedPhrase(width) {
+      if (width === 0.5) return "half-second";
+      if (width === 1) return "second";
+      return width + "-second bucket";
+    }
+
+    function relatedKindKey(point) {
+      if (!point) return "";
+      if (point.kind === "noreply") return point.role === "cluster" ? "noreply-cluster" : "noreply-sdk";
+      return point.kind;
+    }
+
+    function relatedTick(value, width) {
+      const n = Math.round(Number(value) * 1000) / 1000;
+      if (!Number.isFinite(n)) return "";
+      if (width < 1) return n.toFixed(1);
+      if (Math.abs(n - Math.round(n)) < 1e-6) return String(Math.round(n));
+      return String(n);
+    }
+
+    function relatedTickLabels(maxStart, width) {
+      const steps = Math.max(0, Math.round(Number(maxStart) / width));
+      const labels = [];
+      for (let i = 0; i <= steps; i += 1) {
+        labels.push(relatedTick(Math.round(i * width * 1000) / 1000, width));
+      }
+      return labels.length ? labels : [relatedTick(0, width)];
+    }
+
+    function relatedCountLine(point, width) {
+      const n = point.count || 1;
+      const tail = " in this " + relatedPhrase(width);
+      if (point.kind === "noreply") {
+        return (n === 1 ? "1 call with no reply" : n + " calls with no reply") + tail;
+      }
+      if (point.kind === "ack") {
+        return (n === 1 ? "1 lost acknowledgement" : n + " lost acknowledgements") + tail;
+      }
+      if (point.kind === "retrans") {
+        return (n === 1 ? "1 retry" : n + " retries") + tail;
+      }
+      return (n === 1 ? "1 lost segment" : n + " lost segments") + tail;
+    }
+
+    function relatedMeta(lane) {
+      const parts = [];
+      const lost = lane.lost || 0;
+      const missing = lane.noreply || 0;
+      const cluster = lane.cluster_noreply || 0;
+      if (lost) parts.push(lost + (lost === 1 ? " lost segment" : " lost segments"));
+      if (missing) parts.push(missing + (missing === 1 ? " application call with no reply" : " application calls with no reply"));
+      if (cluster) parts.push(cluster + (cluster === 1 ? " cluster call with no reply" : " cluster calls with no reply"));
+      if (!lost && !missing && !cluster) {
+        const near = lane.related || 0;
+        parts.push(near + (near === 1 ? " packet issue beside a slow call" : " packet issues beside a slow call"));
+      }
+      return parts.join(" · ");
+    }
+
+    const relatedFlags = {
+      lost: "tcp.analysis.lost_segment",
+      ack: "tcp.analysis.ack_lost_segment",
+      retrans: "tcp.analysis.retransmission && tcp.analysis.rto >= 0.001",
+      noreply: "(couchbase.magic == 0x80 || couchbase.magic == 0x08)"
+    };
+
+    function relatedMergedFilter(rows, start, width, label, port) {
+      const streams = [...new Set(rows.map((row) => row.stream).filter(Boolean))];
+      const end = Math.round((start + width) * 1000) / 1000;
+      const parts = [];
+      if (streams.length === 1) parts.push("tcp.stream == " + streams[0]);
+      else {
+        parts.push("tcp.port == " + (port || "11210"));
+        String(label || "").split(" ↔ ").filter(Boolean).forEach((host) => {
+          const field = host.indexOf(":") >= 0 ? "ipv6.addr" : "ip.addr";
+          parts.push(field + " == " + host);
+        });
+      }
+      parts.push("frame.time_relative >= " + start);
+      parts.push("frame.time_relative <= " + end);
+      parts.push(relatedFlags[rows[0].kind] || relatedFlags.lost);
+      return parts.join(" && ");
+    }
+
+    function relatedBucket(points, lanes, width, port) {
+      const labels = {};
+      lanes.forEach((lane) => { labels[lane.lane] = lane.label; });
+      const groups = new Map();
+      points.forEach((point) => {
+        const start = relatedBucketStart(point.t, width);
+        const key = [point.lane, point.kind, point.role || "", start].join("\t");
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(point);
+      });
+      const merged = [];
+      groups.forEach((rows) => {
+        const start = relatedBucketStart(rows[0].t, width);
+        const label = labels[rows[0].lane] || "";
+        if (rows.length === 1) {
+          merged.push(Object.assign({}, rows[0], { t: start, merged: false }));
+          return;
+        }
+        const names = rows.map((row) => row.name).filter(Boolean);
+        const name = names.length === rows.length && names.every((item) => item === names[0]) ? names[0] : "";
+        const ways = [...new Set(rows.map((row) => row.toward).filter(Boolean))];
+        const streams = [...new Set(rows.map((row) => row.stream).filter(Boolean))];
+        const ends = [...new Set(rows.map((row) => (row.src || "") + "\t" + (row.dst || "")))];
+        const sameEnds = ends.length === 1 && ends[0] !== "\t";
+        merged.push({
+          t: start,
+          lane: rows[0].lane,
+          kind: rows[0].kind,
+          role: rows[0].role,
+          name: name,
+          toward: ways.length === 1 ? ways[0] : (ways.length ? "both" : ""),
+          count: rows.reduce((sum, row) => sum + (Number(row.count) || 0), 0),
+          stream: streams.length === 1 ? streams[0] : "",
+          src: sameEnds ? rows[0].src : "",
+          dst: sameEnds ? rows[0].dst : "",
+          near: rows.some((row) => row.near),
+          burst: "",
+          filter: relatedMergedFilter(rows, start, width, label, port),
+          merged: true
+        });
+      });
+      return merged;
+    }
+
+    function relatedSyncHostList(lanes) {
+      const list = document.getElementById("same-path-host-list");
+      const side = document.getElementById("same-path-hosts");
+      if (side) side.hidden = !lanes.length;
+      if (!list) return;
+      const signature = lanes.map((lane) => lane.lane + "\t" + lane.label).join("\n");
+      if (list.dataset.signature === signature) return;
+      list.dataset.signature = signature;
+      relatedVisible = new Set(lanes.map((lane) => lane.lane));
+      list.innerHTML = lanes.map((lane) => (
+        '<li><label><input type="checkbox" data-lane="' + lane.lane + '" checked> <span><span class="host-pair">'
+        + escapeHtml(lane.label) + '</span><span class="host-meta">' + escapeHtml(relatedMeta(lane)) + "</span></span></label></li>"
+      )).join("");
+    }
+
+    function relatedSyncEventList(points) {
+      const list = document.getElementById("same-path-event-list");
+      if (!list) return;
+      const present = new Set((points || []).map(relatedKindKey));
+      const levels = relatedLevels.filter((level) => present.has(level.key));
+      const signature = levels.map((level) => level.key).join("\n");
+      if (list.dataset.signature === signature) return;
+      list.dataset.signature = signature;
+      relatedKinds = new Set(levels.map((level) => level.key));
+      list.innerHTML = levels.map((level) => (
+        '<li><label><input type="checkbox" data-kind="' + level.key + '" checked> '
+        + '<span class="kind-swatch ' + level.symbol + '" style="background:' + level.color + '"></span>'
+        + "<span>" + escapeHtml(level.name) + "</span></label></li>"
+      )).join("");
+    }
+
+    function bindRelatedHosts() {
+      const list = document.getElementById("same-path-host-list");
+      const events = document.getElementById("same-path-event-list");
+      const hide = document.getElementById("same-path-hide");
+      const show = document.getElementById("same-path-show");
+      if (list && !list.dataset.bound) {
+        list.dataset.bound = "1";
+        list.addEventListener("change", (event) => {
+          const box = event.target.closest("input[data-lane]");
+          if (!box || !relatedVisible) return;
+          const lane = Number(box.dataset.lane);
+          if (box.checked) relatedVisible.add(lane);
+          else relatedVisible.delete(lane);
+          drawRelated();
+        });
+      }
+      if (events && !events.dataset.bound) {
+        events.dataset.bound = "1";
+        events.addEventListener("change", (event) => {
+          const box = event.target.closest("input[data-kind]");
+          if (!box || !relatedKinds) return;
+          if (box.checked) relatedKinds.add(box.dataset.kind);
+          else relatedKinds.delete(box.dataset.kind);
+          drawRelated();
+        });
+      }
+      if (hide && !hide.dataset.bound) {
+        hide.dataset.bound = "1";
+        hide.addEventListener("click", () => {
+          relatedVisible = new Set();
+          relatedKinds = new Set();
+          document.querySelectorAll("#same-path-host-list input[data-lane]").forEach((box) => { box.checked = false; });
+          document.querySelectorAll("#same-path-event-list input[data-kind]").forEach((box) => { box.checked = false; });
+          drawRelated();
+        });
+      }
+      if (show && !show.dataset.bound) {
+        show.dataset.bound = "1";
+        show.addEventListener("click", () => {
+          relatedVisible = new Set();
+          relatedKinds = new Set();
+          document.querySelectorAll("#same-path-host-list input[data-lane]").forEach((box) => {
+            box.checked = true;
+            relatedVisible.add(Number(box.dataset.lane));
+          });
+          document.querySelectorAll("#same-path-event-list input[data-kind]").forEach((box) => {
+            box.checked = true;
+            relatedKinds.add(box.dataset.kind);
+          });
+          drawRelated();
+        });
+      }
+      const zoomIn = document.getElementById("same-path-zoom-in");
+      const zoomOut = document.getElementById("same-path-zoom-out");
+      const home = document.getElementById("same-path-home");
+      if (zoomIn && !zoomIn.dataset.bound) {
+        zoomIn.dataset.bound = "1";
+        zoomIn.addEventListener("click", () => relatedZoomBy(0.8));
+      }
+      if (zoomOut && !zoomOut.dataset.bound) {
+        zoomOut.dataset.bound = "1";
+        zoomOut.addEventListener("click", () => relatedZoomBy(1.25));
+      }
+      if (home && !home.dataset.bound) {
+        home.dataset.bound = "1";
+        home.addEventListener("click", () => relatedHome());
+      }
+    }
+
+    function relatedHomeDistance(laneCount) {
+      const count = Number.isFinite(laneCount) && laneCount > 0 ? laneCount : 1;
+      return Math.min(560, 260 + count * 36);
+    }
+
+    function relatedLegendWidth() {
+      const width = charts.related ? charts.related.getWidth() : 0;
+      if (!width) return 240;
+      return Math.max(96, Math.round(width - 196));
+    }
+
+    function relatedViewNow() {
+      try {
+        const opt = charts.related && charts.related.getOption();
+        return opt && opt.grid3D && opt.grid3D[0] && opt.grid3D[0].viewControl;
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function relatedCamera(laneCount) {
+      let alpha = 28;
+      let beta = 28;
+      let distance = relatedHomeDistance(laneCount);
+      const view = relatedViewNow();
+      if (view && Number.isFinite(view.alpha) && Number.isFinite(view.beta)) {
+        alpha = view.alpha;
+        beta = view.beta;
+      }
+      if (view && Number.isFinite(view.distance)) {
+        if (relatedDistanceGoal != null && Math.abs(view.distance - relatedDistanceGoal) > 1) {
+          relatedDistanceGoal = view.distance;
+        }
+        distance = relatedDistanceGoal != null ? relatedDistanceGoal : view.distance;
+      }
+      return {
+        projection: "perspective",
+        alpha: alpha,
+        beta: beta,
+        distance: distance,
+        minDistance: 80,
+        maxDistance: 1400
+      };
+    }
+
+    let relatedDistanceGoal = null;
+
+    function relatedSetView(view) {
+      if (!charts.related || !relatedViewNow()) return;
+      charts.related.setOption({
+        grid3D: {
+          viewControl: Object.assign({ animationDurationUpdate: 0 }, view)
+        }
+      });
+    }
+
+    function relatedZoomBy(factor) {
+      const view = relatedViewNow();
+      if (!view) return;
+      const current = relatedDistanceGoal == null ? Number(view.distance) : relatedDistanceGoal;
+      const start = Number.isFinite(current) ? current : relatedHomeDistance(1);
+      relatedDistanceGoal = Math.min(1400, Math.max(80, Math.round(start * factor)));
+      relatedSetView({
+        alpha: view.alpha,
+        beta: view.beta,
+        distance: relatedDistanceGoal
+      });
+    }
+
+    function relatedHome() {
+      let lanes = 1;
+      try {
+        const opt = charts.related.getOption();
+        const rows = opt && opt.yAxis3D && opt.yAxis3D[0] && opt.yAxis3D[0].data;
+        if (rows && rows.length) lanes = rows.length;
+      } catch (err) {
+        lanes = 1;
+      }
+      relatedDistanceGoal = relatedHomeDistance(lanes);
+      relatedSetView({
+        projection: "perspective",
+        alpha: 28,
+        beta: 28,
+        distance: relatedDistanceGoal,
+        minDistance: 80,
+        maxDistance: 1400
+      });
+    }
+
     function drawRelated() {
       if (!charts.related) return;
       const related = data.related || {};
       const lanes = related.lanes || [];
       const points = related.points || [];
       const note = document.getElementById("same-path-note");
-      const rows = document.getElementById("same-path-rows");
       const how = ' <a href="#same-path-word">How to read this</a>.';
+      const width = relatedWidth();
+      const phrase = relatedPhrase(width);
       if (!lanes.length || !points.length) {
-        if (note) note.innerHTML = "No packet issue fell within half a second of a slow call on the same two hosts." + how;
-        if (rows) {
-          rows.hidden = true;
-          rows.textContent = "";
-        }
+        relatedSyncHostList([]);
+        relatedSyncEventList([]);
+        if (note) note.innerHTML = "No packet issue fell within half a second of an application call with no reply, or of a slow call, on the same two hosts." + how;
         commitChart(charts.related, emptyChart("No shared path"), true);
         return;
       }
       const windowSeconds = related.window || 0.5;
+      const port = related.port || "11210";
+      const grain = width === 0.5
+        ? "The selected half-second shows each stored count. "
+        : "The selected " + phrase + " adds those half-second counts. ";
       if (note) {
-        note.innerHTML = "Each row is two hosts on port " + escapeHtml(related.port || "11210")
-          + ". Height is the round trip. Packet issues sit on the floor. A row is kept when an issue and a slow call on those hosts fall within "
-          + windowSeconds + " s. Drag to turn the chart. Click a point to copy its filter." + how;
+        note.innerHTML = "Each row is two hosts on port " + escapeHtml(port)
+          + ". Each event is counted into the half-second that contains it. "
+          + grain
+          + "The time axis steps by that width. Linear sizes a mark from the count. Log sizes it from the logarithm of the count. A red diamond is lost segments. Bright blue is application calls with no reply. A row is kept when a packet issue on those hosts falls within "
+          + windowSeconds + " s of one of those missing replies, or of a slow call. Check an event or a host pair to show it. Hide all and Show all change every box. Drag to turn the chart. Zoom in, Zoom out, and Home sit at the upper right. Home restores the first view. Click a mark to copy its filter." + how;
       }
-      if (rows) {
-        rows.hidden = false;
-        rows.innerHTML = lanes.map((lane) => escapeHtml(lane.label) + " · " + lane.related + (lane.related === 1 ? " overlap" : " overlaps")).join("<br>");
+      relatedSyncHostList(lanes);
+      relatedSyncEventList(points);
+      const visible = lanes.filter((lane) => relatedVisible && relatedVisible.has(lane.lane));
+      if (!visible.length) {
+        commitChart(charts.related, emptyChart("No hosts are selected"), true);
+        return;
       }
-      const labels = lanes.map((lane) => lane.label);
-      const kinds = {
-        sdk: { name: "Application", color: "#1a5276", symbol: "circle", size: 12 },
-        cluster: { name: "Cluster", color: "#c45c26", symbol: "circle", size: 12 },
-        lost: { name: "Lost segment", color: "#ff2d2d", symbol: "diamond", size: 9 },
-        ack: { name: "Ack lost", color: "#e67e22", symbol: "diamond", size: 9 },
-        retrans: { name: "Retry", color: "#6c3483", symbol: "diamond", size: 9 }
-      };
-      const grouped = { sdk: [], cluster: [], lost: [], ack: [], retrans: [] };
-      points.forEach((point) => {
-        const key = point.kind === "call" ? (point.role === "cluster" ? "cluster" : "sdk") : point.kind;
+      if (relatedKinds && relatedKinds.size === 0) {
+        commitChart(charts.related, emptyChart("No events are selected"), true);
+        return;
+      }
+      const laneIndex = {};
+      const labels = visible.map((lane) => lane.label);
+      visible.forEach((lane, index) => { laneIndex[lane.lane] = index; });
+      const shown = relatedBucket(points, lanes, width, port).filter((point) => {
+        return laneIndex[point.lane] != null && (!relatedKinds || relatedKinds.has(relatedKindKey(point)));
+      });
+      if (!shown.length) {
+        commitChart(charts.related, emptyChart("No marks for this selection"), true);
+        return;
+      }
+      const levels = relatedLevels;
+      const grouped = {};
+      levels.forEach((level) => { grouped[level.key] = []; });
+      shown.forEach((point) => {
+        const key = point.kind === "noreply" ? (point.role === "cluster" ? "noreply-cluster" : "noreply-sdk") : point.kind;
         if (!grouped[key]) return;
-        grouped[key].push({
-          value: [point.t, point.lane, point.z],
+        grouped[key].push(point);
+      });
+      const present = levels.filter((level) => grouped[level.key].length);
+      const zOf = {};
+      present.forEach((level, index) => { zOf[level.key] = index; });
+      let maxStart = 0;
+      points.forEach((point) => {
+        const start = relatedBucketStart(point.t, width);
+        if (start > maxStart) maxStart = start;
+      });
+      const tickLabels = relatedTickLabels(maxStart, width);
+      present.forEach((level) => {
+        grouped[level.key] = grouped[level.key].map((point) => ({
+          value: [point.t, laneIndex[point.lane], zOf[level.key]],
+          symbolSize: relatedSize(point.count),
+          count: point.count || 1,
           kind: point.kind,
           role: point.role,
           command: point.name,
@@ -1836,8 +2324,10 @@
           near: point.near,
           burst: point.burst,
           filter: point.filter,
-          lane: labels[point.lane] || ""
-        });
+          lane: labels[laneIndex[point.lane]] || "",
+          start: point.t,
+          width: width
+        }));
       });
       const axis = {
         nameTextStyle: { color: "#5c6670", fontSize: 12 },
@@ -1849,53 +2339,85 @@
         tooltip: {
           formatter: (item) => {
             const point = item.data || {};
-            const lines = [escapeHtml(item.seriesName)];
-            if (point.kind === "call") {
-              lines.push(escapeHtml(point.command || "Call") + " · round trip " + point.value[2] + " ms");
-            } else {
-              lines.push(point.toward === "client" ? "Toward the client" : "Toward the server");
+            const lines = [escapeHtml(item.seriesName), relatedCountLine(point, point.width || width)];
+            if (point.command) lines.push(escapeHtml(point.command));
+            if (point.kind !== "noreply") {
+              if (point.toward === "client") lines.push("Toward the client");
+              else if (point.toward === "server") lines.push("Toward the server");
+              else if (point.toward === "both") lines.push("Both directions");
             }
-            lines.push("at " + point.value[0] + " s");
-            lines.push(escapeHtml(point.lane) + " · port " + escapeHtml(related.port || "11210"));
-            if (point.stream) lines.push("stream " + escapeHtml(point.stream));
-            lines.push(point.src && point.dst
-              ? escapeHtml(point.src) + " → " + escapeHtml(point.dst)
-              : "");
-            lines.push("burst " + point.burst + (point.near ? " · within " + windowSeconds + " s of the other kind" : ""));
+            const start = Number(point.start);
+            const end = Math.round((start + (point.width || width)) * 1000) / 1000;
+            lines.push(relatedTick(start, point.width || width) + "–" + relatedTick(end, point.width || width) + " s");
+            lines.push(escapeHtml(point.lane) + " · port " + escapeHtml(port));
+            if (point.stream) lines.push("stream " + escapeHtml(String(point.stream)));
+            if (point.src && point.dst) lines.push(escapeHtml(point.src) + " → " + escapeHtml(point.dst));
+            if (point.burst) lines.push("burst " + point.burst);
+            if (point.near) lines.push("within " + windowSeconds + " s of the other kind");
             return lines.filter(Boolean).join("<br/>");
           }
         },
-        legend: { top: 4, textStyle: { color: "#1c2430" } },
-        xAxis3D: Object.assign({ type: "value", name: "seconds", nameGap: 30 }, axis),
-        yAxis3D: Object.assign({ type: "category", data: labels, name: "hosts", nameGap: 42 }, axis),
-        zAxis3D: Object.assign({ type: "value", name: "round trip ms", nameGap: 36 }, axis),
+        legend: { top: 4, left: 8, width: relatedLegendWidth(), textStyle: { color: "#1c2430" }, type: "scroll" },
+        xAxis3D: Object.assign({}, axis, {
+          type: "value",
+          name: "seconds",
+          nameGap: 22,
+          min: 0,
+          max: Math.round((maxStart + width) * 1000) / 1000,
+          interval: width,
+          minInterval: width,
+          maxInterval: width,
+          axisLabel: Object.assign({}, axis.axisLabel, {
+            show: true,
+            margin: -36,
+            hideOverlap: false,
+            fontSize: 11,
+            formatter: (value) => relatedTick(value, width)
+          }),
+          splitLine: { show: true, lineStyle: { color: "#d5cbbd" } }
+        }),
+        yAxis3D: Object.assign({ type: "category", data: labels, name: "hosts", nameGap: 42 }, axis, {
+          axisLabel: Object.assign({ interval: 0 }, axis.axisLabel)
+        }),
+        zAxis3D: Object.assign({}, axis, {
+          type: "category",
+          data: present.map((level) => level.short),
+          name: "event",
+          nameGap: 24,
+          axisLabel: Object.assign({ interval: 0 }, axis.axisLabel)
+        }),
         grid3D: {
-          boxWidth: 150,
+          boxWidth: Math.min(720, Math.max(200, tickLabels.length * 22)),
           boxDepth: depth,
-          boxHeight: 80,
-          top: 20,
-          bottom: 80,
+          boxHeight: Math.max(110, present.length * 36),
+          top: 16,
+          bottom: 150,
           left: 70,
-          right: 40,
+          right: 48,
           environment: "#f6f3ee",
           axisPointer: { show: true, lineStyle: { color: "#24576e" } },
-          viewControl: {
-            projection: "perspective",
-            alpha: 28,
-            beta: 28,
-            distance: Math.min(560, 260 + labels.length * 36),
-            minDistance: 120,
-            maxDistance: 720
-          },
+          viewControl: relatedCamera(labels.length),
           light: { main: { intensity: 1.05, shadow: false }, ambient: { intensity: 0.55 } }
         },
-        series: Object.keys(kinds).filter((key) => grouped[key].length).map((key) => ({
-          name: kinds[key].name,
+        series: present.map((level) => ({
+          name: level.name,
           type: "scatter3D",
-          symbol: kinds[key].symbol,
-          symbolSize: kinds[key].size,
-          itemStyle: { color: kinds[key].color, opacity: 0.92 },
-          data: grouped[key]
+          symbol: level.symbol,
+          symbolSize: 11,
+          itemStyle: { color: level.color, opacity: 0.95 },
+          label: {
+            show: true,
+            formatter: (item) => (item.data && item.data.count > 1 ? String(item.data.count) : ""),
+            textStyle: {
+              fontSize: 12,
+              color: "#1c2430",
+              backgroundColor: "rgba(246,243,238,0.9)",
+              padding: [1, 3],
+              borderRadius: 2
+            },
+            distance: 2
+          },
+          data: grouped[level.key]
         }))
       }, true);
       charts.related.off("click");
@@ -3343,11 +3865,18 @@
           drawSlow();
         });
       });
-      window.addEventListener("resize", () => Object.values(charts).forEach((chart) => chart.resize()));
+      window.addEventListener("resize", () => {
+        Object.values(charts).forEach((chart) => chart.resize());
+        if (!charts.related) return;
+        const opt = charts.related.getOption();
+        if (!opt || !opt.legend || !opt.legend[0] || !opt.series || !opt.series.length) return;
+        charts.related.setOption({ legend: { width: relatedLegendWidth() } });
+      });
       bucketInput.addEventListener("change", () => {
         drawTime();
         drawHeat();
         drawScatter();
+        drawRelated();
       });
       const scatterMode = document.getElementById("scatter-mode");
       if (scatterMode) scatterMode.addEventListener("change", drawScatter);
@@ -3363,6 +3892,7 @@
         drawTime();
         drawBoxes();
         drawScatter();
+        drawRelated();
       });
       document.getElementById("reset-zoom").addEventListener("click", () => {
         zoomStart = 0;
@@ -3451,6 +3981,12 @@
           else openLightbox(wrap);
         });
         wrap.append(chartEl, button);
+        if (chartEl.id === "related") {
+          wrap.classList.add("same-path-plot");
+          const zoom = document.querySelector(".same-path-layout > .chart-zoom");
+          if (zoom) wrap.append(zoom);
+          if (charts.related) charts.related.resize();
+        }
       });
       document.getElementById("lightbox-close").addEventListener("click", closeLightbox);
       document.getElementById("lightbox").addEventListener("click", (event) => {
@@ -3475,6 +4011,14 @@
       drawTime();
       drawHeat();
       drawScatter();
+      bindRelatedHosts();
+      relatedSyncHostList((data.related && data.related.lanes) || []);
+      relatedSyncEventList((data.related && data.related.points) || []);
+      if (charts.related) {
+        // Show the host list before the first draw so the canvas matches the plot.
+        void document.getElementById("related").offsetWidth;
+        charts.related.resize();
+      }
       drawRelated();
     }
 

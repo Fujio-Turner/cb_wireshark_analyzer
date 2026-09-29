@@ -132,7 +132,7 @@ Diagnosis series are also precomputed:
 
 - `scatter` is matched calls of at least 50 ms, capped. `scatter_server` is the same calls against `couchbase.flex_frame.frame.duration` when that field is present. The duration is microseconds.
 - `packet_errors` is one mark per frame for a lost segment, an ack-lost segment, or a retry whose RTO is at least 1 ms. The mark carries a role so the page can color application and cluster separately.
-- `related` is the same-path chart. A lane is one unordered pair of addresses on port 11210 that had a packet issue within 0.5 s of a matched call of at least 50 ms. Time, that host pair, and the round trip are the three axes. A packet issue sits at round trip 0. Up to twelve lanes, and the points on a lane are capped after the overlapping ones are kept. The card lists each kept pair and that overlap count. The page draws the points with scatter3D. It is not a time-bucket chart.
+- `related` is the same-path chart. A lane is one unordered pair of addresses on port 11210 that had a packet issue within 0.5 s of an application call with no reply, or of a matched call of at least 50 ms. That 0.5 s is the keep window. Time, that host pair, and the kind of event are the three axes. Python counts each event into the clock half-second that contains it (`floor(t / 0.5) * 0.5`). `t` is that half-second’s start, `bin` is 0.5, and `count` is how many events of that kind fell in it. The page adds those counts when the selected time bucket is 1, 5, or 10 seconds, and sizes the mark from the sum. The 3D time axis steps by the selected bucket, so half a second labels 0.5, 1.0, 1.5. Linear uses the count. Log uses the logarithm of the count. A lost segment is a red diamond. An application call with no reply is a bright-blue circle. Up to twelve lanes. The card lists each event kind and each kept pair beside the plot. A checkbox shows or hides that kind or that row. Hide all and Show all change every box. Zoom in, Zoom out, and Home sit at the upper right of the plot. Home restores the first view. The page draws the marks with scatter3D. The chart stays out of the shared zoom group.
 - `heatmap` is missing replies by time, for the client view and the command view.
 - `boxplot` is one row per `(role, opcode)`, the sixteen slowest p99 tails on each side.
 - `sankey.views` holds `all`, `application`, `cluster`, `exclude_not_expected`, and `unmatched`. Each view refolds to its own eight busiest commands. `unmatched` is "Missing reply" only. "Not expected" is one-way traffic and is a different outcome. Not found, key exists, and error status are other outcomes.
@@ -152,7 +152,7 @@ Replica reads are a paragraph, not a chart. `replica_reads` counts Get Replica (
 
 ## The chart page
 
-`web/index.html` is one document. The `<style>` block is the theme. The `<body>` is the sections. One `<script>` at the bottom fetches `charts.json` and draws. There is no module bundler and no framework. ECharts is loaded from `vendor/echarts.min.js`, then `vendor/echarts-gl.min.js` for the same-path scatter3D. Both files sit next to the page.
+`web/index.html` is one document. The `<style>` block is the theme. The `<body>` is the sections. One `<script>` at the bottom fetches `charts.json` and draws. There is no module bundler and no framework. ECharts is loaded from `vendor/echarts.min.js`, then `vendor/echarts-gl.min.js` for the same-path scatter3D. Both files sit next to the page. The gl file's axis-label atlas is 1024 by 512. The stock 256 by 256 atlas drops names once about twelve host rows are on the chart.
 
 `summary.html` repeats the header, the colors, and the repo corner so the note feels like the same report. Its script is a small Markdown renderer: headings, lists, tables, fenced code, bold, code spans, and `http` links. It does not load a Markdown library. A `code` span that looks like a display filter gets a copy button. `?note=summary.computed.md` selects the counted note. The chart page shows that link after a `HEAD` request succeeds.
 
@@ -160,7 +160,7 @@ Replica reads are a paragraph, not a chart. `replica_reads` counts Get Replica (
 
 `fetch("charts.json")` stores the payload in `data` and calls `boot`. `boot` runs `echarts.init` on each plot div and keeps the instances in the `charts` object, keyed by element id. The plot div and a heading must not share an id. The NIC card's heading is `nic` and the plot is `nic-gauge`, because initializing ECharts on the heading produced a zero-height canvas.
 
-The first paint is `drawTiles`, `drawFixed`, `drawTime`, `drawHeat`, `drawScatter`, and `drawRelated`. Menus call the one `draw*` they own. The linear/log control calls `drawFixed`, `drawTime`, `drawBoxes`, and `drawScatter`.
+The first paint is `drawTiles`, `drawFixed`, `drawTime`, `drawHeat`, `drawScatter`, and `drawRelated`. Menus call the one `draw*` they own. The linear/log control calls `drawFixed`, `drawTime`, `drawBoxes`, `drawScatter`, and `drawRelated`. The time-bucket control calls `drawTime`, `drawHeat`, `drawScatter`, and `drawRelated`.
 
 `yType` and `yValue` implement that control. Log mode turns a non-positive value into `null` so ECharts leaves a gap. Pies and the NIC gauge ignore the control. The scatter's horizontal axis stays linear in time mode and follows the control only in server-time mode.
 
@@ -253,7 +253,7 @@ Expand wraps each `.chart` in a button that moves the node into `#lightbox` and 
 
 Packet-error diamonds sit on a low hidden value so they share the capture-time axis with the slow calls. Their height is not a round trip. The tooltip says which flag and which direction.
 
-Same path colors a call with the application blue or the cluster rust. A lost segment is `#ff2d2d`, an ack-lost segment is `#e67e22`, and a retry is `#6c3483`. Those diamonds sit at round trip 0, on the floor of the host-pair row. The chart background is the paper color `#f6f3ee`.
+Same path sizes each mark by how many events of that kind shared the host pair in the selected time bucket. The stored count is the clock half-second, and a wider bucket adds those counts. Linear follows the count. Log follows the logarithm of the count. A lost segment is a red diamond `#ff2d2d`. Application no response is a bright-blue circle `#1a8cff`. An ack-lost segment is `#e67e22`, a retry is `#6c3483`, and a cluster call with no reply is a rust circle `#c45c26`. The list beside the chart repeats those colors on a checkbox for each event. The chart background is the paper color `#f6f3ee`.
 
 ## Tests
 

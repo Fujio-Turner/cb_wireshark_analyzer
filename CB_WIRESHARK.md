@@ -131,7 +131,7 @@ The copy icon writes one of these. Paste it as it is. A `couchbase.` field alrea
 | Next to Set Stake | `tcp.port == 11210 && ip.addr == 10.227.75.29 && frame.time_relative >= 9.171 && frame.time_relative <= 9.671` |
 | A bar on Packets on port 11210 | `tcp.port == 11210 && couchbase.opcode == 0x56 && (couchbase.magic == 0x80 \|\| couchbase.magic == 0x08)` |
 | **Errors** = possible | the call, then `\|\|`, then the holes on that same stream. A hole only on another connection of that machine uses the requester address |
-| A point on Same path | a call is `tcp.stream == 7 && couchbase.opaque == 0xabc`. A lost segment on that stream is `tcp.stream == 7 && tcp.analysis.lost_segment`. An ack-lost segment uses `tcp.analysis.ack_lost_segment`. A retry adds `tcp.analysis.rto >= 0.001` |
+| A mark on Same path | One application call with no reply is `tcp.stream == 7 && couchbase.opaque == 0xabc`. One lost segment is `tcp.stream == 7 && tcp.analysis.lost_segment`. Several lost segments in one half-second are the two hosts, or the one stream, plus that half-second and `tcp.analysis.lost_segment`. A wider selected bucket uses that wider window. An ack-lost segment uses `tcp.analysis.ack_lost_segment`. A retry adds `tcp.analysis.rto >= 0.001` |
 | Bottom of the report | the same slow-call and missing-call filters, one per line |
 
 A statistics key such as `vbucket-seqno` is on `couchbase.key`, not the logical key. Use that field when the logical key is empty:
@@ -144,7 +144,7 @@ couchbase.key == "vbucket-seqno"
 
 These expert flags are not Couchbase status codes. The missing-call table’s **Errors** column says `possible` when a lost segment or a lost ack is within half a second of that row. A dash means no hole that close. The copy icon is the call and those holes in one filter.
 
-`lost_segment` is a hole in the sequence. The packet that carries the flag is the one that revealed the hole. `ack_lost_segment` is an acknowledgement of data the capture never saw. `retransmission` is the same sequence sent again. A copy that arrives within a millisecond has a tiny `tcp.analysis.rto` and is a capture duplicate, not a retry. Same path uses that same half-second window. Clicking a point there copies the stream and the opaque, or the stream and the TCP flag. A retry copy also requires `tcp.analysis.rto >= 0.001`.
+`lost_segment` is a hole in the sequence. The packet that carries the flag is the one that revealed the hole. `ack_lost_segment` is an acknowledgement of data the capture never saw. `retransmission` is the same sequence sent again. A copy that arrives within a millisecond has a tiny `tcp.analysis.rto` and is a capture duplicate, not a retry. Same path keeps a row when a packet issue falls inside that same half-second window. Each event on a kept row is counted into the clock half-second that contains it. The page adds those counts into the selected time bucket, and the time axis steps by that bucket. Linear follows the count. Log follows the logarithm of the count. Clicking one event copies the stream and the opaque, or the stream and the TCP flag. Clicking a half-second that holds several events copies the shared path, that half-second, and the flag. A wider bucket copies the shared path and that wider window. A retry copy also requires `tcp.analysis.rto >= 0.001`.
 
 Every error on the KV port, then each type alone:
 

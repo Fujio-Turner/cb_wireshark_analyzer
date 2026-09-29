@@ -1323,8 +1323,7 @@ def _rtt_summary(samples: list[float]) -> dict:
 _SLOW_SECONDS = 0.05
 _SCATTER_CAP = 2000
 _RELATED_PATHS = 12
-_RELATED_CALLS = 40
-_RELATED_ISSUES = 80
+_RELATED_BIN_SECONDS = 0.5
 _HEATMAP_LIMIT = 12
 _SANKEY_OPCODES = 8
 _DURABILITY_NAMES = {
@@ -1477,153 +1476,192 @@ def _issue_kind(event: dict) -> str | None:
     return None
 
 
-def _keep_related(rows: list[dict], cap: int, *, slowest: bool) -> list[dict]:
-    """Keep the points that sit next to the other kind, then fill from the rest."""
-    if len(rows) <= cap:
-        return rows
-    near = [row for row in rows if row.get("near")]
-    if len(near) >= cap:
-        if slowest:
-            near.sort(key=lambda row: row["z"] or 0, reverse=True)
-            return near[:cap]
-        return _spread_points(near, cap)
-    rest = [row for row in rows if not row.get("near")]
-    if slowest:
-        rest.sort(key=lambda row: row["z"] or 0, reverse=True)
-        return near + rest[: cap - len(near)]
-    return near + _spread_points(rest, cap - len(near))
+def _related_on_port(msg: dict, portset: set[str]) -> bool:
+    return str(msg.get("sport") or "") in portset or str(msg.get("dport") or "") in portset
+
+
+def _related_event(when: float, kind: str, role: str, name: str, toward: str, msg: dict) -> dict:
+    return {
+        "raw_t": float(when),
+        "kind": kind,
+        "role": role,
+        "name": name,
+        "toward": toward,
+        "stream": str(msg.get("stream") or ""),
+        "opaque": str(msg.get("opaque") or ""),
+        "src": str(msg.get("src") or ""),
+        "dst": str(msg.get("dst") or ""),
+        "near": False,
+    }
+
+
+_RELATED_FLAG = {
+    "lost": "tcp.analysis.lost_segment",
+    "ack": "tcp.analysis.ack_lost_segment",
+    "retrans": "tcp.analysis.retransmission && tcp.analysis.rto >= 0.001",
+}
+_RELATED_REQUEST = "(couchbase.magic == 0x80 || couchbase.magic == 0x08)"
+
+
+def _related_half(when: float) -> float:
+    """Clock half-second that contains ``when``: floor(t / 0.5) * 0.5."""
+    width = _RELATED_BIN_SECONDS
+    if when < 0:
+        when = 0.0
+    index = int(float(when) / width + 1e-9)
+    return round(index * width, 3)
+
+
+def _related_stamp(value: float) -> str:
+    rounded = round(float(value), 3)
+    if float(rounded).is_integer():
+        return str(int(rounded))
+    return f"{rounded:.3f}".rstrip("0").rstrip(".")
+
+
+def _related_filter(kind: str, rows: list[dict], pair: tuple[str, str], start: float) -> str:
+    """One event copies that call or that flag. Several events copy the shared path and that half-second."""
+    streams = {row["stream"] for row in rows if row["stream"]}
+    stream = next(iter(streams)) if len(streams) == 1 else ""
+    if len(rows) == 1 and stream:
+        if kind == "noreply" and rows[0]["opaque"]:
+            return f"tcp.stream == {stream} && couchbase.opaque == {rows[0]['opaque']}"
+        if kind in _RELATED_FLAG:
+            return f"tcp.stream == {stream} && {_RELATED_FLAG[kind]}"
+    end = round(float(start) + _RELATED_BIN_SECONDS, 3)
+    parts = [f"tcp.stream == {stream}"] if stream else [f"tcp.port == {KV_PORT}"]
+    if not stream:
+        for host in pair:
+            field = "ipv6.addr" if ":" in host else "ip.addr"
+            parts.append(f"{field} == {host}")
+    parts.append(f"frame.time_relative >= {_related_stamp(start)}")
+    parts.append(f"frame.time_relative <= {_related_stamp(end)}")
+    parts.append(_RELATED_REQUEST if kind == "noreply" else _RELATED_FLAG[kind])
+    return " && ".join(parts)
+
+
+def _related_group(rows: list[dict], pair: tuple[str, str], when: float, lane: int) -> dict:
+    names = [row["name"] for row in rows if row["name"]]
+    name = ""
+    if names:
+        chosen, votes = Counter(names).most_common(1)[0]
+        if votes == len(rows):
+            name = chosen
+    ways = {row["toward"] for row in rows if row["toward"]}
+    toward = next(iter(ways)) if len(ways) == 1 else ("both" if ways else "")
+    ends = {(row["src"], row["dst"]) for row in rows}
+    streams = {row["stream"] for row in rows if row["stream"]}
+    same_ends = len(ends) == 1
+    return {
+        "t": round(when, 3),
+        "lane": lane,
+        "kind": rows[0]["kind"],
+        "role": rows[0]["role"],
+        "name": name,
+        "toward": toward,
+        "count": len(rows),
+        "stream": next(iter(streams)) if len(streams) == 1 else "",
+        "src": rows[0]["src"] if same_ends else "",
+        "dst": rows[0]["dst"] if same_ends else "",
+        "near": any(row["near"] for row in rows),
+        "filter": _related_filter(rows[0]["kind"], rows, pair, when),
+    }
 
 
 def _related(paired: dict, loss_events: list[dict], ports: list[str]) -> dict:
-    """Paths where a packet issue and a slow call share the two hosts on the KV port.
+    """Host pairs where a packet issue sits beside a missing reply or a slow call.
 
-    Time, the host pair, and the round trip stay as the three axes. A packet
-    issue has no round trip of its own, so it sits at zero on that axis.
+    Each event is counted into the clock half-second that contains it.
+    ``t`` is that half-second's start and ``count`` is how many events of one
+    kind share it on those two hosts. ``window`` is how close a packet issue
+    must be to a missing reply or a slow call for the pair to be kept. The page
+    adds the half-second counts into a wider time bucket. An application call
+    with no reply is its own kind, separate from a cluster call with no reply.
     """
     portset = set(ports) or {KV_PORT}
     window = _ERROR_WINDOW_SECONDS
-    calls: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    slow: dict[tuple[str, str], list[float]] = defaultdict(list)
     for req, resp in paired["matched"]:
-        gap = resp["time"] - req["time"]
-        if gap < _SLOW_SECONDS:
+        if resp["time"] - req["time"] < _SLOW_SECONDS or not _related_on_port(req, portset):
+            continue
+        pair = _host_pair(req.get("src"), req.get("dst"))
+        if pair is not None:
+            slow[pair].append(float(req["time"]))
+    misses: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for req in paired.get("unanswered") or []:
+        if not _related_on_port(req, portset):
             continue
         pair = _host_pair(req.get("src"), req.get("dst"))
         if pair is None:
             continue
-        sport = str(req.get("sport") or "")
-        dport = str(req.get("dport") or "")
-        if sport not in portset and dport not in portset:
-            continue
-        calls[pair].append({
-            "t": round(float(req["time"]), 3),
-            "raw_t": float(req["time"]),
-            "z": _ms(gap),
-            "kind": "call",
-            "role": "cluster" if _role_name(req) == "Cluster" else "sdk",
-            "name": opcode_name(req.get("opcode") or ""),
-            "toward": "",
-            "stream": str(req.get("stream") or ""),
-            "opaque": str(req.get("opaque") or ""),
-            "src": str(req.get("src") or ""),
-            "dst": str(req.get("dst") or ""),
-            "near": False,
-        })
+        role = "cluster" if _role_name(req) == "Cluster" else "sdk"
+        misses[pair].append(_related_event(
+            req["time"], "noreply", role, opcode_name(req.get("opcode") or ""), "", req,
+        ))
     issues: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for event in loss_events:
         kind = _issue_kind(event)
-        if kind is None:
-            continue
-        sport = str(event.get("sport") or "")
-        dport = str(event.get("dport") or "")
-        if sport not in portset and dport not in portset:
+        if kind is None or not _related_on_port(event, portset):
             continue
         pair = _host_pair(event.get("src"), event.get("dst"))
         if pair is None:
             continue
-        issues[pair].append({
-            "t": round(float(event["time"]), 3),
-            "raw_t": float(event["time"]),
-            "z": 0,
-            "kind": kind,
-            "role": "",
-            "name": "",
-            "toward": "client" if sport in portset else "server",
-            "stream": str(event.get("stream") or ""),
-            "opaque": "",
-            "src": str(event.get("src") or ""),
-            "dst": str(event.get("dst") or ""),
-            "near": False,
-        })
-    call_times = {pair: [row["raw_t"] for row in rows] for pair, rows in calls.items()}
-    for rows in call_times.values():
-        rows.sort()
-    near_count: Counter = Counter()
+        toward = "client" if str(event.get("sport") or "") in portset else "server"
+        issues[pair].append(_related_event(event["time"], kind, "", "", toward, event))
+
+    ranked: list[tuple[str, str]] = []
+    stats: dict[tuple[str, str], tuple[int, int, int, int, int]] = {}
     for pair, rows in issues.items():
-        times = call_times.get(pair) or []
-        rows.sort(key=lambda row: row["raw_t"])
-        if not times:
-            continue
+        miss_rows = misses.get(pair, [])
+        app_times = sorted(row["raw_t"] for row in miss_rows if row["role"] == "sdk")
+        miss_times = sorted(row["raw_t"] for row in miss_rows)
+        slow_times = sorted(slow.get(pair, []))
         for row in rows:
-            if _within(times, row["raw_t"], window):
+            if (miss_times and _within(miss_times, row["raw_t"], window)) or (
+                slow_times and _within(slow_times, row["raw_t"], window)
+            ):
                 row["near"] = True
-                near_count[pair] += 1
-    for pair, rows in calls.items():
-        times = [row["raw_t"] for row in issues.get(pair, [])]
-        times.sort()
-        if not times:
+        near_n = sum(1 for row in rows if row["near"])
+        if not near_n:
             continue
-        for row in rows:
-            row["near"] = _within(times, row["raw_t"], window)
-    ranked = sorted(
-        (pair for pair in issues if near_count[pair]),
-        key=lambda pair: (-near_count[pair], -len(issues[pair]), pair),
-    )
+        issue_times = sorted(row["raw_t"] for row in rows)
+        for row in miss_rows:
+            row["near"] = _within(issue_times, row["raw_t"], window)
+        app_near = sum(1 for row in rows if app_times and _within(app_times, row["raw_t"], window))
+        lost_n = sum(1 for row in rows if row["kind"] == "lost")
+        noreply_n = sum(1 for row in miss_rows if row["role"] == "sdk")
+        cluster_n = sum(1 for row in miss_rows if row["role"] == "cluster")
+        stats[pair] = (app_near, near_n, lost_n, noreply_n, cluster_n)
+        ranked.append(pair)
+    ranked.sort(key=lambda pair: (-stats[pair][0], -stats[pair][1], -stats[pair][2], -stats[pair][3], pair))
+
     lanes = []
     points = []
+    kind_order = {"lost": 0, "noreply": 1, "ack": 2, "retrans": 3}
     for index, pair in enumerate(ranked[:_RELATED_PATHS]):
+        _app_near, near_n, lost_n, noreply_n, cluster_n = stats[pair]
         lanes.append({
             "lane": index,
             "label": f"{pair[0]} ↔ {pair[1]}",
             "port": KV_PORT,
-            "related": near_count[pair],
+            "related": near_n,
+            "lost": lost_n,
+            "noreply": noreply_n,
+            "cluster_noreply": cluster_n,
         })
-        chosen = _keep_related(calls.get(pair, []), _RELATED_CALLS, slowest=True)
-        chosen += _keep_related(issues[pair], _RELATED_ISSUES, slowest=False)
-        chosen.sort(key=lambda row: row["raw_t"])
-        burst = 0
-        previous = None
+        chosen = list(issues[pair]) + list(misses.get(pair, []))
+        groups: dict[tuple, list[dict]] = defaultdict(list)
         for row in chosen:
-            if previous is None or row["raw_t"] - previous > window:
-                burst += 1
-            previous = row["raw_t"]
-            stream = row["stream"]
-            if row["kind"] == "call" and stream and row["opaque"]:
-                copied = f"tcp.stream == {stream} && couchbase.opaque == {row['opaque']}"
-            elif stream:
-                flag = {
-                    "lost": "tcp.analysis.lost_segment",
-                    "ack": "tcp.analysis.ack_lost_segment",
-                    "retrans": "tcp.analysis.retransmission && tcp.analysis.rto >= 0.001",
-                }[row["kind"]]
-                copied = f"tcp.stream == {stream} && {flag}"
-            else:
-                copied = ""
-            points.append({
-                "t": row["t"],
-                "lane": index,
-                "z": row["z"],
-                "kind": row["kind"],
-                "role": row["role"],
-                "name": row["name"],
-                "toward": row["toward"],
-                "stream": stream,
-                "src": row["src"],
-                "dst": row["dst"],
-                "near": row["near"],
-                "burst": burst,
-                "filter": copied,
-            })
-    return {"port": KV_PORT, "window": window, "lanes": lanes, "points": points}
+            groups[(_related_half(row["raw_t"]), row["kind"], row["role"])].append(row)
+        for key in sorted(groups, key=lambda item: (item[0], kind_order.get(item[1], 9), item[2])):
+            points.append(_related_group(groups[key], pair, key[0], index))
+    return {
+        "port": KV_PORT,
+        "window": window,
+        "bin": _RELATED_BIN_SECONDS,
+        "lanes": lanes,
+        "points": points,
+    }
 
 
 def _heatmaps(unanswered: list[dict], capture_end: float) -> dict:

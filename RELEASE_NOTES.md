@@ -1,5 +1,18 @@
 # Release notes
 
+## 0.12.0
+
+Same path puts a packet issue next to an application call with no reply, or next to a slow call, when both are on the same two hosts.
+
+- The chart is under Diagnosis. The three axes are seconds from the first packet, the pair of addresses on port 11210, and the kind of event. A row stays when a packet issue falls within half a second of an application call with no reply, or of a matched call of at least 50 ms. The chart keeps up to twelve pairs.
+- Each event is counted into the half-second that contains it. The time-bucket menu adds those counts into 1, 5, or 10 seconds, and the time axis steps by that bucket. Half a second reads 0.5, 1.0, 1.5.
+- The size of a mark is how many events of that kind shared that pair in the bucket. Linear uses the count. Log uses the logarithm of the count.
+- A lost segment is a red diamond. An application call with no reply is a bright-blue circle. An ack-lost segment, a retry, and a cluster call with no reply each have their own mark. A slow call that was answered can keep the row, and it is not drawn.
+- The list beside the plot has a checkbox for each event kind and each host pair. Hide all and Show all change every box.
+- Zoom in, Zoom out, and Home sit at the upper right. Home restores the first view. Changing the time bucket, the linear/log control, or a checkbox keeps the zoom.
+- Click one mark to copy its stream and opaque, or its stream and TCP flag. A mark that merged several events copies the shared path and the selected time window.
+- The chart does not take stakes and does not follow the shared time-chart zoom.
+
 ## 0.11.0
 
 A long run says which stage it is in, and the opcode tables sit beside the script.

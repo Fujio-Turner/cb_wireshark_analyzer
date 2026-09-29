@@ -11,6 +11,7 @@ Progress and stage timing are JSON records on stderr. --log-level defaults to IN
 Input is a pcap/pcapng, a tshark field export (.tsv or .csv), or a directory
 containing them. A request export alone has no responses and, on collections,
 an empty couchbase.key. When a pcap sits next to that export, the pcap is used.
+Opcode names, descriptions, and status text live in couchbase_opcodes.py.
 """
 
 from __future__ import annotations
@@ -36,6 +37,15 @@ import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from couchbase_opcodes import (
+    CLUSTER_OPCODES,
+    MULTI_RESPONSE_OPCODES,
+    NO_REPLY_OPCODES,
+    OPCODE_DESCRIPTIONS,
+    OPCODES,
+    STATUS,
+)
+
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_OLLAMA = "http://127.0.0.1:11434"
@@ -44,213 +54,9 @@ _LOCAL_API_HOSTS = {"localhost", "127.0.0.1", "::1", "host.docker.internal"}
 DEFAULT_TIMEOUT = 600
 TABLE_TOKEN = "{{UNANSWERED_TABLE}}"
 
-# Wireshark client opcode labels from packet-couchbase.c (client_opcode_vals).
-# The field reference lists couchbase.opcode but not these values.
-OPCODES = {
-    0x00: 'Get',
-    0x01: 'Set',
-    0x02: 'Add',
-    0x03: 'Replace',
-    0x04: 'Delete',
-    0x05: 'Increment',
-    0x06: 'Decrement',
-    0x07: 'Quit',
-    0x08: 'Flush',
-    0x09: 'Get Quietly',
-    0x0A: 'NOOP',
-    0x0B: 'Version',
-    0x0C: 'Get Key',
-    0x0D: 'Get Key Quietly',
-    0x0E: 'Append',
-    0x0F: 'Prepend',
-    0x10: 'Statistics',
-    0x11: 'Set Quietly',
-    0x12: 'Add Quietly',
-    0x13: 'Replace Quietly',
-    0x14: 'Delete Quietly',
-    0x15: 'Increment Quietly',
-    0x16: 'Decrement Quietly',
-    0x17: 'Quit Quietly',
-    0x18: 'Flush Quietly',
-    0x19: 'Append Quietly',
-    0x1A: 'Prepend Quietly',
-    0x1B: 'Verbosity',
-    0x1C: 'Touch',
-    0x1D: 'Get and Touch',
-    0x1E: 'Gat and Touch Quietly',
-    0x1F: 'Hello',
-    0x20: 'List SASL Mechanisms',
-    0x21: 'SASL Authenticate',
-    0x22: 'SASL Step',
-    0x23: 'IOCTL Get',
-    0x24: 'IOCTL Set',
-    0x25: 'Config Validate',
-    0x26: 'Config Reload',
-    0x27: 'Audit Put',
-    0x28: 'Audit Config Reload',
-    0x29: 'Shutdown',
-    0x2D: 'Set Active Encryption Keys',
-    0x2E: 'Prune Encryption Keys',
-    0x30: 'Range Get',
-    0x31: 'Range Set',
-    0x32: 'Range Set Quietly',
-    0x33: 'Range Append',
-    0x34: 'Range Append Quietly',
-    0x35: 'Range Prepend',
-    0x36: 'Range Prepend Quietly',
-    0x37: 'Range Delete',
-    0x38: 'Range Delete Quietly',
-    0x39: 'Range Increment',
-    0x3A: 'Range Increment Quietly',
-    0x3B: 'Range Decrement',
-    0x3C: 'Range Decrement Quietly',
-    0x3D: 'Set VBucket',
-    0x3E: 'Get VBucket',
-    0x3F: 'Delete VBucket',
-    0x40: 'TAP Connect',
-    0x41: 'TAP Mutation',
-    0x42: 'TAP Delete',
-    0x43: 'TAP Flush',
-    0x44: 'TAP Opaque',
-    0x45: 'TAP VBucket Set',
-    0x46: 'TAP Checkpoint Start',
-    0x47: 'TAP Checkpoint End',
-    0x48: 'Get All VBucket Seqnos',
-    0x49: 'GetEx',
-    0x4A: 'GetEx Replica',
-    0x50: 'DCP Open Connection',
-    0x51: 'DCP Add Stream',
-    0x52: 'DCP Close Stream',
-    0x53: 'DCP Stream Request',
-    0x54: 'DCP Get Failover Log',
-    0x55: 'DCP Stream End',
-    0x56: 'DCP Snapshot Marker',
-    0x57: 'DCP (Key) Mutation',
-    0x58: 'DCP (Key) Deletion',
-    0x59: 'DCP (Key) Expiration',
-    0x5A: 'DCP Flush',
-    0x5B: 'DCP Set VBucket State',
-    0x5C: 'DCP NOOP',
-    0x5D: 'DCP Buffer Acknowledgement',
-    0x5E: 'DCP Control',
-    0x5F: 'DCP System Event',
-    0x60: 'DCP Prepare',
-    0x61: 'DCP Seqno Acknowledgement',
-    0x62: 'DCP Commit',
-    0x63: 'DCP Abort',
-    0x64: 'DCP Seqno Advanced',
-    0x65: 'DCP Out of Sequence Order Snapshot',
-    0x66: 'DCP Cache Transfer',
-    0x67: 'DCP Cache Transfer End',
-    0x70: 'Get Fusion Storage Snapshot',
-    0x71: 'Release Fusion Storage Snapshot',
-    0x72: 'Mount Fusion VBucket',
-    0x73: 'Unmount Fusion VBucket',
-    0x74: 'Sync Fusion Logstore',
-    0x75: 'Start Fusion Uploader',
-    0x76: 'Stop Fusion Uploader',
-    0x77: 'Delete Fusion Namespace',
-    0x78: 'Get Fusion Namespaces',
-    0x80: 'Stop Persistence',
-    0x81: 'Start Persistence',
-    0x82: 'Set Parameter',
-    0x83: 'Get Replica',
-    0x85: 'Create Bucket',
-    0x86: 'Delete Bucket',
-    0x87: 'List Buckets',
-    0x88: 'Expand Bucket',
-    0x89: 'Select Bucket',
-    0x90: 'Start Replication',
-    0x91: 'Observe Sequence Number',
-    0x92: 'Observe',
-    0x93: 'Evict Key',
-    0x94: 'Get Locked',
-    0x95: 'Unlock Key',
-    0x96: 'Sync',
-    0x97: 'Last Closed Checkpoint',
-    0x98: 'Restore File',
-    0x99: 'Restore Abort',
-    0x9A: 'Restore Complete',
-    0x9B: 'Online Update Start',
-    0x9C: 'Online Update Complete',
-    0x9D: 'Online Update Revert',
-    0x9E: 'Deregister TAP Client',
-    0x9F: 'Reset Replication Chain',
-    0xA0: 'Get Meta',
-    0xA1: 'Get Meta Quietly',
-    0xA2: 'Set with Meta',
-    0xA3: 'Set with Meta Quietly',
-    0xA4: 'Add with Meta',
-    0xA5: 'Add with Meta Quietly',
-    0xA6: 'Snapshot VBuckets States',
-    0xA7: 'VBucket Batch Count',
-    0xA8: 'Delete with Meta',
-    0xA9: 'Delete with Meta Quietly',
-    0xAA: 'Create Checkpoint',
-    0xAC: 'Notify VBucket Update',
-    0xAD: 'Enable Traffic',
-    0xAE: 'Disable Traffic',
-    0xAF: 'Ifconfig',
-    0xB0: 'Change VBucket Filter',
-    0xB1: 'Checkpoint Persistence',
-    0xB2: 'Return Meta',
-    0xB3: 'Compact Database',
-    0xB4: 'Set Cluster Config',
-    0xB5: 'Get Cluster Config',
-    0xB6: 'Get Random Key',
-    0xB7: 'Seqno Persistence',
-    0xB8: 'Get Keys',
-    0xB9: "Set Collection's Manifest",
-    0xBA: "Get Collection's Manifest",
-    0xBB: 'Get Collection ID',
-    0xBC: 'Get Scope ID',
-    0xC1: 'Set Drift Counter State',
-    0xC2: 'Get Adjusted Time',
-    0xC5: 'Subdoc Get',
-    0xC6: 'Subdoc Exists',
-    0xC7: 'Subdoc Dictionary Add',
-    0xC8: 'Subdoc Dictionary Upsert',
-    0xC9: 'Subdoc Delete',
-    0xCA: 'Subdoc Replace',
-    0xCB: 'Subdoc Array Push Last',
-    0xCC: 'Subdoc Array Push First',
-    0xCD: 'Subdoc Array Insert',
-    0xCE: 'Subdoc Array Add Unique',
-    0xCF: 'Subdoc Counter',
-    0xD0: 'Subdoc Multipath Lookup',
-    0xD1: 'Subdoc Multipath Mutation',
-    0xD2: 'Subdoc Get Count',
-    0xD3: 'Subdoc Replace Body With Xattr',
-    0xDA: 'RangeScan Create',
-    0xDB: 'RangeScan Continue',
-    0xDC: 'RangeScan Cancel',
-    0xE0: 'Prepare Snapshot',
-    0xE1: 'Release Snapshot',
-    0xE2: 'Download Snapshot',
-    0xE3: 'Get File Fragment',
-    0xF0: 'Scrub',
-    0xF1: 'isasl Refresh',
-    0xF2: 'SSL Certificates Refresh',
-    0xF3: 'Internal Timer Control',
-    0xF4: 'Set Control Token',
-    0xF5: 'Get Control Token',
-    0xF6: 'Update External User Permissions',
-    0xF7: 'RBAC Refresh',
-    0xF8: 'Auth Provider',
-    0xFB: 'Drop Privilege',
-    0xFC: 'Adjust Timeofday',
-    0xFD: 'EWOULDBLOCK Control',
-    0xFE: 'Get Error Map',
-}
-
 # KV only. tcp.port is either side, so a reply leaving 11210 stays in.
 KV_PORT = "11210"
 KV_PORTS = {"11210", "11207"}
-# DCP is the in-cluster replication stream. Meta commands are XDCR.
-_CLUSTER_OPCODES = {f"0x{code:02x}" for code in range(0x50, 0x68)} | {
-    "0x48", "0xa0", "0xa1", "0xa2", "0xa3", "0xa4", "0xa5", "0xa8",
-}
-
 
 PACKET_TYPE_ORDER = (
     "Couchbase",
@@ -346,128 +152,10 @@ def _keep_kv(messages: list[dict]) -> list[dict]:
     for msg in messages:
         sport = msg.get("sport") or ""
         dport = msg.get("dport") or ""
-        if not sport and not dport:
-            kept.append(msg)
-        elif on_kv_port(sport, dport):
-            kept.append(msg)
+        if (sport or dport) and not on_kv_port(sport, dport):
+            continue
+        kept.append(msg)
     return kept
-
-
-# Plain descriptions for the commands people meet on port 11210.
-# Names stay as Wireshark prints them. The chart tooltips show these sentences.
-OPCODE_DESCRIPTIONS = {
-    0x00: "Retrieves a document.",
-    0x01: "Stores a document unconditionally.",
-    0x02: "Stores a document only if it does not exist.",
-    0x03: "Stores a document only if it already exists.",
-    0x04: "Removes a document.",
-    0x05: "Increments a numeric counter.",
-    0x06: "Decrements a numeric counter.",
-    0x07: "Closes the connection.",
-    0x08: "Flushes the bucket, when that is enabled.",
-    0x09: "Quiet Get. No response when the key does not exist.",
-    0x0A: "No-op. Keep-alive.",
-    0x0B: "Gets the server version.",
-    0x0C: "Get, and return the key in the response.",
-    0x0D: "Quiet Get, and return the key.",
-    0x0E: "Appends data to an existing document.",
-    0x0F: "Prepends data to an existing document.",
-    0x10: "Retrieves server statistics. Key vbucket-seqno is the DCP high-seqno poll.",
-    0x11: "Quiet Set. No response on success.",
-    0x12: "Quiet Add. No response on success.",
-    0x13: "Quiet Replace. No response on success.",
-    0x14: "Quiet Delete. No response on success.",
-    0x15: "Quiet Increment. No response on success.",
-    0x16: "Quiet Decrement. No response on success.",
-    0x17: "Quiet Quit. No response on success.",
-    0x18: "Quiet Flush. No response on success.",
-    0x19: "Quiet Append. No response on success.",
-    0x1A: "Quiet Prepend. No response on success.",
-    0x1B: "Sets logging verbosity.",
-    0x1C: "Updates a document's expiration time.",
-    0x1D: "Get and Touch. Retrieves the document and updates its expiration.",
-    0x1E: "Quiet Get and Touch.",
-    0x1F: "Hello. Client capability negotiation.",
-    0x20: "Lists supported SASL authentication mechanisms.",
-    0x21: "Starts SASL authentication.",
-    0x22: "Continues SASL authentication.",
-    0x23: "IOCTL Get.",
-    0x24: "IOCTL Set.",
-    0x25: "Validates configuration.",
-    0x26: "Reloads configuration.",
-    0x27: "Writes an audit event.",
-    0x28: "Reloads audit configuration.",
-    0x29: "Shuts the server down.",
-    0x30: "Replica Get.",
-    0x31: "Replica Set.",
-    0x32: "Quiet Replica Set.",
-    0x33: "Replica Append.",
-    0x34: "Quiet Replica Append.",
-    0x35: "Replica Prepend.",
-    0x36: "Quiet Replica Prepend.",
-    0x37: "Replica Delete.",
-    0x38: "Quiet Replica Delete.",
-    0x39: "Replica Increment.",
-    0x3A: "Quiet Replica Increment.",
-    0x3B: "Replica Decrement.",
-    0x3C: "Quiet Replica Decrement.",
-    0x3D: "Sets a vBucket state.",
-    0x3E: "Reads a vBucket state.",
-    0x3F: "Deletes a vBucket.",
-    0x40: "TAP Connect. Legacy replication.",
-    0x41: "TAP Mutation. Legacy replication.",
-    0x42: "TAP Delete. Legacy replication.",
-    0x43: "TAP Flush. Legacy replication.",
-    0x44: "TAP Opaque. Legacy replication.",
-    0x45: "TAP vBucket set. Legacy replication.",
-    0x46: "TAP checkpoint start. Legacy replication.",
-    0x47: "TAP checkpoint end. Legacy replication.",
-    0x50: "DCP Open. Starts a streaming connection.",
-    0x51: "DCP add stream.",
-    0x52: "DCP close stream.",
-    0x53: "DCP stream request. Its opaque is copied onto every later message for that stream.",
-    0x54: "DCP get failover log.",
-    0x55: "DCP stream end. The consumer does not reply.",
-    0x56: "DCP snapshot marker. A reply is required only when the ack flag 0x08 is set.",
-    0x57: "DCP mutation. The consumer does not reply. Flow control is a later buffer ack.",
-    0x58: "DCP deletion. The consumer does not reply.",
-    0x59: "DCP expiration. The consumer does not reply.",
-    0x5A: "DCP flush.",
-    0x5B: "DCP set vBucket state.",
-    0x5C: "DCP noop. The producer sends it, and the consumer must answer or the producer drops the connection.",
-    0x5D: "DCP buffer acknowledgement. The producer does not answer. Opaque 0 is the whole connection.",
-    0x5E: "DCP control.",
-    0x83: "Get Replica. Reads a replica vBucket, usually after the active read timed out.",
-    0x89: "Selects the bucket for this connection.",
-    0x91: "Checks durability by sequence number.",
-    0x92: "Legacy durability check.",
-    0x94: "Fetches a document and applies a pessimistic lock.",
-    0x95: "Unlocks a previously locked document.",
-    0xA0: "Get with meta. Used by cross-datacenter replication.",
-    0xA1: "Quiet Get with meta.",
-    0xA2: "Set with meta. Used by cross-datacenter replication.",
-    0xA3: "Quiet Set with meta.",
-    0xA4: "Add with meta.",
-    0xA5: "Quiet Add with meta.",
-    0xA8: "Delete with meta.",
-    0xA9: "Quiet Delete with meta.",
-    0xB4: "Pushes an updated cluster map.",
-    0xB5: "Pulls the active cluster map.",
-    0xC5: "Sub-document Get. Reads one JSON path.",
-    0xC6: "Sub-document Exists. Checks one JSON path.",
-    0xC7: "Sub-document dictionary add.",
-    0xC8: "Sub-document dictionary upsert.",
-    0xC9: "Sub-document delete.",
-    0xCA: "Sub-document replace.",
-    0xCB: "Sub-document array push last.",
-    0xCC: "Sub-document array push first.",
-    0xCD: "Sub-document array insert.",
-    0xCE: "Sub-document array add unique.",
-    0xCF: "Sub-document counter.",
-    0xD0: "Sub-document multi lookup. Reads several JSON paths.",
-    0xD1: "Sub-document multi mutation. Changes several JSON paths.",
-    0xD2: "Sub-document get count.",
-}
 
 
 def opcode_description(opcode: str) -> str:
@@ -478,26 +166,6 @@ def opcode_description(opcode: str) -> str:
         return ""
     return OPCODE_DESCRIPTIONS.get(number, "")
 
-
-STATUS = {
-    0x00: "success",
-    0x01: "key not found",
-    0x02: "key exists",
-    0x03: "value too large",
-    0x04: "invalid arguments",
-    0x05: "not stored",
-    0x06: "non-numeric",
-    0x07: "not my vbucket",
-    0x08: "authentication error",
-    0x09: "locked",
-    0x81: "unknown command",
-    0x82: "out of memory",
-    0x83: "not supported",
-    0x84: "internal error",
-    0x85: "busy",
-    0x86: "temporary failure",
-    0x23: "rollback",
-}
 
 CLIENT_REQ_MAGIC = {0x80, 0x08}
 CLIENT_RES_MAGIC = {0x81, 0x18}
@@ -703,24 +371,6 @@ def log(message: str, severity: str = "INFO", **attributes: object) -> None:
     telemetry.emit(message, severity, attributes)
 
 
-# DCP is full duplex. The producer sends request-magic packets that are not
-# RPCs. kv_engine docs/dcp: the consumer does not reply to stream end, mutation,
-# deletion, expiration, or a snapshot marker unless snapshot-type flag 0x08 (Ack)
-# is set. Buffer acknowledgement's response is unused. Seqno acknowledged has
-# no success response. System event, prepare, commit, abort, seqno advanced,
-# OSO snapshot, and cache transfer are producer data. Noop is not in this set:
-# the consumer must answer it.
-_NO_REPLY_OPCODES = {
-    0x55, 0x56, 0x57, 0x58, 0x59, 0x5D,
-    0x5F, 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67,
-}
-
-
-# Statistics (0x10) answers with one packet per stat line, then an empty
-# terminator. Every packet repeats the request opaque. vbucket-seqno does this.
-_MULTI_RESPONSE_OPCODES = {0x10}
-
-
 _OPCODE_NUMBERS: dict[str, int | None] = {}
 
 
@@ -785,19 +435,19 @@ def expects_reply(opcode: str, snapshot_ack=False) -> bool:
     # Snapshot marker replies only when the ack flag (0x08) is set.
     if number == 0x56:
         return bool(snapshot_ack)
-    return number not in _NO_REPLY_OPCODES
+    return number not in NO_REPLY_OPCODES
 
 
 def is_multi_response(opcode: str) -> bool:
     """One request, many response packets, one opaque."""
-    return _opcode_number(opcode) in _MULTI_RESPONSE_OPCODES
+    return _opcode_number(opcode) in MULTI_RESPONSE_OPCODES
 
 
 def traffic_role(sport: str, dport: str, opcode: str = "", key: str = "") -> str:
     """Cluster is node-to-node, DCP, or replication meta. SDK is an app port to KV."""
     if str(sport or "") in KV_PORTS and str(dport or "") in KV_PORTS:
         return "cluster"
-    if str(opcode or "").lower() in _CLUSTER_OPCODES:
+    if str(opcode or "").lower() in CLUSTER_OPCODES:
         return "cluster"
     # Stats key vbucket-seqno is the DCP poll for the high sequence number.
     if _opcode_number(opcode) == 0x10 and str(key or "").startswith("vbucket-seqno"):
@@ -1726,19 +1376,22 @@ def _packet_errors(loss_events: list[dict], ports: list[str], cluster_ends: set[
     for event in loss_events:
         if event.get("time") is None or event.get("duplicate"):
             continue
+        lost = event.get("lost")
+        ack = event.get("ack")
+        retrans = event.get("retrans") and not event.get("duplicate")
+        if not (lost or ack or retrans):
+            continue
         sport = str(event.get("sport") or "")
         dport = str(event.get("dport") or "")
         if portset and sport not in portset and dport not in portset:
             continue
         kinds = []
-        if event.get("lost"):
+        if lost:
             kinds.append("lost")
-        if event.get("ack"):
+        if ack:
             kinds.append("ack")
-        if event.get("retrans") and not event.get("duplicate"):
+        if retrans:
             kinds.append("retrans")
-        if not kinds:
-            continue
         rows.append({
             "t": round(float(event["time"]), 3),
             "kind": kinds[0],
@@ -1914,6 +1567,12 @@ def _sankey_view(counts: Counter) -> dict:
     return {"nodes": nodes, "links": links}
 
 
+def _sankey_where(counts: Counter, keep) -> dict:
+    """The same diagram, limited to the calls `keep` accepts."""
+    chosen = Counter({key: count for key, count in counts.items() if keep(key)})
+    return _sankey_view(chosen)
+
+
 def _sankey(requests: list[dict], paired: dict) -> dict:
     """Application or cluster, then the command, then how the call ended.
 
@@ -1922,19 +1581,14 @@ def _sankey(requests: list[dict], paired: dict) -> dict:
     """
     counts = _sankey_counts(requests, paired)
     views = {
-        "all": _sankey_view(counts),
-        "application": _sankey_view(Counter(
-            {key: count for key, count in counts.items() if key[0] == "Application"}
-        )),
-        "cluster": _sankey_view(Counter(
-            {key: count for key, count in counts.items() if key[0] == "Cluster"}
-        )),
-        "exclude_not_expected": _sankey_view(Counter(
-            {key: count for key, count in counts.items() if key[2] != "Not expected"}
-        )),
-        "unmatched": _sankey_view(Counter(
-            {key: count for key, count in counts.items() if key[2] == "Missing reply"}
-        )),
+        name: _sankey_view(counts) if keep is None else _sankey_where(counts, keep)
+        for name, keep in (
+            ("all", None),
+            ("application", lambda key: key[0] == "Application"),
+            ("cluster", lambda key: key[0] == "Cluster"),
+            ("exclude_not_expected", lambda key: key[2] != "Not expected"),
+            ("unmatched", lambda key: key[2] == "Missing reply"),
+        )
     }
     return {"nodes": views["all"]["nodes"], "links": views["all"]["links"], "views": views}
 
@@ -1950,6 +1604,15 @@ def _milli_summary(samples: list[float]) -> dict:
         "p99": round(_percentile_sorted(ordered, 0.99) or 0, 1),
         "max": round(ordered[-1], 1),
     }
+
+
+# sdk_* and cluster_* copy the rtt_ keys. ttp_* and ttr_* copy n, median, and p99.
+_RTT_ROLE_FIELDS = ("n", "median", "p90", "p99", "min", "max")
+_MILLI_FIELDS = ("n", "median", "p99")
+
+
+def _summary_fields(prefix: str, summary: dict, names: tuple[str, ...], source: str = "rtt_") -> dict:
+    return {f"{prefix}_{name}": summary[f"{source}{name}"] for name in names}
 
 
 def replica_read_kind(msg: dict) -> str:
@@ -2007,12 +1670,19 @@ def _persist_times(paired: dict) -> dict:
     return {"ttp": _milli_summary(ttp), "ttr": _milli_summary(ttr)}
 
 
-def _durability_rows(requests: list[dict], paired: dict) -> list[dict]:
-    gaps = {}
+def _matched_gaps(paired: dict) -> dict[int, float]:
+    """Round trip of each matched call. A response before its request is skipped."""
+    gaps: dict[int, float] = {}
     for req, resp in paired["matched"]:
         gap = resp["time"] - req["time"]
-        if gap >= 0:
-            gaps[id(req)] = gap
+        if gap < 0:
+            continue
+        gaps[id(req)] = gap
+    return gaps
+
+
+def _durability_rows(requests: list[dict], paired: dict) -> list[dict]:
+    gaps = _matched_gaps(paired)
     samples: dict[int, list[float]] = {0: [], 1: [], 2: [], 3: []}
     counts: Counter = Counter()
     for msg in requests:
@@ -2040,11 +1710,7 @@ def _durability_rows(requests: list[dict], paired: dict) -> list[dict]:
 
 def _vbucket_rows(requests: list[dict], paired: dict) -> list[dict]:
     unanswered = {id(msg) for msg in paired["unanswered"]}
-    gaps = {}
-    for req, resp in paired["matched"]:
-        gap = resp["time"] - req["time"]
-        if gap >= 0:
-            gaps[id(req)] = gap
+    gaps = _matched_gaps(paired)
     stats: dict[int, list] = {}
     for msg in requests:
         vb = msg.get("vbucket")
@@ -2195,6 +1861,8 @@ def _bucket_series(
         ttr = msg.get("ttr")
         ttp_value = None if ttp is None else float(ttp)
         ttr_value = None if ttr is None else float(ttr)
+        if not size and ttp_value is None and ttr_value is None and not count_gap:
+            return
         for slot, width in enumerate(widths):
             index = _bucket_index(when, width, counts[slot])
             body_out_sum[slot][index] += size
@@ -2233,12 +1901,15 @@ def _bucket_series(
             else:
                 sdk_unanswered_n[slot][index] += 1
     for event in timed_loss:
-        when = event["time"]
         lost = event["lost"]
-        toward_client = event["sport"] in portset
         retrans = event["retrans"]
-        cluster_retry = flow_role(event.get("sport") or "", event.get("dport") or "", ends) == "cluster" if retrans else False
         ack = event["ack"]
+        # One frame can carry a loss, a retransmission, and an ack together.
+        if not (lost or retrans or ack):
+            continue
+        when = event["time"]
+        toward_client = event["sport"] in portset
+        cluster_retry = flow_role(event.get("sport") or "", event.get("dport") or "", ends) == "cluster" if retrans else False
         for slot, width in enumerate(widths):
             index = _bucket_index(when, width, counts[slot])
             if lost:
@@ -2276,18 +1947,8 @@ def _bucket_series(
                 "cluster_unanswered": cluster_unanswered_n[slot][index],
                 "sdk_retrans": sdk_retrans_n[slot][index],
                 "cluster_retrans": cluster_retrans_n[slot][index],
-                "sdk_n": (sdk_summary := _rtt_summary(sdk_samples[slot][index]))["rtt_n"],
-                "sdk_median": sdk_summary["rtt_median"],
-                "sdk_p90": sdk_summary["rtt_p90"],
-                "sdk_p99": sdk_summary["rtt_p99"],
-                "sdk_min": sdk_summary["rtt_min"],
-                "sdk_max": sdk_summary["rtt_max"],
-                "cluster_n": (cluster_summary := _rtt_summary(cluster_samples[slot][index]))["rtt_n"],
-                "cluster_median": cluster_summary["rtt_median"],
-                "cluster_p90": cluster_summary["rtt_p90"],
-                "cluster_p99": cluster_summary["rtt_p99"],
-                "cluster_min": cluster_summary["rtt_min"],
-                "cluster_max": cluster_summary["rtt_max"],
+                **_summary_fields("sdk", _rtt_summary(sdk_samples[slot][index]), _RTT_ROLE_FIELDS),
+                **_summary_fields("cluster", _rtt_summary(cluster_samples[slot][index]), _RTT_ROLE_FIELDS),
                 "ack_lost": ack_n[slot][index],
                 "opcodes": dict(opcode_n[slot][index]),
                 "body_in_max": body_in_max[slot][index],
@@ -2302,18 +1963,35 @@ def _bucket_series(
                 "ack_bytes": ack_bytes_n[slot][index],
                 "buffer_acks": buffer_ack_n[slot][index],
                 "mutations": mutation_n[slot][index],
-                "ttp_n": (ttp_summary := _milli_summary(ttp_samples[slot][index]))["n"],
-                "ttp_median": ttp_summary["median"],
-                "ttp_p99": ttp_summary["p99"],
-                "ttr_n": (ttr_summary := _milli_summary(ttr_samples[slot][index]))["n"],
-                "ttr_median": ttr_summary["median"],
-                "ttr_p99": ttr_summary["p99"],
+                **_summary_fields("ttp", _milli_summary(ttp_samples[slot][index]), _MILLI_FIELDS, source=""),
+                **_summary_fields("ttr", _milli_summary(ttr_samples[slot][index]), _MILLI_FIELDS, source=""),
             }
             row.update(_rtt_summary(samples[slot][index]))
             rows.append(row)
         series[_bucket_key(width)] = rows
     return series
 
+
+class _SideTally:
+    """Document-id counts for the capture and for each side.
+
+    An empty key is not a document. A zero amount is stored, so a body of
+    0 still counts toward the average.
+    """
+
+    def __init__(self) -> None:
+        self.all: Counter = Counter()
+        self.sdk: Counter = Counter()
+        self.cluster: Counter = Counter()
+
+    def add(self, side: str, key: str, amount: int = 1) -> None:
+        if not key:
+            return
+        self.all[key] += amount
+        if side == "cluster":
+            self.cluster[key] += amount
+        else:
+            self.sdk[key] += amount
 
 
 def build_charts(
@@ -2363,14 +2041,13 @@ def build_charts(
     portset = set(ports)
     ends = cluster_endpoints(requests, role_of)
     timed_loss = []
-    for event in loss_events:
-        if portset and event["sport"] not in portset and event["dport"] not in portset:
-            continue
-        if not portset:
-            continue
-        if event["time"] is None:
-            continue
-        timed_loss.append(event)
+    if portset:
+        for event in loss_events:
+            if event["time"] is None:
+                continue
+            if event["sport"] not in portset and event["dport"] not in portset:
+                continue
+            timed_loss.append(event)
 
     series = _bucket_series(
         requests, paired, matched_rtts, timed_loss, portset, ends, capture_end, role_of,
@@ -2379,14 +2056,10 @@ def build_charts(
     by_ip: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     by_conn: dict[tuple[str, str], list] = {}
     by_opcode: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-    by_key: Counter = Counter()
-    key_unanswered: Counter = Counter()
-    key_body_sum: Counter = Counter()
-    key_body_n: Counter = Counter()
-    by_key_role = {"sdk": Counter(), "cluster": Counter()}
-    key_unanswered_role = {"sdk": Counter(), "cluster": Counter()}
-    key_body_sum_role = {"sdk": Counter(), "cluster": Counter()}
-    key_body_n_role = {"sdk": Counter(), "cluster": Counter()}
+    keys = _SideTally()
+    unanswered_tally = _SideTally()
+    body_sum = _SideTally()
+    body_n = _SideTally()
     opcode_rtts: dict[str, list[float]] = defaultdict(list)
     opcode_role_rtts: dict[tuple[str, str], list[float]] = defaultdict(list)
     unanswered_keys = {id(msg) for msg in paired["unanswered"]}
@@ -2407,31 +2080,25 @@ def build_charts(
         else:
             conn[3] += 1
         key = msg.get("key") or ""
-        if key:
-            by_key[key] += 1
-            by_key_role[side][key] += 1
-        if id(msg) in unanswered_keys:
-            by_ip[ip][1] += 1
-            by_opcode[opcode][1] += 1
-            conn[1] += 1
-            if key:
-                body = int(msg.get("body") or 0)
-                key_unanswered[key] += 1
-                key_unanswered_role[side][key] += 1
-                key_body_sum[key] += body
-                key_body_n[key] += 1
-                key_body_sum_role[side][key] += body
-                key_body_n_role[side][key] += 1
+        keys.add(side, key)
+        if id(msg) not in unanswered_keys:
+            continue
+        by_ip[ip][1] += 1
+        by_opcode[opcode][1] += 1
+        conn[1] += 1
+        if not key:
+            continue
+        body = int(msg.get("body") or 0)
+        unanswered_tally.add(side, key)
+        body_sum.add(side, key, body)
+        body_n.add(side, key)
     for _when, gap, key, opcode, body_in, body_out, _opaque, _stream, _requester, role in matched_rtts:
         opcode_rtts[opcode].append(gap)
         opcode_role_rtts[(role, opcode)].append(gap)
-        if key:
-            larger = max(body_in, body_out)
-            key_body_sum[key] += larger
-            key_body_n[key] += 1
-            side = "cluster" if role == "cluster" else "sdk"
-            key_body_sum_role[side][key] += larger
-            key_body_n_role[side][key] += 1
+        if not key:
+            continue
+        body_sum.add(role, key, max(body_in, body_out))
+        body_n.add(role, key)
 
     ranked_calls = sorted(
         (
@@ -2470,12 +2137,32 @@ def build_charts(
             for key, count in counter.most_common(10)
         ]
 
+    slowest_sdk_calls: list[tuple] = []
+    slowest_cluster_calls: list[tuple] = []
+    for item in ranked_calls:
+        if len(slowest_sdk_calls) >= 10 and len(slowest_cluster_calls) >= 10:
+            break
+        if item[-1] == "cluster":
+            if len(slowest_cluster_calls) < 10:
+                slowest_cluster_calls.append(item)
+            continue
+        if len(slowest_sdk_calls) < 10:
+            slowest_sdk_calls.append(item)
     slowest = slow_rows(ranked_calls[:10])
-    slowest_sdk = slow_rows([item for item in ranked_calls if item[-1] != "cluster"][:10])
-    slowest_cluster = slow_rows([item for item in ranked_calls if item[-1] == "cluster"][:10])
+    slowest_sdk = slow_rows(slowest_sdk_calls)
+    slowest_cluster = slow_rows(slowest_cluster_calls)
     all_rtts = [gap for _when, gap, _key, _opcode, _body_in, _body_out, _opaque, _stream, _requester, _role in matched_rtts]
     overall = _rtt_summary(all_rtts)
-    all_ms = [gap * 1000 for gap in all_rtts]
+    over_50 = over_100 = over_250 = 0
+    for gap in all_rtts:
+        ms = gap * 1000
+        if ms < 50:
+            continue
+        over_50 += 1
+        if ms >= 100:
+            over_100 += 1
+        if ms >= 250:
+            over_250 += 1
     gap_window = _in_flight_window(matched_rtts)
 
     def _side(msg: dict) -> str:
@@ -2497,16 +2184,30 @@ def build_charts(
     for msg in paired["resp_only"]:
         resp_only_by_role[_side(msg)].append(msg)
     loss_marks = _loss_marks(timed_loss, ports)
+    gap_charts: dict[str, object] = {}
+    for name, messages, at_start in (
+        ("missing_response", paired["unanswered"], False),
+        ("missing_request", paired["resp_only"], True),
+        ("missing_response_sdk", unanswered_by_role["sdk"], False),
+        ("missing_response_cluster", unanswered_by_role["cluster"], False),
+        ("missing_request_sdk", resp_only_by_role["sdk"], True),
+        ("missing_request_cluster", resp_only_by_role["cluster"], True),
+    ):
+        gap_charts[name] = _annotate_gap_errors(
+            _ten_gaps(messages, capture_end, gap_window, at_start=at_start),
+            loss_marks,
+        )
+        gap_charts[f"{name}_total"] = len(messages)
     return {
         "capture_seconds": round(capture_end, 3),
         "in_flight_window": round(gap_window, 6),
         "buckets": series,
         "rtt_overall_ms": overall,
         "slow_ms": {
-            "matched": len(all_ms),
-            "over_50": sum(1 for value in all_ms if value >= 50),
-            "over_100": sum(1 for value in all_ms if value >= 100),
-            "over_250": sum(1 for value in all_ms if value >= 250),
+            "matched": len(all_rtts),
+            "over_50": over_50,
+            "over_100": over_100,
+            "over_250": over_250,
         },
         "rtt_histogram": _role_histogram(matched_rtts),
         "by_requester_ip": [
@@ -2536,29 +2237,18 @@ def build_charts(
                 "median_ms": (summary := _rtt_summary(opcode_rtts[opcode]))["rtt_median"],
                 "p99_ms": summary["rtt_p99"],
                 "description": opcode_description(opcode),
-                "role": "cluster" if str(opcode or "").lower() in _CLUSTER_OPCODES else "sdk",
+                "role": "cluster" if str(opcode or "").lower() in CLUSTER_OPCODES else "sdk",
                 "expects_reply": expects_reply(opcode),
             }
             for opcode, counts in sorted(by_opcode.items(), key=lambda item: item[1][0], reverse=True)
         ],
-        "top_requested": top_keys(by_key, key_unanswered, key_body_sum, key_body_n),
-        "top_requested_sdk": top_keys(by_key_role["sdk"], key_unanswered_role["sdk"], key_body_sum_role["sdk"], key_body_n_role["sdk"]),
-        "top_requested_cluster": top_keys(by_key_role["cluster"], key_unanswered_role["cluster"], key_body_sum_role["cluster"], key_body_n_role["cluster"]),
+        "top_requested": top_keys(keys.all, unanswered_tally.all, body_sum.all, body_n.all),
+        "top_requested_sdk": top_keys(keys.sdk, unanswered_tally.sdk, body_sum.sdk, body_n.sdk),
+        "top_requested_cluster": top_keys(keys.cluster, unanswered_tally.cluster, body_sum.cluster, body_n.cluster),
         "top_slowest": slowest,
         "top_slowest_sdk": slowest_sdk,
         "top_slowest_cluster": slowest_cluster,
-        "missing_response": _annotate_gap_errors(_ten_gaps(paired["unanswered"], capture_end, gap_window, at_start=False), loss_marks),
-        "missing_response_total": len(paired["unanswered"]),
-        "missing_request": _annotate_gap_errors(_ten_gaps(paired["resp_only"], capture_end, gap_window, at_start=True), loss_marks),
-        "missing_request_total": len(paired["resp_only"]),
-        "missing_response_sdk": _annotate_gap_errors(_ten_gaps(unanswered_by_role["sdk"], capture_end, gap_window, at_start=False), loss_marks),
-        "missing_response_sdk_total": len(unanswered_by_role["sdk"]),
-        "missing_response_cluster": _annotate_gap_errors(_ten_gaps(unanswered_by_role["cluster"], capture_end, gap_window, at_start=False), loss_marks),
-        "missing_response_cluster_total": len(unanswered_by_role["cluster"]),
-        "missing_request_sdk": _annotate_gap_errors(_ten_gaps(resp_only_by_role["sdk"], capture_end, gap_window, at_start=True), loss_marks),
-        "missing_request_sdk_total": len(resp_only_by_role["sdk"]),
-        "missing_request_cluster": _annotate_gap_errors(_ten_gaps(resp_only_by_role["cluster"], capture_end, gap_window, at_start=True), loss_marks),
-        "missing_request_cluster_total": len(resp_only_by_role["cluster"]),
+        **gap_charts,
         "server": couchbase_server(requests),
         "packet_types": [
             {"name": name, "count": int(count)}
@@ -2655,10 +2345,14 @@ def _traffic_summary(
     if cluster_ends is None:
         cluster_ends = cluster_endpoints(requests, role_of)
     for event in loss_events:
+        retrans = event.get("retrans")
+        lost = event.get("lost")
+        if not retrans and not lost:
+            continue
         role = flow_role(event.get("sport") or "", event.get("dport") or "", cluster_ends)
-        if event.get("retrans"):
+        if retrans:
             rows[role]["retrans"] += 1
-        if event.get("lost"):
+        if lost:
             rows[role]["lost"] += 1
     for role, samples in role_rtts.items():
         summary = _rtt_summary(samples)

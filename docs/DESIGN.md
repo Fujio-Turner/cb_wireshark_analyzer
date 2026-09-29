@@ -8,7 +8,8 @@ The product is a folder of static files. Python counts the capture. A model may 
 
 | Path | Role |
 | --- | --- |
-| `analyze_capture.py` | The whole analysis: read, pair, count, call the model, write the report. |
+| `analyze_capture.py` | The analysis: read, pair, count, call the model, write the report. |
+| `couchbase_opcodes.py` | Wireshark opcode names, descriptions, status text, and the cluster, no-reply, and multi-response sets. Data only. |
 | `web/index.html` | The chart page. Markup, CSS, and the drawing script live in this one file. |
 | `web/summary.html` | The note page. It fetches `summary.md` and formats a small slice of Markdown. |
 | `web/index.original.html` | The earlier single-column page. It is copied into each report and left as a snapshot. |
@@ -17,7 +18,7 @@ The product is a folder of static files. Python counts the capture. A model may 
 | `tests/` | Pytest. Small fixtures. No pcap, no tshark, no Ollama. |
 | `pyproject.toml` | The version string. `project_version()` reads it when a report is written. |
 
-`analyze_capture.py` stays one module on purpose. The functions are the sections. A new chart is a function that returns a piece of `charts.json`, plus a `draw*` function in `web/index.html`. A new core concept (a second matcher, a second page runtime) would be the thing that justifies another file.
+The pipeline stays in `analyze_capture.py`. The functions are the sections. Wireshark opcode and status tables live in `couchbase_opcodes.py` because they are reference data, not the walk. A new chart is a function that returns a piece of `charts.json`, plus a `draw*` function in `web/index.html`.
 
 ## From a capture to a folder
 
@@ -70,13 +71,13 @@ tshark `-T fields` is one pass. Repeated Couchbase cells are joined with the uni
 
 TCP expert flags on the same pass become `loss_events`: lost segment, retransmission, and ack-lost segment. `is_capture_duplicate` treats a retransmission whose RTO is under `_DUPLICATE_RTO_SECONDS` (1 ms), or a retransmission with no RTO, as a second copy of the same segment. That event is not a retry. `packet_kind` names the packet bar. A Couchbase header wins over a TCP flag, so a command that was also retransmitted is still that command.
 
-Opcode names are the `OPCODES` table copied from Wireshark's `client_opcode_vals` in `packet-couchbase.c`. The project does not ship a decoder. `OPCODE_DESCRIPTIONS` is the sentence the chart tooltip shows.
+Opcode names are the `OPCODES` table in `couchbase_opcodes.py`, copied from Wireshark's `client_opcode_vals` in `packet-couchbase.c`. The project does not ship a decoder. `OPCODE_DESCRIPTIONS` is the sentence the chart tooltip shows.
 
 ### Pairing
 
 `pair_messages` groups by `(tcp.stream, opaque)` and walks each group in time order. Opaque alone is not a call. The same opaque on another stream is a different call. A later request that reuses the opaque on the same stream is a new call.
 
-`expects_reply` decides whether a request enters the matcher. One-way DCP opcodes live in `_NO_REPLY_OPCODES`: stream end, snapshot marker, mutation, deletion, expiration, buffer acknowledgement, and the later producer-data opcodes through `0x67`. Those packets are `no_reply`. A snapshot marker (`0x56`) expects a reply only when the ack flag is set. Noop (`0x5c`) expects a reply. The opcode table calls `expects_reply` without that per-message flag, so a snapshot row with zero unanswered stays "not expected" even when one marker in the file asked for an ack.
+`expects_reply` decides whether a request enters the matcher. One-way DCP opcodes live in `NO_REPLY_OPCODES` in `couchbase_opcodes.py`: stream end, snapshot marker, mutation, deletion, expiration, buffer acknowledgement, and the later producer-data opcodes through `0x67`. Those packets are `no_reply`. A snapshot marker (`0x56`) expects a reply only when the ack flag is set. Noop (`0x5c`) expects a reply. The opcode table calls `expects_reply` without that per-message flag, so a snapshot row with zero unanswered stays "not expected" even when one marker in the file asked for an ack.
 
 Inside a group, `_pair_one_to_one` pairs in order. A response earlier than the request is `resp_only`. A request with no later response is unanswered.
 
@@ -87,7 +88,7 @@ Statistics (`0x10`) is the exception. `is_multi_response` sends that group to `_
 `traffic_role` returns `cluster` or `sdk`.
 
 - Both ports are in `KV_PORTS` (11210 or 11207): cluster.
-- The opcode is in `_CLUSTER_OPCODES`: DCP `0x50`–`0x67`, Get All VBucket Seqnos `0x48`, and the meta opcodes used by replication.
+- The opcode is in `CLUSTER_OPCODES`: DCP `0x50`–`0x67`, Get All VBucket Seqnos `0x48`, and the meta opcodes used by replication. The set is the lowercase hex text tshark prints.
 - Statistics whose key starts with `vbucket-seqno`: cluster.
 - Otherwise: sdk. An application port talking to 11210 is the usual case.
 
@@ -264,6 +265,7 @@ Fixtures use generic keys and addresses. Capture names, customer hostnames, and 
 | Change | Edit |
 | --- | --- |
 | A new counted field | The tshark column list if the packet must be read, then the message dict, then `build_charts` or `build_facts`. Add the draw or the table cell in `web/index.html`. |
+| An opcode name, description, or status | `couchbase_opcodes.py`. The walk imports those tables. |
 | A new time chart | A plot div, an id in `boot`, `echarts.connect`, and `timeChartIds`, and `pin` inside its draw. |
 | A new menu on data Python already computed | A `<select>` and a branch in the existing `draw*` function. |
 | A new Wireshark copy | Python when the filter depends on pairing or TCP holes. The page when it is a field already on the row. Keep the string in [CB_WIRESHARK.md](../CB_WIRESHARK.md) in step with the code. |

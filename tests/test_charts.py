@@ -675,3 +675,15 @@ def test_boxplot_splits_application_and_cluster():
     meta_row = next(row for row in charts["boxplot"] if row["opcode"] == "0xa2")
     assert meta_row["role"] == "cluster"
     assert meta_row["box"][2] == 400.0
+
+
+def test_side_tally_skips_an_empty_key_and_keeps_a_zero():
+    tally = ac._SideTally()
+    tally.add("sdk", "", 5)
+    tally.add("cluster", "doc", 0)
+    tally.add("sdk", "doc", 4)
+    assert list(tally.all) == ["doc"]
+    assert tally.all["doc"] == 4
+    assert tally.cluster["doc"] == 0
+    assert tally.sdk["doc"] == 4
+
